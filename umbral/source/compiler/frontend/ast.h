@@ -1,0 +1,89 @@
+#pragma once
+
+#include <vector>
+
+#include <common/types.h>
+
+template <class IdT, class KindT, class ListElemT = u32> struct NodeStore {
+  std::vector<KindT> kind;
+  std::vector<u32> span_s, span_e;
+  std::vector<u32> a, b, c;
+  std::vector<ListElemT> list; // L list pool
+
+  IdT make(KindT k, Span sp, u32 A = 0, u32 B = 0, u32 C = 0) {
+    IdT id = static_cast<IdT>(kind.size());
+    kind.push_back(k);
+    span_s.push_back(sp.start);
+    span_e.push_back(sp.end);
+    a.push_back(A);
+    b.push_back(B);
+    c.push_back(C);
+    return id;
+  }
+
+  std::pair<u32, u32> push_list(const ListElemT *items, u32 n) {
+    u32 start = static_cast<u32>(list.size());
+    list.insert(list.end(), items, items + n);
+    return {start, n};
+  }
+};
+
+using NodeId = u32;
+enum class NodeKind : u16 {
+  IntLit,
+  StrLit,
+  BoolLit,
+  Ident,
+  Unary,      // a = op, b = child
+  Binary,     // a = op, b = lhs, c = rhs
+  Call,       // a = callee, b = args_start, c = args_count
+  Field,      // a = base, b = field SymId
+  Index,      // a = base, b = index
+  AddrOf,     // a = mut?, b = place
+  Deref,      // a = expr
+  TupleLit,   // b = elems_start, c = elems_count
+  StructInit, // a = type SymId, b = fields_start, c = fields_count (fields are
+              //   pairs [SymId, NodeId] in list pool)
+  StructExpr, // b = fields_start, c = fields_count (fields are
+              //   triples [SymId, TypeId, NodeId] in list pool)
+  Block,      // b = stmt_start, c = stmt_count
+  LetStmt,    // a = SymId, b = TypeId or 0, c = init ExprId (or 0 if none)
+  VarStmt,    // same as LetStmt
+  AssignStmt, // a = lhs place ExprId, b = rhs ExprId, c = op TokenKind (Equal/PlusEqual/...)
+  ReturnStmt, // a = expr (or 0 if empty return)
+  IfStmt,     // a = cond, b = then block, c = else block
+  ForStmt, // a = index into BodyIR::forrs
+  ExprStmt,  // a=expr
+  Lambda,    // a = index into BodyIR::lambdas
+};
+
+using TypeId = u32;
+enum class TypeKind : u16 {
+  Named, // SymId (module path optional later)
+  Ref,   // a = mutable?, b = inner TypeId
+  Tuple, // b = list_start, c = list_count
+  Fn     // a = ret TypeId, b = list_start, c = list_count
+};
+
+using ExprAst = NodeStore<NodeId, NodeKind, NodeId>;
+using TypeAst = NodeStore<TypeId, TypeKind, TypeId>;
+
+struct ForPayload {
+  NodeId init = 0; // 0 if none
+  NodeId cond = 0; // 0 means unconditional (true)
+  NodeId step = 0; // 0 if none
+  NodeId body = 0;
+};
+
+struct LambdaPayload {
+  u32 params_start = 0;
+  u32 params_count = 0;
+  TypeId ret_type = 0;
+  NodeId body = 0;
+};
+
+struct BodyIR {
+  ExprAst nodes;
+  std::vector<ForPayload> fors;
+  std::vector<LambdaPayload> lambdas;
+};

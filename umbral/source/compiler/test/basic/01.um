@@ -1,0 +1,17 @@
+# RUN: %uc %s
+
+module main;
+
+import std.sys.gfx as gfx;
+import std.sys.gfx.ui as ui;
+
+type Quad = struct {
+  x: u32,
+  y: u32,
+  w: u32,
+  h: u32,
+}
+
+pub fn draw (window: ^Window, quad: &Quad) void {
+  gfx.draw_rect(window, quad.x, quad.y, quad.w, quad.h);
+}

@@ -1,0 +1,7 @@
+# RUN: %uc %s
+
+module main;
+
+pub fn main () void {
+  return 0;
+}
