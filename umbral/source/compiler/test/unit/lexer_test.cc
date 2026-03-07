@@ -254,6 +254,100 @@ TEST_F(LexFixture, MultipleIntegers) {
   for (auto kind : k) EXPECT_EQ(kind, TokenKind::Int);
 }
 
+TEST_F(LexFixture, HexIntegerLiteral) {
+  EXPECT_EQ(kinds("0xFF")[0],     TokenKind::Int);
+  EXPECT_EQ(kinds("0x0")[0],      TokenKind::Int);
+  EXPECT_EQ(kinds("0xDEAD")[0],   TokenKind::Int);
+  EXPECT_EQ(kinds("0Xbeef")[0],   TokenKind::Int);
+}
+
+TEST_F(LexFixture, HexIntegerSpan) {
+  auto r = lex("0x1A");
+  ASSERT_FALSE(r.err.has_value());
+  EXPECT_EQ(r.tokens.start[0], 0u);
+  EXPECT_EQ(r.tokens.end[0],   4u);
+}
+
+TEST_F(LexFixture, HexNoDigitsIsError) {
+  auto r = lex("0x");
+  ASSERT_TRUE(r.err.has_value());
+  EXPECT_STREQ(r.err->msg, "expected hex digit after '0x'");
+}
+
+TEST_F(LexFixture, BinaryIntegerLiteral) {
+  EXPECT_EQ(kinds("0b1010")[0], TokenKind::Int);
+  EXPECT_EQ(kinds("0b0")[0],    TokenKind::Int);
+  EXPECT_EQ(kinds("0B1111")[0], TokenKind::Int);
+}
+
+TEST_F(LexFixture, BinaryIntegerSpan) {
+  auto r = lex("0b101");
+  ASSERT_FALSE(r.err.has_value());
+  EXPECT_EQ(r.tokens.start[0], 0u);
+  EXPECT_EQ(r.tokens.end[0],   5u);
+}
+
+TEST_F(LexFixture, BinaryNoDigitsIsError) {
+  auto r = lex("0b");
+  ASSERT_TRUE(r.err.has_value());
+  EXPECT_STREQ(r.err->msg, "expected binary digit after '0b'");
+}
+
+TEST_F(LexFixture, BinaryStopsAtNonBinaryDigit) {
+  // "0b102" → 0b10 (Int) then 2 (Int); '2' is not a binary digit
+  auto k = kinds("0b102");
+  ASSERT_EQ(k.size(), 2u);
+  EXPECT_EQ(k[0], TokenKind::Int);
+  EXPECT_EQ(k[1], TokenKind::Int);
+}
+
+// ============================================================
+// Float literals
+// ============================================================
+
+TEST_F(LexFixture, FloatLiteral) {
+  EXPECT_EQ(kinds("3.14")[0],  TokenKind::Float);
+  EXPECT_EQ(kinds("0.5")[0],   TokenKind::Float);
+  EXPECT_EQ(kinds("1.0")[0],   TokenKind::Float);
+}
+
+TEST_F(LexFixture, FloatSpan) {
+  auto r = lex("3.14");
+  ASSERT_FALSE(r.err.has_value());
+  EXPECT_EQ(r.tokens.start[0], 0u);
+  EXPECT_EQ(r.tokens.end[0],   4u);
+}
+
+TEST_F(LexFixture, FloatWithExponent) {
+  EXPECT_EQ(kinds("1.5e10")[0],  TokenKind::Float);
+  EXPECT_EQ(kinds("2.0e+5")[0],  TokenKind::Float);
+  EXPECT_EQ(kinds("3.0e-2")[0],  TokenKind::Float);
+  EXPECT_EQ(kinds("1.0E3")[0],   TokenKind::Float);
+}
+
+TEST_F(LexFixture, FloatBadExponentIsError) {
+  auto r = lex("1.5eX");
+  ASSERT_TRUE(r.err.has_value());
+  EXPECT_STREQ(r.err->msg, "expected digit in float exponent");
+}
+
+TEST_F(LexFixture, IntegerDotIsNotFloat) {
+  // "123." → Int + Dot (no digit after '.')
+  auto k = kinds("123.");
+  ASSERT_EQ(k.size(), 2u);
+  EXPECT_EQ(k[0], TokenKind::Int);
+  EXPECT_EQ(k[1], TokenKind::Dot);
+}
+
+TEST_F(LexFixture, ZeroDotIdentIsNotFloat) {
+  // "0.foo" → Int + Dot + Ident ('f' is not a digit)
+  auto k = kinds("0.foo");
+  ASSERT_EQ(k.size(), 3u);
+  EXPECT_EQ(k[0], TokenKind::Int);
+  EXPECT_EQ(k[1], TokenKind::Dot);
+  EXPECT_EQ(k[2], TokenKind::Ident);
+}
+
 // ============================================================
 // String literals
 // ============================================================
