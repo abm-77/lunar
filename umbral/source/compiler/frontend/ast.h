@@ -42,6 +42,7 @@ enum class NodeKind : u16 {
   AddrOf,     // a = mut?, b = place
   Deref,      // a = expr
   TupleLit,   // b = elems_start, c = elems_count
+  ArrayLit,   // a = index into BodyIR::array_lits
   StructInit, // a = type SymId, b = fields_start, c = fields_count (fields are
               //   pairs [SymId, NodeId] in list pool)
   StructExpr, // b = fields_start, c = fields_count (fields are
@@ -59,10 +60,11 @@ enum class NodeKind : u16 {
 
 using TypeId = u32;
 enum class TypeKind : u16 {
-  Named, // SymId (module path optional later)
-  Ref,   // a = mutable?, b = inner TypeId
-  Tuple, // b = list_start, c = list_count
-  Fn     // a = ret TypeId, b = list_start, c = list_count
+  Named,  // a = SymId
+  Ref,    // a = mutable?, b = inner TypeId
+  Tuple,  // b = list_start, c = list_count
+  Fn,     // a = ret TypeId, b = list_start, c = list_count
+  Array,  // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId
 };
 
 using ExprAst = NodeStore<NodeId, NodeKind, NodeId>;
@@ -82,8 +84,17 @@ struct LambdaPayload {
   NodeId body = 0;
 };
 
+// explicit_count == static_cast<u32>(-1) means count was omitted (inferred from values)
+struct ArrayLitPayload {
+  u32 explicit_count = static_cast<u32>(-1);
+  TypeId elem_type = 0;
+  u32 values_start = 0;
+  u32 values_count = 0;
+};
+
 struct BodyIR {
   ExprAst nodes;
   std::vector<ForPayload> fors;
   std::vector<LambdaPayload> lambdas;
+  std::vector<ArrayLitPayload> array_lits;
 };

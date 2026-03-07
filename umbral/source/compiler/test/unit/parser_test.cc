@@ -124,7 +124,7 @@ TEST_F(ParseFixture, ImplBlock) {
 // ============================================================
 
 TEST_F(ParseFixture, LetNoTypeNoInit) {
-  auto &p = parse_fn("let x;");
+  auto &p = parse_fn("const x;");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   ASSERT_EQ(stmts.size(), 1u);
@@ -134,7 +134,7 @@ TEST_F(ParseFixture, LetNoTypeNoInit) {
 }
 
 TEST_F(ParseFixture, LetWithTypeAndInit) {
-  auto &p = parse_fn("let x: i32 = 42;");
+  auto &p = parse_fn("const x: i32 = 42;");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   ASSERT_EQ(stmts.size(), 1u);
@@ -458,7 +458,7 @@ TEST_F(ParseFixture, StructInitWithFields) {
 }
 
 TEST_F(ParseFixture, StructExpr) {
-  auto &p = parse_fn("let player = struct { x: i32 = 10, y: i32 = 4 };");
+  auto &p = parse_fn("const player = struct { x: i32 = 10, y: i32 = 4 };");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   ASSERT_EQ(stmts.size(), 1u);
@@ -473,7 +473,7 @@ TEST_F(ParseFixture, StructExpr) {
 }
 
 TEST_F(ParseFixture, StructExprEmpty) {
-  auto &p = parse_fn("let s = struct {};");
+  auto &p = parse_fn("const s = struct {};");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   NodeId init = p.body_ir.nodes.c[stmts[0]];
@@ -560,11 +560,152 @@ TEST_F(ParseFixture, FnType) {
 }
 
 // ============================================================
+// Array types
+// ============================================================
+
+TEST_F(ParseFixture, ArrayTypeWithCount) {
+  auto &p = parse_mod("module t; fn f(x: [10]i32) -> void {}");
+  EXPECT_FALSE(p.error().has_value());
+  TypeId param_ty = p.mod.params[0].type;
+  EXPECT_EQ(p.type_ast.kind[param_ty], TypeKind::Array);
+  EXPECT_EQ(p.type_ast.a[param_ty], 10u);
+  // elem type should be Named "i32"
+  TypeId elem = p.type_ast.b[param_ty];
+  EXPECT_EQ(p.type_ast.kind[elem], TypeKind::Named);
+  EXPECT_EQ(interner.view(p.type_ast.a[elem]), "i32");
+}
+
+TEST_F(ParseFixture, ArrayTypeUnsized) {
+  auto &p = parse_mod("module t; fn f(x: []u8) -> void {}");
+  EXPECT_FALSE(p.error().has_value());
+  TypeId param_ty = p.mod.params[0].type;
+  EXPECT_EQ(p.type_ast.kind[param_ty], TypeKind::Array);
+  EXPECT_EQ(p.type_ast.a[param_ty], static_cast<u32>(-1)); // no count
+  TypeId elem = p.type_ast.b[param_ty];
+  EXPECT_EQ(interner.view(p.type_ast.a[elem]), "u8");
+}
+
+TEST_F(ParseFixture, ArrayTypeAsReturnType) {
+  auto &p = parse_mod("module t; fn f() -> [3]u8 {}");
+  EXPECT_FALSE(p.error().has_value());
+  TypeId ret = p.mod.funcs[0].ret_type;
+  EXPECT_EQ(p.type_ast.kind[ret], TypeKind::Array);
+  EXPECT_EQ(p.type_ast.a[ret], 3u);
+}
+
+TEST_F(ParseFixture, ArrayTypeNested) {
+  // [2][3]i32 → array of 2 elements of type [3]i32
+  auto &p = parse_mod("module t; fn f(x: [2][3]i32) -> void {}");
+  EXPECT_FALSE(p.error().has_value());
+  TypeId outer = p.mod.params[0].type;
+  EXPECT_EQ(p.type_ast.kind[outer], TypeKind::Array);
+  EXPECT_EQ(p.type_ast.a[outer], 2u);
+  TypeId inner = p.type_ast.b[outer];
+  EXPECT_EQ(p.type_ast.kind[inner], TypeKind::Array);
+  EXPECT_EQ(p.type_ast.a[inner], 3u);
+}
+
+// ============================================================
+// Array literals
+// ============================================================
+
+TEST_F(ParseFixture, ArrayLitInferred) {
+  auto &p = parse_fn("[]i32{1, 2, 3};");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  NodeId expr = p.body_ir.nodes.a[stmts[0]];
+  EXPECT_EQ(p.body_ir.nodes.kind[expr], NodeKind::ArrayLit);
+  u32 idx = p.body_ir.nodes.a[expr];
+  auto &al = p.body_ir.array_lits[idx];
+  EXPECT_EQ(al.explicit_count, static_cast<u32>(-1));
+  EXPECT_EQ(al.values_count, 3u);
+  EXPECT_EQ(interner.view(p.type_ast.a[al.elem_type]), "i32");
+}
+
+TEST_F(ParseFixture, ArrayLitExplicitCount) {
+  auto &p = parse_fn("[3]i32{10, 20, 30};");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  NodeId expr = p.body_ir.nodes.a[stmts[0]];
+  EXPECT_EQ(p.body_ir.nodes.kind[expr], NodeKind::ArrayLit);
+  u32 idx = p.body_ir.nodes.a[expr];
+  auto &al = p.body_ir.array_lits[idx];
+  EXPECT_EQ(al.explicit_count, 3u);
+  EXPECT_EQ(al.values_count, 3u);
+}
+
+TEST_F(ParseFixture, ArrayLitCountGreaterThanValues) {
+  // [5]i32{1, 2, 3} — count 5 >= 3 values, valid
+  auto &p = parse_fn("[5]i32{1, 2, 3};");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  NodeId expr = p.body_ir.nodes.a[stmts[0]];
+  u32 idx = p.body_ir.nodes.a[expr];
+  auto &al = p.body_ir.array_lits[idx];
+  EXPECT_EQ(al.explicit_count, 5u);
+  EXPECT_EQ(al.values_count, 3u);
+}
+
+TEST_F(ParseFixture, ArrayLitCountLessThanValuesIsError) {
+  // [2]i32{1, 2, 3} — count 2 < 3 values, error
+  auto &p = parse_fn("[2]i32{1, 2, 3};");
+  EXPECT_TRUE(p.error().has_value());
+  EXPECT_STREQ(p.error()->msg, "array count is less than number of initializers");
+}
+
+TEST_F(ParseFixture, ArrayLitEmpty) {
+  auto &p = parse_fn("[]u8{};");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  NodeId expr = p.body_ir.nodes.a[stmts[0]];
+  EXPECT_EQ(p.body_ir.nodes.kind[expr], NodeKind::ArrayLit);
+  u32 idx = p.body_ir.nodes.a[expr];
+  EXPECT_EQ(p.body_ir.array_lits[idx].values_count, 0u);
+}
+
+TEST_F(ParseFixture, ArrayLitTrailingComma) {
+  auto &p = parse_fn("[]i32{1, 2,};");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  NodeId expr = p.body_ir.nodes.a[stmts[0]];
+  u32 idx = p.body_ir.nodes.a[expr];
+  EXPECT_EQ(p.body_ir.array_lits[idx].values_count, 2u);
+}
+
+TEST_F(ParseFixture, ArrayLitVarDecl) {
+  auto &p = parse_fn("var xs: [3]i32 = [3]i32{1, 2, 3};");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  NodeId var = stmts[0];
+  EXPECT_EQ(p.body_ir.nodes.kind[var], NodeKind::VarStmt);
+  // type annotation is [3]i32
+  TypeId ty = p.body_ir.nodes.b[var];
+  EXPECT_EQ(p.type_ast.kind[ty], TypeKind::Array);
+  EXPECT_EQ(p.type_ast.a[ty], 3u);
+  // initializer is ArrayLit
+  NodeId init = p.body_ir.nodes.c[var];
+  EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::ArrayLit);
+}
+
+TEST_F(ParseFixture, ArrayLitElementsAreExprs) {
+  auto &p = parse_fn("[]i32{1 + 2, 3 * 4};");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  NodeId expr = p.body_ir.nodes.a[stmts[0]];
+  u32 idx = p.body_ir.nodes.a[expr];
+  auto &al = p.body_ir.array_lits[idx];
+  EXPECT_EQ(al.values_count, 2u);
+  // first element should be a Binary node
+  NodeId first = p.body_ir.nodes.list[al.values_start];
+  EXPECT_EQ(p.body_ir.nodes.kind[first], NodeKind::Binary);
+}
+
+// ============================================================
 // Error cases
 // ============================================================
 
 TEST_F(ParseFixture, MissingSemicolonAfterLet) {
-  auto &p = parse_fn("let x = 1");
+  auto &p = parse_fn("const x = 1");
   EXPECT_TRUE(p.error().has_value());
 }
 

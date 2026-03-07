@@ -124,6 +124,23 @@ private:
       Span endsp = {start.start, type_ast.span_e[ret]};
       return type_ast.make(TypeKind::Fn, endsp, ret, ls, cnt);
     }
+    // array type: '[' [count] ']' elem_type
+    if (match(TokenKind::LBracket)) {
+      u32 count = static_cast<u32>(-1);
+      if (!at(TokenKind::RBracket)) {
+        if (!at(TokenKind::Int)) {
+          set_error(sp(), "expected integer count in array type");
+          return type_ast.make(TypeKind::Named, start, 0);
+        }
+        count = t.payload[i];
+        ++i;
+      }
+      expect(TokenKind::RBracket, "expected ']'");
+      TypeId elem = parse_type();
+      Span endsp = {start.start, type_ast.span_e[elem]};
+      return type_ast.make(TypeKind::Array, endsp, count, elem);
+    }
+
     // named type: Ident ( :: Ident)*
     SymId name = expect_ident("expected type name");
     while (match(TokenKind::ColonColon))
@@ -288,6 +305,40 @@ private:
       return first;
     }
 
+    // [<opt_count>]<type>{<values>}  — array literal
+    if (match(TokenKind::LBracket)) {
+      u32 explicit_count = static_cast<u32>(-1);
+      if (!at(TokenKind::RBracket)) {
+        if (!at(TokenKind::Int)) {
+          set_error(sp(), "expected integer count or ']' in array literal");
+          return body_ir.nodes.make(NodeKind::Ident, s, 0);
+        }
+        explicit_count = t.payload[i];
+        ++i;
+      }
+      expect(TokenKind::RBracket, "expected ']'");
+      TypeId elem_type = parse_type();
+      expect(TokenKind::LBrace, "expected '{'");
+      std::vector<NodeId> values;
+      if (!at(TokenKind::RBrace)) {
+        do {
+          values.push_back(parse_expr());
+        } while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace));
+      }
+      expect(TokenKind::RBrace, "expected '}'");
+      if (!err && explicit_count != static_cast<u32>(-1) &&
+          explicit_count < static_cast<u32>(values.size())) {
+        set_error({s.start, t.end[i - 1]},
+                  "array count is less than number of initializers");
+      }
+      auto [vs, vc] = body_ir.nodes.push_list(values.data(),
+                                               static_cast<u32>(values.size()));
+      u32 idx = static_cast<u32>(body_ir.array_lits.size());
+      body_ir.array_lits.push_back({explicit_count, elem_type, vs, vc});
+      Span endsp = {s.start, t.end[i - 1]};
+      return body_ir.nodes.make(NodeKind::ArrayLit, endsp, idx);
+    }
+
     set_error(s, "expected expression");
     return body_ir.nodes.make(NodeKind::Ident, s, 0);
   }
@@ -402,7 +453,7 @@ private:
     auto s = sp();
 
     // let <name> [: <type>] [= <expr>] ;
-    if (match(TokenKind::KwLet)) {
+    if (match(TokenKind::KwConst)) {
       SymId name = expect_ident("expected variable name");
       TypeId ty = 0;
       if (match(TokenKind::Colon)) ty = parse_type();

@@ -1,6 +1,6 @@
 #define UMBRAL_KEYWORDS(X)                                                         \
   X(Fn, "fn")                                                                  \
-  X(Let, "let")                                                                \
+  X(Const, "const")                                                                \
   X(Mut, "mut")                                                                \
   X(If, "if")                                                                  \
   X(Else, "else")                                                              \
@@ -15,4 +15,5 @@
   X(True_, "true")                                                             \
   X(False_, "false")                                                          \
   X(Var, "var")                                                               \
+  X(Where, "where")                                                               \
   X(As, "as")

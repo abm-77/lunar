@@ -148,9 +148,9 @@ public:
       }
 
       if (is_digit(c)) {
-        auto [kind, sp, err] = lex_number();
+        auto [kind, sp, value, err] = lex_number();
         if (err) return {std::move(out), LexError{sp, err}};
-        out.push(kind, sp);
+        out.push(kind, sp, value);
         continue;
       }
 
@@ -224,33 +224,47 @@ private:
     return {TokenKind::Ident, sym, {start, end}};
   }
 
-  struct NumResult { TokenKind kind; Span span; const char *err = nullptr; };
+  // value = parsed integer value (0 for floats); err = non-null on malformed input
+  struct NumResult { TokenKind kind; Span span; u32 value = 0; const char *err = nullptr; };
 
   NumResult lex_number() {
     u32 start = pos;
+    u32 value = 0;
 
     // Hex: 0x / 0X
     if (peek() == '0' && (peek_next() == 'x' || peek_next() == 'X')) {
       advance(); advance();
       if (eof() || !is_hex_digit(peek()))
-        return {TokenKind::Int, {start, static_cast<u32>(pos)},
+        return {TokenKind::Int, {start, static_cast<u32>(pos)}, 0,
                 "expected hex digit after '0x'"};
-      while (!eof() && is_hex_digit(peek())) advance();
-      return {TokenKind::Int, {start, static_cast<u32>(pos)}};
+      while (!eof() && is_hex_digit(peek())) {
+        char c = peek();
+        u32 d = is_digit(c) ? static_cast<u32>(c - '0')
+                            : static_cast<u32>(std::tolower(c) - 'a' + 10);
+        value = value * 16 + d;
+        advance();
+      }
+      return {TokenKind::Int, {start, static_cast<u32>(pos)}, value};
     }
 
     // Binary: 0b / 0B
     if (peek() == '0' && (peek_next() == 'b' || peek_next() == 'B')) {
       advance(); advance();
       if (eof() || (peek() != '0' && peek() != '1'))
-        return {TokenKind::Int, {start, static_cast<u32>(pos)},
+        return {TokenKind::Int, {start, static_cast<u32>(pos)}, 0,
                 "expected binary digit after '0b'"};
-      while (!eof() && (peek() == '0' || peek() == '1')) advance();
-      return {TokenKind::Int, {start, static_cast<u32>(pos)}};
+      while (!eof() && (peek() == '0' || peek() == '1')) {
+        value = value * 2 + static_cast<u32>(peek() - '0');
+        advance();
+      }
+      return {TokenKind::Int, {start, static_cast<u32>(pos)}, value};
     }
 
     // Decimal integer, or float if followed by '.' + digit
-    while (!eof() && is_digit(peek())) advance();
+    while (!eof() && is_digit(peek())) {
+      value = value * 10 + static_cast<u32>(peek() - '0');
+      advance();
+    }
 
     if (!eof() && peek() == '.' && is_digit(peek_next())) {
       advance(); // consume '.'
@@ -261,14 +275,14 @@ private:
         advance();
         if (!eof() && (peek() == '+' || peek() == '-')) advance();
         if (eof() || !is_digit(peek()))
-          return {TokenKind::Float, {start, static_cast<u32>(pos)},
+          return {TokenKind::Float, {start, static_cast<u32>(pos)}, 0,
                   "expected digit in float exponent"};
         while (!eof() && is_digit(peek())) advance();
       }
-      return {TokenKind::Float, {start, static_cast<u32>(pos)}};
+      return {TokenKind::Float, {start, static_cast<u32>(pos)}, 0};
     }
 
-    return {TokenKind::Int, {start, static_cast<u32>(pos)}};
+    return {TokenKind::Int, {start, static_cast<u32>(pos)}, value};
   }
 
   std::pair<bool, Span> lex_string() {

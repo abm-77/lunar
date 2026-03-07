@@ -66,7 +66,7 @@ TEST(KeywordTable, AllKeywordsRecognised) {
   struct Case { std::string_view text; TokenKind expected; };
   Case cases[] = {
     {"fn",     TokenKind::KwFn},
-    {"let",    TokenKind::KwLet},
+    {"const",  TokenKind::KwConst},
     {"mut",    TokenKind::KwMut},
     {"if",     TokenKind::KwIf},
     {"else",   TokenKind::KwElse},
@@ -205,8 +205,8 @@ TEST_F(LexFixture, UnderscoreOnlyIsIdent) {
 }
 
 TEST_F(LexFixture, KeywordsProduceKwTokens) {
-  EXPECT_EQ(kinds("fn")[0],     TokenKind::KwFn);
-  EXPECT_EQ(kinds("let")[0],    TokenKind::KwLet);
+  EXPECT_EQ(kinds("fn")[0],      TokenKind::KwFn);
+  EXPECT_EQ(kinds("const")[0],  TokenKind::KwConst);
   EXPECT_EQ(kinds("mut")[0],    TokenKind::KwMut);
   EXPECT_EQ(kinds("if")[0],     TokenKind::KwIf);
   EXPECT_EQ(kinds("else")[0],   TokenKind::KwElse);
@@ -252,6 +252,24 @@ TEST_F(LexFixture, MultipleIntegers) {
   auto k = kinds("1 22 333");
   ASSERT_EQ(k.size(), 3u);
   for (auto kind : k) EXPECT_EQ(kind, TokenKind::Int);
+}
+
+TEST_F(LexFixture, IntegerPayloadStoresValue) {
+  auto r = lex("42");
+  ASSERT_FALSE(r.err.has_value());
+  EXPECT_EQ(r.tokens.payload[0], 42u);
+}
+
+TEST_F(LexFixture, HexIntegerPayloadStoresValue) {
+  auto r = lex("0xFF");
+  ASSERT_FALSE(r.err.has_value());
+  EXPECT_EQ(r.tokens.payload[0], 255u);
+}
+
+TEST_F(LexFixture, BinaryIntegerPayloadStoresValue) {
+  auto r = lex("0b1010");
+  ASSERT_FALSE(r.err.has_value());
+  EXPECT_EQ(r.tokens.payload[0], 10u);
 }
 
 TEST_F(LexFixture, HexIntegerLiteral) {
@@ -423,9 +441,9 @@ TEST_F(LexFixture, TwoCharOperatorSpan) {
 
 TEST_F(LexFixture, SimpleDeclaration) {
   using TK = TokenKind;
-  auto k = kinds("let x = 42;");
+  auto k = kinds("const x = 42;");
   std::vector<TK> expected = {
-    TK::KwLet, TK::Ident, TK::Equal, TK::Int, TK::Semicolon,
+    TK::KwConst, TK::Ident, TK::Equal, TK::Int, TK::Semicolon,
   };
   EXPECT_EQ(k, expected);
 }
