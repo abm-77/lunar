@@ -7,6 +7,7 @@
 #include <string>
 #include <unistd.h>
 
+#include <common/error.h>
 #include <common/interner.h>
 #include <compiler/frontend/lexer.h>
 #include <compiler/frontend/parser.h>
@@ -48,14 +49,14 @@ inline DriverResult Driver::run(const std::string &src_path,
   KeywordTable kws;
   kws.init(interner);
   auto lex_result = lex_source(src, interner, kws);
-  if (lex_result.err)
-    return {false, std::string("lex error: ") + lex_result.err->msg};
+  if (!lex_result)
+    return {false, format_error(lex_result.error(), src, src_path)};
 
   // parse
-  Parser parser(lex_result.tokens);
+  Parser parser(*lex_result);
   parser.parse_module();
   if (parser.error())
-    return {false, std::string("parse error: ") + parser.error()->msg};
+    return {false, format_error(*parser.error(), src, src_path)};
 
   // TODO: type check
 

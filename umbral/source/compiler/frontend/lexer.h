@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include <common/error.h>
 #include <common/interner.h>
 #include <common/types.h>
 
@@ -51,6 +52,7 @@ enum class TokenKind : u16 {
   Arrow,
   Colon,
   ColonColon,
+  ColonEqual,
   Ampersand,
   Eof,
   Count
@@ -108,22 +110,12 @@ struct TokenStream {
   size_t size() const { return kind.size(); }
 };
 
-struct LexError {
-  Span span{};
-  const char *msg;
-};
-
-struct LexResult {
-  TokenStream tokens;
-  std::optional<LexError> err;
-};
-
 class Lexer {
 public:
   Lexer(std::string_view src, Interner &interner, const KeywordTable &kws)
       : src(src), interner(interner), kws(kws) {}
 
-  LexResult lex_all() {
+  Result<TokenStream> lex_all() {
     TokenStream out;
     out.kind.reserve(src.size() / 4);
     out.start.reserve(out.kind.capacity());
@@ -136,7 +128,7 @@ public:
 
       if (eof()) {
         out.push(TokenKind::Eof, {start, start});
-        return {std::move(out), std::nullopt};
+        return std::move(out);
       }
 
       char c = peek();
@@ -149,14 +141,14 @@ public:
 
       if (is_digit(c)) {
         auto [kind, sp, value, err] = lex_number();
-        if (err) return {std::move(out), LexError{sp, err}};
+        if (err) return std::unexpected(Error{sp, err});
         out.push(kind, sp, value);
         continue;
       }
 
       if (c == '"') {
         auto [ok, sp] = lex_string();
-        if (!ok) return {std::move(out), LexError{sp, "unterminated string"}};
+        if (!ok) return std::unexpected(Error{sp, "unterminated string"});
         out.push(TokenKind::String, sp);
         continue;
       }
@@ -164,7 +156,7 @@ public:
       auto op = lex_op_or_punct();
       if (!op.has_value()) {
         Span sp{start, static_cast<u32>(pos + 1)};
-        return {std::move(out), LexError{sp, "unexpected character"}};
+        return std::unexpected(Error{sp, "unexpected character"});
       }
       out.push(op->first, op->second);
     }
@@ -224,8 +216,14 @@ private:
     return {TokenKind::Ident, sym, {start, end}};
   }
 
-  // value = parsed integer value (0 for floats); err = non-null on malformed input
-  struct NumResult { TokenKind kind; Span span; u32 value = 0; const char *err = nullptr; };
+  // value = parsed integer value (0 for floats); err = non-null on malformed
+  // input
+  struct NumResult {
+    TokenKind kind;
+    Span span;
+    u32 value = 0;
+    const char *err = nullptr;
+  };
 
   NumResult lex_number() {
     u32 start = pos;
@@ -233,9 +231,12 @@ private:
 
     // Hex: 0x / 0X
     if (peek() == '0' && (peek_next() == 'x' || peek_next() == 'X')) {
-      advance(); advance();
+      advance();
+      advance();
       if (eof() || !is_hex_digit(peek()))
-        return {TokenKind::Int, {start, static_cast<u32>(pos)}, 0,
+        return {TokenKind::Int,
+                {start, static_cast<u32>(pos)},
+                0,
                 "expected hex digit after '0x'"};
       while (!eof() && is_hex_digit(peek())) {
         char c = peek();
@@ -249,9 +250,12 @@ private:
 
     // Binary: 0b / 0B
     if (peek() == '0' && (peek_next() == 'b' || peek_next() == 'B')) {
-      advance(); advance();
+      advance();
+      advance();
       if (eof() || (peek() != '0' && peek() != '1'))
-        return {TokenKind::Int, {start, static_cast<u32>(pos)}, 0,
+        return {TokenKind::Int,
+                {start, static_cast<u32>(pos)},
+                0,
                 "expected binary digit after '0b'"};
       while (!eof() && (peek() == '0' || peek() == '1')) {
         value = value * 2 + static_cast<u32>(peek() - '0');
@@ -275,7 +279,9 @@ private:
         advance();
         if (!eof() && (peek() == '+' || peek() == '-')) advance();
         if (eof() || !is_digit(peek()))
-          return {TokenKind::Float, {start, static_cast<u32>(pos)}, 0,
+          return {TokenKind::Float,
+                  {start, static_cast<u32>(pos)},
+                  0,
                   "expected digit in float exponent"};
         while (!eof() && is_digit(peek())) advance();
       }
@@ -345,15 +351,17 @@ private:
       return (n == '=') ? two(TokenKind::GreaterEqual)
                         : one(TokenKind::Greater);
     case ':':
-      return (n == ':') ? two(TokenKind::ColonColon) : one(TokenKind::Colon);
+      if (n == ':') return two(TokenKind::ColonColon);
+      if (n == '=') return two(TokenKind::ColonEqual);
+      return one(TokenKind::Colon);
     case '&': return one(TokenKind::Ampersand);
     default: return std::nullopt;
     }
   }
 };
 
-LexResult lex_source(std::string_view src, Interner &interner,
-                     const KeywordTable &kws) {
+Result<TokenStream> lex_source(std::string_view src, Interner &interner,
+                               const KeywordTable &kws) {
   Lexer lexer(src, interner, kws);
   return lexer.lex_all();
 }

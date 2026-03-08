@@ -3,21 +3,17 @@
 #include <optional>
 #include <vector>
 
+#include <common/error.h>
 #include <common/interner.h>
 #include <common/types.h>
 #include <compiler/frontend/ast.h>
 #include <compiler/frontend/lexer.h>
 #include <compiler/frontend/module.h>
 
-struct ParserError {
-  Span span{};
-  const char *msg;
-};
-
 class Parser {
 public:
   Parser(const TokenStream &ts) : t(ts) {}
-  std::optional<ParserError> error() const { return err; }
+  std::optional<Error> error() const { return err; }
 
   BodyIR body_ir;
   TypeAst type_ast;
@@ -30,7 +26,7 @@ public:
 private:
   const TokenStream &t;
   u32 i = 0;
-  std::optional<ParserError> err;
+  std::optional<Error> err;
 
   // token helpers
   TokenKind k(u32 look = 0) const { return t.kind[i + look]; }
@@ -48,7 +44,7 @@ private:
     if (!match(kk)) set_error(sp(), msg);
   }
   void set_error(Span s, const char *msg) {
-    if (!err) err = ParserError{s, msg};
+    if (!err) err = Error{s, msg};
   }
 
   // util
@@ -141,6 +137,12 @@ private:
       return type_ast.make(TypeKind::Array, endsp, count, elem);
     }
 
+    // 'type' keyword used as a metatype annotation (e.g. const Foo: type = ...)
+    if (match(TokenKind::KwType)) {
+      SymId name = static_cast<SymId>(t.payload[i - 1]);
+      return type_ast.make(TypeKind::Named, start, name);
+    }
+
     // named type: Ident ( :: Ident)*
     SymId name = expect_ident("expected type name");
     while (match(TokenKind::ColonColon))
@@ -197,52 +199,153 @@ private:
   NodeId parse_primary() {
     auto s = sp();
 
-    // fn ( <params> ) -> <ret> <block>
+    // fn ( <params> ) -> <ret> <block>   — FnLit (named params + body)
+    // fn ( <types> ) -> <ret>            — FnType (anonymous type expression)
     if (match(TokenKind::KwFn)) {
       expect(TokenKind::LParen, "expected '('");
-      u32 params_start = static_cast<u32>(mod.params.size());
-      if (!match(TokenKind::RParen)) {
-        do {
-          auto ps = sp();
-          SymId pname = expect_ident("expected parameter name");
-          expect(TokenKind::Colon, "expected ':' after parameter name");
-          TypeId ptype = parse_type();
-          mod.params.push_back({pname, ptype, {ps.start, t.end[i - 1]}});
-        } while (match(TokenKind::Comma));
-        expect(TokenKind::RParen, "expected ')'");
+
+      // Heuristic: ident followed by ':' means named params → FnLit
+      // Also fires for &self / &mut self receiver (first param only)
+      bool is_fn_lit =
+          (at(TokenKind::Ident) && k(1) == TokenKind::Colon) ||
+          (at(TokenKind::Ampersand) && k(1) == TokenKind::KwSelf_) ||
+          (at(TokenKind::Ampersand) && k(1) == TokenKind::KwMut &&
+           k(2) == TokenKind::KwSelf_);
+
+      if (is_fn_lit) {
+        u32 params_start = static_cast<u32>(mod.params.size());
+        if (!match(TokenKind::RParen)) {
+          bool first_param = true;
+          do {
+            auto ps = sp();
+            if (first_param && at(TokenKind::Ampersand)) {
+              // &self or &mut self — ref-style receiver, first param only
+              ++i; // consume &
+              bool is_self_mut = match(TokenKind::KwMut);
+              if (!match(TokenKind::KwSelf_)) {
+                set_error(sp(), "expected 'self' after '&'");
+                break;
+              }
+              SymId pname = static_cast<SymId>(t.payload[i - 1]);
+              Span name_sp = {t.start[i - 1], t.end[i - 1]};
+              TypeId inner = type_ast.make(TypeKind::Named, name_sp, pname);
+              Span ref_sp  = {ps.start, t.end[i - 1]};
+              TypeId ptype = type_ast.make(TypeKind::Ref, ref_sp,
+                                           is_self_mut ? 1u : 0u, inner);
+              mod.params.push_back({pname, ptype, {ps.start, t.end[i - 1]}});
+            } else {
+              SymId pname = expect_ident("expected parameter name");
+              expect(TokenKind::Colon, "expected ':' after parameter name");
+              TypeId ptype = parse_type();
+              mod.params.push_back({pname, ptype, {ps.start, t.end[i - 1]}});
+            }
+            first_param = false;
+          } while (match(TokenKind::Comma));
+          expect(TokenKind::RParen, "expected ')'");
+        }
+        u32 params_count = static_cast<u32>(mod.params.size()) - params_start;
+        expect(TokenKind::Arrow, "expected '->'");
+        TypeId ret = parse_type();
+        NodeId body = parse_block();
+        u32 idx = static_cast<u32>(body_ir.fn_lits.size());
+        body_ir.fn_lits.push_back({params_start, params_count, ret, body});
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::FnLit, endsp, idx);
+      } else {
+        // Collect type params (may be empty)
+        std::vector<TypeId> param_types;
+        if (!match(TokenKind::RParen)) {
+          do {
+            param_types.push_back(parse_type());
+          } while (match(TokenKind::Comma));
+          expect(TokenKind::RParen, "expected ')'");
+        }
+        expect(TokenKind::Arrow, "expected '->'");
+        TypeId ret = parse_type();
+
+        // If followed by a block, it's a FnLit with no named params
+        if (at(TokenKind::LBrace)) {
+          NodeId body = parse_block();
+          u32 idx = static_cast<u32>(body_ir.fn_lits.size());
+          body_ir.fn_lits.push_back({0, 0, ret, body});
+          Span endsp = {s.start, t.end[i - 1]};
+          return body_ir.nodes.make(NodeKind::FnLit, endsp, idx);
+        }
+
+        // No body: FnType expression node
+        auto [ls, cnt] = body_ir.nodes.push_list(param_types.data(),
+                                                  param_types.size());
+        Span endsp = {s.start, type_ast.span_e[ret]};
+        return body_ir.nodes.make(NodeKind::FnType, endsp, ret, ls, cnt);
       }
-      u32 params_count = static_cast<u32>(mod.params.size()) - params_start;
-      expect(TokenKind::Arrow, "expected '->'");
-      TypeId ret = parse_type();
-      NodeId body = parse_block();
-      u32 idx = static_cast<u32>(body_ir.lambdas.size());
-      body_ir.lambdas.push_back({params_start, params_count, ret, body});
-      Span endsp = {s.start, t.end[i - 1]};
-      return body_ir.nodes.make(NodeKind::Lambda, endsp, idx);
     }
 
-    // struct { field: Type = expr, ... }
+    // struct { ... } — StructExpr (field: Type = expr) or StructType (field: Type)
     if (match(TokenKind::KwStruct)) {
       expect(TokenKind::LBrace, "expected '{'");
-      std::vector<u32> packed; // triples: [SymId, TypeId, NodeId]
-      if (!match(TokenKind::RBrace)) {
-        do {
-          SymId fname = expect_ident("expected field name");
-          expect(TokenKind::Colon, "expected ':'");
-          TypeId ftype = parse_type();
-          expect(TokenKind::Equal, "expected '='");
-          NodeId fval = parse_expr();
-          packed.push_back(fname);
-          packed.push_back(ftype);
-          packed.push_back(fval);
-        } while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace));
-        expect(TokenKind::RBrace, "expected '}'");
+
+      // Empty struct: always a StructType
+      if (match(TokenKind::RBrace)) {
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::StructType, endsp, 0, 0, 0);
       }
-      u32 field_count = static_cast<u32>(packed.size()) / 3;
-      auto [ls, _] = body_ir.nodes.push_list(packed.data(), packed.size());
+
+      // Parse first field to decide which kind
+      SymId fname = expect_ident("expected field name");
+      expect(TokenKind::Colon, "expected ':'");
+      TypeId ftype = parse_type();
+
+      if (match(TokenKind::Equal)) {
+        // StructExpr: fields have initializers — triples [SymId, TypeId, NodeId]
+        NodeId fval = parse_expr();
+        std::vector<u32> packed = {fname, ftype, fval};
+        while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace)) {
+          SymId fn2 = expect_ident("expected field name");
+          expect(TokenKind::Colon, "expected ':'");
+          TypeId ft2 = parse_type();
+          expect(TokenKind::Equal, "expected '='");
+          NodeId fv2 = parse_expr();
+          packed.push_back(fn2);
+          packed.push_back(ft2);
+          packed.push_back(fv2);
+        }
+        expect(TokenKind::RBrace, "expected '}'");
+        u32 field_count = static_cast<u32>(packed.size()) / 3;
+        auto [ls, _] = body_ir.nodes.push_list(packed.data(), packed.size());
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::StructExpr, endsp, 0, ls,
+                                  field_count);
+      } else {
+        // StructType: fields are type-only — pairs [SymId, TypeId]
+        std::vector<u32> packed = {fname, ftype};
+        while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace)) {
+          SymId fn2 = expect_ident("expected field name");
+          expect(TokenKind::Colon, "expected ':'");
+          TypeId ft2 = parse_type();
+          packed.push_back(fn2);
+          packed.push_back(ft2);
+        }
+        expect(TokenKind::RBrace, "expected '}'");
+        u32 field_count = static_cast<u32>(packed.size()) / 2;
+        auto [ls, _] = body_ir.nodes.push_list(packed.data(), packed.size());
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::StructType, endsp, 0, ls,
+                                  field_count);
+      }
+    }
+
+    // enum { Variant, ... }
+    if (match(TokenKind::KwEnum)) {
+      expect(TokenKind::LBrace, "expected '{'");
+      std::vector<u32> variants;
+      while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
+        variants.push_back(expect_ident("expected variant name"));
+        if (!match(TokenKind::Comma)) break;
+      }
+      expect(TokenKind::RBrace, "expected '}'");
+      auto [ls, cnt] = body_ir.nodes.push_list(variants.data(), variants.size());
       Span endsp = {s.start, t.end[i - 1]};
-      return body_ir.nodes.make(NodeKind::StructExpr, endsp, 0, ls,
-                                field_count);
+      return body_ir.nodes.make(NodeKind::EnumType, endsp, 0, ls, cnt);
     }
 
     if (match(TokenKind::Int)) return body_ir.nodes.make(NodeKind::IntLit, s);
@@ -252,9 +355,22 @@ private:
       return body_ir.nodes.make(NodeKind::BoolLit, s, 1);
     if (match(TokenKind::KwFalse_))
       return body_ir.nodes.make(NodeKind::BoolLit, s, 0);
+    if (match(TokenKind::KwSelf_))
+      return body_ir.nodes.make(NodeKind::Ident, s,
+                                static_cast<u32>(t.payload[i - 1]));
 
     if (match(TokenKind::Ident)) {
       SymId sym = static_cast<SymId>(t.payload[i - 1]);
+
+      // path expression: Ident (:: Ident)+  e.g. Color::Red
+      if (at(TokenKind::ColonColon)) {
+        std::vector<u32> segs = {sym};
+        while (match(TokenKind::ColonColon))
+          segs.push_back(expect_ident("expected path segment"));
+        auto [ls, cnt] = body_ir.nodes.push_list(segs.data(), segs.size());
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::Path, endsp, 0, ls, cnt);
+      }
 
       // struct literal: TypeName { field: expr, ...}
       if (match(TokenKind::LBrace)) {
@@ -452,25 +568,33 @@ private:
   NodeId parse_stmt() {
     auto s = sp();
 
-    // let <name> [: <type>] [= <expr>] ;
+    // const <name> [:= <expr> | [: <type>] [= <expr>]] ;
     if (match(TokenKind::KwConst)) {
       SymId name = expect_ident("expected variable name");
       TypeId ty = 0;
-      if (match(TokenKind::Colon)) ty = parse_type();
       NodeId init = 0;
-      if (match(TokenKind::Equal)) init = parse_expr();
+      if (match(TokenKind::ColonEqual)) {
+        init = parse_expr();
+      } else {
+        if (match(TokenKind::Colon)) ty = parse_type();
+        if (match(TokenKind::Equal)) init = parse_expr();
+      }
       expect(TokenKind::Semicolon, "expected ';'");
       Span endsp = {s.start, t.end[i - 1]};
       return body_ir.nodes.make(NodeKind::LetStmt, endsp, name, ty, init);
     }
 
-    // var <name> [: <type>] [= <expr>] ;
+    // var <name> [:= <expr> | [: <type>] [= <expr>]] ;
     if (match(TokenKind::KwVar)) {
       SymId name = expect_ident("expected variable name");
       TypeId ty = 0;
-      if (match(TokenKind::Colon)) ty = parse_type();
       NodeId init = 0;
-      if (match(TokenKind::Equal)) init = parse_expr();
+      if (match(TokenKind::ColonEqual)) {
+        init = parse_expr();
+      } else {
+        if (match(TokenKind::Colon)) ty = parse_type();
+        if (match(TokenKind::Equal)) init = parse_expr();
+      }
       expect(TokenKind::Semicolon, "expected ';'");
       Span endsp = {s.start, t.end[i - 1]};
       return body_ir.nodes.make(NodeKind::VarStmt, endsp, name, ty, init);
@@ -575,33 +699,6 @@ private:
     return body_ir.nodes.make(NodeKind::Block, endsp, 0, ls, cnt);
   }
 
-  FuncDecl parse_function_decl(bool is_method, bool is_pub) {
-    auto s = sp();
-    expect(TokenKind::KwFn, "expected 'fn'");
-    SymId name = expect_ident("expected function name");
-
-    expect(TokenKind::LParen, "expected '('");
-    u32 params_start = static_cast<u32>(mod.params.size());
-    if (!match(TokenKind::RParen)) {
-      do {
-        auto ps = sp();
-        SymId pname = expect_ident("expected parameter name");
-        expect(TokenKind::Colon, "expected ':' after parameter name");
-        TypeId ptype = parse_type();
-        Span pspan = {ps.start, t.end[i - 1]};
-        mod.params.push_back({pname, ptype, pspan});
-      } while (match(TokenKind::Comma));
-      expect(TokenKind::RParen, "expected ')'");
-    }
-    u32 params_count = static_cast<u32>(mod.params.size()) - params_start;
-
-    expect(TokenKind::Arrow, "expected '->'");
-    TypeId ret = parse_type();
-    NodeId body = parse_block();
-    Span endsp = {s.start, t.end[i - 1]};
-    return {name, params_start, params_count, ret, body, is_pub, endsp};
-  }
-
   void parse_module_item() {
     auto s = sp();
 
@@ -609,6 +706,41 @@ private:
     if (match(TokenKind::KwModule)) {
       parse_module_path();
       expect(TokenKind::Semicolon, "expected ';'");
+      return;
+    }
+
+    // impl <TypeName> { [const/var decls]* } [;]
+    if (match(TokenKind::KwImpl)) {
+      SymId type_name = expect_ident("expected type name after 'impl'");
+      expect(TokenKind::LBrace, "expected '{'");
+      ImplDecl impl_block;
+      impl_block.type_name = type_name;
+      while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
+        auto ms = sp();
+        DeclKind mkind;
+        if      (match(TokenKind::KwConst)) mkind = DeclKind::Const;
+        else if (match(TokenKind::KwVar))   mkind = DeclKind::Var;
+        else {
+          set_error(sp(), "expected method declaration in impl block");
+          ++i;
+          continue;
+        }
+        SymId mname = expect_ident("expected method name");
+        TypeId mty = 0; NodeId minit = 0;
+        if (match(TokenKind::ColonEqual)) {
+          minit = parse_expr();
+        } else {
+          if (match(TokenKind::Colon)) mty = parse_type();
+          if (match(TokenKind::Equal)) minit = parse_expr();
+        }
+        match(TokenKind::Semicolon); // optional
+        Span mend = {ms.start, t.end[i - 1]};
+        impl_block.methods.push_back({mname, mty, minit, false, mkind, mend});
+      }
+      expect(TokenKind::RBrace, "expected '}'");
+      match(TokenKind::Semicolon); // optional trailing ';'
+      impl_block.span = {s.start, t.end[i - 1]};
+      mod.impls.push_back(std::move(impl_block));
       return;
     }
 
@@ -626,56 +758,27 @@ private:
       return;
     }
 
-    // [pub] type <name> = struct { <field>: <type>, ... }
-    if (match(TokenKind::KwType)) {
-      SymId name = expect_ident("expected type name");
-      expect(TokenKind::Equal, "expected '='");
-      expect(TokenKind::KwStruct, "expected 'struct'");
-      expect(TokenKind::LBrace, "expected '{'");
-      u32 fields_start = static_cast<u32>(mod.fields.size());
-      while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
-        auto fs = sp();
-        SymId fname = expect_ident("expected field name");
-        expect(TokenKind::Colon, "expected ':'");
-        TypeId ftype = parse_type();
-        Span fspan = {fs.start, t.end[i - 1]};
-        mod.fields.push_back({fname, ftype, fspan});
-        if (!match(TokenKind::Comma)) break;
-      }
-      expect(TokenKind::RBrace, "expected '}'");
-      u32 fields_count = static_cast<u32>(mod.fields.size()) - fields_start;
-      Span endsp = {s.start, t.end[i - 1]};
-      mod.structs.push_back({name, fields_start, fields_count, is_pub, endsp});
+    // [pub] const/var <name> [:= <expr> | [: <type>] [= <expr>]] [;]
+    DeclKind kind;
+    if (match(TokenKind::KwConst))     kind = DeclKind::Const;
+    else if (match(TokenKind::KwVar))  kind = DeclKind::Var;
+    else {
+      set_error(sp(), "expected module item (import/const/var)");
+      ++i; // recover
       return;
     }
 
-    // [pub] fn <name> (...) <ret> <block>
-    if (at(TokenKind::KwFn)) {
-      mod.funcs.push_back(parse_function_decl(false, is_pub));
-      return;
+    SymId name = expect_ident("expected name");
+    TypeId ty = 0;
+    NodeId init = 0;
+    if (match(TokenKind::ColonEqual)) {
+      init = parse_expr();
+    } else {
+      if (match(TokenKind::Colon)) ty = parse_type();
+      if (match(TokenKind::Equal)) init = parse_expr();
     }
-
-    // [pub] impl <TypeName> { [pub] fn ... }
-    if (match(TokenKind::KwImpl)) {
-      SymId type_name = expect_ident("expected type name");
-      expect(TokenKind::LBrace, "expected '{'");
-      u32 methods_start = static_cast<u32>(mod.funcs.size());
-      while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
-        bool method_pub = match(TokenKind::KwPub);
-        if (!at(TokenKind::KwFn)) {
-          set_error(sp(), "expected 'fn' in impl block");
-          break;
-        }
-        mod.funcs.push_back(parse_function_decl(true, method_pub));
-      }
-      expect(TokenKind::RBrace, "expected '}'");
-      u32 methods_count = static_cast<u32>(mod.funcs.size()) - methods_start;
-      Span endsp = {s.start, t.end[i - 1]};
-      mod.impls.push_back({type_name, methods_start, methods_count, is_pub, endsp});
-      return;
-    }
-
-    set_error(sp(), "expected module item (import/type/fn/impl)");
-    ++i; // recover
+    match(TokenKind::Semicolon); // optional at module level
+    Span endsp = {s.start, t.end[i - 1]};
+    mod.decls.push_back({name, ty, init, is_pub, kind, endsp});
   }
 };

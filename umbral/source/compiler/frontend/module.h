@@ -12,50 +12,33 @@ struct ImportDecl {
   Span span{};
 };
 
-struct FieldDecl {
-  SymId name{};
-  TypeId type{};
-  Span span{};
-};
-
-struct StructDecl {
-  SymId name{};
-  u32 fields_start = 0;
-  u32 fields_count = 0;
-  bool is_pub = false;
-  Span span{};
-};
-
 struct FuncParam {
   SymId name{};
   TypeId type{};
   Span span{};
 };
 
-struct FuncDecl {
+enum class DeclKind : u8 { Const, Var };
+
+struct Decl {
   SymId name{};
-  u32 params_start = 0;
-  u32 params_count = 0;
-  TypeId ret_type = 0;
-  NodeId body = 0; // block node in ExprAst
+  TypeId type = 0;   // 0 = inferred (:= form)
+  NodeId init = 0;   // 0 = no initializer
   bool is_pub = false;
+  DeclKind kind{};
   Span span{};
 };
 
 struct ImplDecl {
   SymId type_name{};
-  u32 methods_start = 0;
-  u32 methods_count = 0;
-  bool is_pub = false;
+  std::vector<Decl> methods;
   Span span{};
 };
 
 struct Module {
-  std::vector<u32> sym_list; // for module paths etc. stores SymId
-  std::vector<FieldDecl> fields;
-  std::vector<FuncParam> params;
+  std::vector<u32>        sym_list; // for module paths etc. stores SymId
+  std::vector<FuncParam>  params;
   std::vector<ImportDecl> imports;
-  std::vector<StructDecl> structs;
-  std::vector<FuncDecl> funcs;
-  std::vector<ImplDecl> impls;
+  std::vector<Decl>       decls;
+  std::vector<ImplDecl>   impls;
 };

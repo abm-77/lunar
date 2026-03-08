@@ -53,18 +53,17 @@ ninja -C build/_b_umbral check-lit
 
 ## Umbral Language Grammar
 
-Comments use `#`. All statements are semicolon-terminated except blocks.
+Comments use `#`. All module-level items end with an optional `;`. Statements inside function bodies require `;` except blocks.
+
+All declarations (functions, types, globals) are unified `const`/`var` bindings.
+Function literals and struct types are first-class expressions.
 
 ### Module items
 
 ```
 module_item := 'module' path ';'
              | ['pub'] 'import' path ['as' ident] ';'
-             | ['pub'] 'type' ident '=' 'struct' '{' (ident ':' type ','?)* '}'
-             | ['pub'] fn_decl
-             | ['pub'] 'impl' ident '{' (['pub'] fn_decl)* '}'
-
-fn_decl := 'fn' ident '(' (ident ':' type (',' ident ':' type)*)? ')' '->' type block
+             | ['pub'] ('const' | 'var') ident (':=' expr | [':' type] ['=' expr]) [';']
 
 path := ident ('.' ident)*
 ```
@@ -77,30 +76,28 @@ module myapp;
 import std.io;
 import std.math as math;
 
-# named struct type
-type Point = struct {
+# named struct type — const binding holding a StructType expression
+const Point := struct {
     x: i32,
     y: i32,
 }
 
-# function
-fn add(a: i32, b: i32) -> i32 {
+# function — const binding holding a FnLit expression
+const add := fn(a: i32, b: i32) -> i32 {
     return a + b;
 }
 
 # public function
-pub fn greet() -> void {}
+pub const greet := fn() -> void {}
 
-# impl block — methods on a type
-impl Point {
-    fn length(self: &Point) -> i32 {
-        return self.x + self.y;
-    }
+# function type alias — FnType expression (bare param types, no body)
+const BinaryOp := fn(i32, i32) -> i32;
 
-    pub fn origin() -> Point {
-        return Point { x: 0, y: 0 };
-    }
-}
+# var with explicit type and no initializer
+var counter: i32;
+
+# const with explicit type and initializer
+const max_size: i32 = 1024;
 ```
 
 ### Types
@@ -113,18 +110,18 @@ type := '&' ['mut'] type               # reference
 ```
 
 ```
-let a: i32;                    # named type
-let b: &i32;                   # immutable reference
-let c: &mut i32;               # mutable reference
-let d: (i32, i32);             # tuple type
-let e: fn(i32, i32) -> i32;    # function type
+const a: i32;                    # named type
+const b: &i32;                   # immutable reference
+const c: &mut i32;               # mutable reference
+const d: (i32, i32);             # tuple type
+const e: fn(i32, i32) -> i32;    # function type
 ```
 
 ### Statements
 
 ```
-stmt := 'let' ident [':' type] ['=' expr] ';'
-      | 'var' ident [':' type] ['=' expr] ';'
+stmt := 'const' ident (':=' expr | [':' type] ['=' expr]) ';'
+      | 'var'   ident (':=' expr | [':' type] ['=' expr]) ';'
       | 'return' [expr] ';'
       | 'if' '(' expr ')' block ('else' ('if' '(' expr ')' block | block))*
       | 'for' '(' [for_part] ';' [expr] ';' [for_part] ')' block
@@ -136,13 +133,13 @@ assign_op  := '=' | '+=' | '-=' | '*=' | '/='
 ```
 
 ```
-# immutable binding — no reassignment
-let x = 10;
-let y: i32 = 20;
-let z: i32;          # no initializer
+# immutable binding — inferred type with :=
+const x := 10;
+const y: i32 = 20;   # explicit type
+const z: i32;        # explicit type, no initializer
 
 # mutable binding
-var counter = 0;
+var counter := 0;
 var name: i32;
 
 # assignment and compound assignment
@@ -172,7 +169,7 @@ for (;;) {}                           # infinite loop
 
 # bare block
 {
-    let tmp = x + y;
+    const tmp := x + y;
 }
 
 # expression statement
@@ -199,53 +196,64 @@ postfix := primary ('.' ident | '[' expr ']' | '(' args ')')*
 primary := int_lit
          | string_lit
          | 'true' | 'false'
-         | '(' ')'                                    # unit tuple
-         | '(' expr ',' expr (',' expr)* ')'          # tuple literal
-         | '(' expr ')'                               # grouped expr
-         | ident '{' (ident ':' expr ','?)* '}'       # struct initializer
-         | ident                                      # identifier
-         | 'struct' '{' (ident ':' type '=' expr ','?)* '}'  # struct expr
-         | 'fn' '(' params ')' '->' type block        # lambda
+         | '(' ')'                                           # unit tuple
+         | '(' expr ',' expr (',' expr)* ')'                # tuple literal
+         | '(' expr ')'                                      # grouped expr
+         | ident '{' (ident ':' expr ','?)* '}'              # struct initializer
+         | ident                                             # identifier
+         | 'struct' '{' (ident ':' type ','?)* '}'           # StructType expression
+         | 'struct' '{' (ident ':' type '=' expr ','?)* '}'  # StructExpr (has =)
+         | 'fn' '(' (ident ':' type ','?)* ')' '->' type block  # FnLit (named params)
+         | 'fn' '(' (type ','?)* ')' '->' type               # FnType (bare types, no body)
 ```
+
+Disambiguation: after `fn(`, if the first param has the form `ident :` it's a FnLit (has a body block). Otherwise it's a FnType (no body). For `struct {`, if the first field has `=` after its type it's a StructExpr; otherwise a StructType. An empty `struct {}` is always a StructType.
 
 ```
 # literals
-let n = 42;
-let s = "hello";
-let b = true;
+const n := 42;
+const s := "hello";
+const b := true;
 
 # arithmetic and comparison
-let sum = a + b * 2;       # precedence: * before +
-let ok = x >= 0 == true;
+const sum := a + b * 2;       # precedence: * before +
+const ok := x >= 0 == true;
 
 # unary
-let neg = -x;
-let inv = !flag;
+const neg := -x;
+const inv := !flag;
 
 # dereference and address-of
-let val = *ptr;
-let r = &x;
-let rm = &mut x;
+const val := *ptr;
+const r := &x;
+const rm := &mut x;
 
 # field access, indexing, call
-let len = point.x;
-let elem = arr[i];
-let result = add(1, 2);
-let chained = obj.method()(0).field;
+const len := point.x;
+const elem := arr[i];
+const result := add(1, 2);
+const chained := obj.method()(0).field;
 
 # unit and tuple literals
-let unit = ();
-let pair = (1, 2);
-let triple = (a, b, c);
+const unit := ();
+const pair := (1, 2);
+const triple := (a, b, c);
 
 # struct initializer — construct a named type
-let p = Point { x: 10, y: 20 };
-let empty = Foo {};
+const p := Point { x: 10, y: 20 };
+const empty := Foo {};
 
-# struct expr — anonymous struct value with inline types
-let player = struct { x: i32 = 0, y: i32 = 0 };
+# StructType expression — struct type with field names and types (no values)
+const Point := struct { x: i32, y: i32 };
 
-# lambda — captures free variables from enclosing scope
-let adder = fn (a: i32) -> i32 { return a + offset; };
-let noop = fn () -> void {};
+# StructExpr — anonymous struct value with inline types and values
+const player := struct { x: i32 = 0, y: i32 = 0 };
+
+# FnLit — function with named params and a body block
+const adder := fn (a: i32) -> i32 { return a + offset; };
+const noop := fn () -> void {};
+
+# FnType — function type expression (no body, bare param types)
+const BinaryOp := fn(i32, i32) -> i32;
+var callback: fn(i32) -> void;
 ```

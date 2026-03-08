@@ -12,7 +12,7 @@ struct LexFixture : ::testing::Test {
 
   void SetUp() override { kws.init(interner); }
 
-  LexResult lex(std::string_view src) {
+  Result<TokenStream> lex(std::string_view src) {
     return lex_source(src, interner, kws);
   }
 
@@ -20,7 +20,7 @@ struct LexFixture : ::testing::Test {
   std::vector<TokenKind> kinds(std::string_view src) {
     auto r = lex(src);
     std::vector<TokenKind> out;
-    for (auto k : r.tokens.kind)
+    for (auto k : r->kind)
       if (k != TokenKind::Eof) out.push_back(k);
     return out;
   }
@@ -81,6 +81,7 @@ TEST(KeywordTable, AllKeywordsRecognised) {
     {"true",   TokenKind::KwTrue_},
     {"false",  TokenKind::KwFalse_},
     {"var",    TokenKind::KwVar},
+    {"self",   TokenKind::KwSelf_},
   };
   for (auto &c : cases) {
     SymId id = I.intern(c.text);
@@ -105,23 +106,23 @@ TEST(KeywordTable, NonKeywordReturnsNullopt) {
 
 TEST_F(LexFixture, EmptyInputProducesEof) {
   auto r = lex("");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_EQ(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.kind[0], TokenKind::Eof);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_EQ(r->size(), 1u);
+  EXPECT_EQ(r->kind[0], TokenKind::Eof);
 }
 
 TEST_F(LexFixture, WhitespaceOnlyProducesEof) {
   auto r = lex("   \t\n\r\n  ");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_EQ(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.kind[0], TokenKind::Eof);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_EQ(r->size(), 1u);
+  EXPECT_EQ(r->kind[0], TokenKind::Eof);
 }
 
 TEST_F(LexFixture, CommentOnlyProducesEof) {
   auto r = lex("# this is a comment\n");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_EQ(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.kind[0], TokenKind::Eof);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_EQ(r->size(), 1u);
+  EXPECT_EQ(r->kind[0], TokenKind::Eof);
 }
 
 TEST_F(LexFixture, CommentStripsToEndOfLine) {
@@ -172,6 +173,7 @@ TEST_F(LexFixture, TwoCharOperators) {
     {"+=", TK::PlusEqual},   {"-=", TK::MinusEqual},
     {"*=", TK::StarEqual},   {"/=", TK::SlashEqual},
     {"->", TK::Arrow},       {"::", TK::ColonColon},
+    {":=", TK::ColonEqual},
   };
   for (auto &c : cases) {
     auto k = kinds(c.src);
@@ -224,11 +226,11 @@ TEST_F(LexFixture, KeywordPrefixIsIdent) {
 
 TEST_F(LexFixture, IdentPayloadIsInternedSym) {
   auto r = lex("hello hello");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_GE(r.tokens.size(), 2u);
-  EXPECT_EQ(r.tokens.kind[0], TokenKind::Ident);
-  EXPECT_EQ(r.tokens.kind[1], TokenKind::Ident);
-  EXPECT_EQ(r.tokens.payload[0], r.tokens.payload[1]);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_GE(r->size(), 2u);
+  EXPECT_EQ(r->kind[0], TokenKind::Ident);
+  EXPECT_EQ(r->kind[1], TokenKind::Ident);
+  EXPECT_EQ(r->payload[0], r->payload[1]);
 }
 
 // ============================================================
@@ -241,11 +243,11 @@ TEST_F(LexFixture, IntegerLiteral) {
 
 TEST_F(LexFixture, IntegerSpan) {
   auto r = lex("  42  ");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_GE(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.kind[0],  TokenKind::Int);
-  EXPECT_EQ(r.tokens.start[0], 2u);
-  EXPECT_EQ(r.tokens.end[0],   4u);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_GE(r->size(), 1u);
+  EXPECT_EQ(r->kind[0],  TokenKind::Int);
+  EXPECT_EQ(r->start[0], 2u);
+  EXPECT_EQ(r->end[0],   4u);
 }
 
 TEST_F(LexFixture, MultipleIntegers) {
@@ -256,20 +258,20 @@ TEST_F(LexFixture, MultipleIntegers) {
 
 TEST_F(LexFixture, IntegerPayloadStoresValue) {
   auto r = lex("42");
-  ASSERT_FALSE(r.err.has_value());
-  EXPECT_EQ(r.tokens.payload[0], 42u);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->payload[0], 42u);
 }
 
 TEST_F(LexFixture, HexIntegerPayloadStoresValue) {
   auto r = lex("0xFF");
-  ASSERT_FALSE(r.err.has_value());
-  EXPECT_EQ(r.tokens.payload[0], 255u);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->payload[0], 255u);
 }
 
 TEST_F(LexFixture, BinaryIntegerPayloadStoresValue) {
   auto r = lex("0b1010");
-  ASSERT_FALSE(r.err.has_value());
-  EXPECT_EQ(r.tokens.payload[0], 10u);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->payload[0], 10u);
 }
 
 TEST_F(LexFixture, HexIntegerLiteral) {
@@ -281,15 +283,15 @@ TEST_F(LexFixture, HexIntegerLiteral) {
 
 TEST_F(LexFixture, HexIntegerSpan) {
   auto r = lex("0x1A");
-  ASSERT_FALSE(r.err.has_value());
-  EXPECT_EQ(r.tokens.start[0], 0u);
-  EXPECT_EQ(r.tokens.end[0],   4u);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->start[0], 0u);
+  EXPECT_EQ(r->end[0],   4u);
 }
 
 TEST_F(LexFixture, HexNoDigitsIsError) {
   auto r = lex("0x");
-  ASSERT_TRUE(r.err.has_value());
-  EXPECT_STREQ(r.err->msg, "expected hex digit after '0x'");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STREQ(r.error().msg, "expected hex digit after '0x'");
 }
 
 TEST_F(LexFixture, BinaryIntegerLiteral) {
@@ -300,15 +302,15 @@ TEST_F(LexFixture, BinaryIntegerLiteral) {
 
 TEST_F(LexFixture, BinaryIntegerSpan) {
   auto r = lex("0b101");
-  ASSERT_FALSE(r.err.has_value());
-  EXPECT_EQ(r.tokens.start[0], 0u);
-  EXPECT_EQ(r.tokens.end[0],   5u);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->start[0], 0u);
+  EXPECT_EQ(r->end[0],   5u);
 }
 
 TEST_F(LexFixture, BinaryNoDigitsIsError) {
   auto r = lex("0b");
-  ASSERT_TRUE(r.err.has_value());
-  EXPECT_STREQ(r.err->msg, "expected binary digit after '0b'");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STREQ(r.error().msg, "expected binary digit after '0b'");
 }
 
 TEST_F(LexFixture, BinaryStopsAtNonBinaryDigit) {
@@ -331,9 +333,9 @@ TEST_F(LexFixture, FloatLiteral) {
 
 TEST_F(LexFixture, FloatSpan) {
   auto r = lex("3.14");
-  ASSERT_FALSE(r.err.has_value());
-  EXPECT_EQ(r.tokens.start[0], 0u);
-  EXPECT_EQ(r.tokens.end[0],   4u);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_EQ(r->start[0], 0u);
+  EXPECT_EQ(r->end[0],   4u);
 }
 
 TEST_F(LexFixture, FloatWithExponent) {
@@ -345,8 +347,8 @@ TEST_F(LexFixture, FloatWithExponent) {
 
 TEST_F(LexFixture, FloatBadExponentIsError) {
   auto r = lex("1.5eX");
-  ASSERT_TRUE(r.err.has_value());
-  EXPECT_STREQ(r.err->msg, "expected digit in float exponent");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STREQ(r.error().msg, "expected digit in float exponent");
 }
 
 TEST_F(LexFixture, IntegerDotIsNotFloat) {
@@ -380,22 +382,22 @@ TEST_F(LexFixture, EmptyStringLiteral) {
 
 TEST_F(LexFixture, StringSpanIncludesQuotes) {
   auto r = lex(R"("hi")");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_GE(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.start[0], 0u);
-  EXPECT_EQ(r.tokens.end[0],   4u);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_GE(r->size(), 1u);
+  EXPECT_EQ(r->start[0], 0u);
+  EXPECT_EQ(r->end[0],   4u);
 }
 
 TEST_F(LexFixture, UnterminatedStringIsError) {
   auto r = lex(R"("unterminated)");
-  ASSERT_TRUE(r.err.has_value());
-  EXPECT_STREQ(r.err->msg, "unterminated string");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STREQ(r.error().msg, "unterminated string");
 }
 
 TEST_F(LexFixture, StringWithNewlineIsError) {
   auto r = lex("\"line1\nline2\"");
-  ASSERT_TRUE(r.err.has_value());
-  EXPECT_STREQ(r.err->msg, "unterminated string");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STREQ(r.error().msg, "unterminated string");
 }
 
 // ============================================================
@@ -404,15 +406,15 @@ TEST_F(LexFixture, StringWithNewlineIsError) {
 
 TEST_F(LexFixture, UnexpectedCharIsError) {
   auto r = lex("@");
-  ASSERT_TRUE(r.err.has_value());
-  EXPECT_STREQ(r.err->msg, "unexpected character");
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STREQ(r.error().msg, "unexpected character");
 }
 
 TEST_F(LexFixture, ValidTokensBeforeErrorAreEmitted) {
+  // With std::unexpected, we only get an error — no partial token stream.
   auto r = lex("fn @");
-  ASSERT_TRUE(r.err.has_value());
-  ASSERT_GE(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.kind[0], TokenKind::KwFn);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STREQ(r.error().msg, "unexpected character");
 }
 
 // ============================================================
@@ -421,18 +423,18 @@ TEST_F(LexFixture, ValidTokensBeforeErrorAreEmitted) {
 
 TEST_F(LexFixture, IdentifierSpan) {
   auto r = lex("  foo  ");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_GE(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.start[0], 2u);
-  EXPECT_EQ(r.tokens.end[0],   5u);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_GE(r->size(), 1u);
+  EXPECT_EQ(r->start[0], 2u);
+  EXPECT_EQ(r->end[0],   5u);
 }
 
 TEST_F(LexFixture, TwoCharOperatorSpan) {
   auto r = lex(" == ");
-  ASSERT_FALSE(r.err.has_value());
-  ASSERT_GE(r.tokens.size(), 1u);
-  EXPECT_EQ(r.tokens.start[0], 1u);
-  EXPECT_EQ(r.tokens.end[0],   3u);
+  ASSERT_TRUE(r.has_value());
+  ASSERT_GE(r->size(), 1u);
+  EXPECT_EQ(r->start[0], 1u);
+  EXPECT_EQ(r->end[0],   3u);
 }
 
 // ============================================================

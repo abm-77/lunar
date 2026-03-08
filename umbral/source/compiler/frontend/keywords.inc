@@ -16,4 +16,6 @@
   X(False_, "false")                                                          \
   X(Var, "var")                                                               \
   X(Where, "where")                                                               \
-  X(As, "as")
+  X(As, "as")                                                                 \
+  X(Enum, "enum")                                                             \
+  X(Self_, "self")

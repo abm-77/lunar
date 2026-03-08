@@ -53,9 +53,13 @@ enum class NodeKind : u16 {
   AssignStmt, // a = lhs place ExprId, b = rhs ExprId, c = op TokenKind (Equal/PlusEqual/...)
   ReturnStmt, // a = expr (or 0 if empty return)
   IfStmt,     // a = cond, b = then block, c = else block
-  ForStmt, // a = index into BodyIR::forrs
-  ExprStmt,  // a=expr
-  Lambda,    // a = index into BodyIR::lambdas
+  ForStmt,    // a = index into BodyIR::fors
+  ExprStmt,   // a = expr
+  FnLit,      // a = index into BodyIR::fn_lits
+  StructType, // b = fields_start, c = fields_count (pairs [SymId, TypeId] in list)
+  FnType,     // a = ret TypeId, b = params_start, c = params_count (TypeIds in list)
+  EnumType,   // b = variants_start, c = variants_count (SymIds in list)
+  Path,       // b = segments_start, c = segments_count (SymIds in list, e.g. Color::Red)
 };
 
 using TypeId = u32;
@@ -77,7 +81,7 @@ struct ForPayload {
   NodeId body = 0;
 };
 
-struct LambdaPayload {
+struct FnLitPayload {
   u32 params_start = 0;
   u32 params_count = 0;
   TypeId ret_type = 0;
@@ -95,6 +99,6 @@ struct ArrayLitPayload {
 struct BodyIR {
   ExprAst nodes;
   std::vector<ForPayload> fors;
-  std::vector<LambdaPayload> lambdas;
+  std::vector<FnLitPayload> fn_lits;
   std::vector<ArrayLitPayload> array_lits;
 };
