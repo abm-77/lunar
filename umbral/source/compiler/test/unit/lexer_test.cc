@@ -75,7 +75,6 @@ TEST(KeywordTable, AllKeywordsRecognised) {
     {"struct", TokenKind::KwStruct},
     {"type",   TokenKind::KwType},
     {"impl",   TokenKind::KwImpl},
-    {"module", TokenKind::KwModule},
     {"import", TokenKind::KwImport},
     {"pub",    TokenKind::KwPub},
     {"true",   TokenKind::KwTrue_},
@@ -474,11 +473,10 @@ TEST_F(LexFixture, StructDefinition) {
   EXPECT_EQ(k, expected);
 }
 
-TEST_F(LexFixture, ModuleAndImport) {
+TEST_F(LexFixture, Import) {
   using TK = TokenKind;
-  auto k = kinds("module main;\nimport std.io;");
+  auto k = kinds("import std.io;");
   std::vector<TK> expected = {
-    TK::KwModule, TK::Ident, TK::Semicolon,
     TK::KwImport, TK::Ident, TK::Dot, TK::Ident, TK::Semicolon,
   };
   EXPECT_EQ(k, expected);

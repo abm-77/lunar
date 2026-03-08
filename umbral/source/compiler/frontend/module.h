@@ -4,6 +4,12 @@
 #include <common/types.h>
 #include <compiler/frontend/ast.h>
 
+struct GenericParam {
+  SymId name;        // e.g., T
+  bool is_type;      // true = type param; false = const generic
+  TypeId const_kind; // if !is_type: the kind type (e.g., TypeId for i32)
+};
+
 struct ImportDecl {
   // module path as a list of SymId segments
   u32 path_list_start = 0;
@@ -22,8 +28,10 @@ enum class DeclKind : u8 { Const, Var };
 
 struct Decl {
   SymId name{};
-  TypeId type = 0;   // 0 = inferred (:= form)
-  NodeId init = 0;   // 0 = no initializer
+  TypeId type = 0; // 0 = inferred (:= form)
+  NodeId init = 0; // 0 = no initializer
+  u32 generics_start = 0;
+  u32 generics_count = 0;
   bool is_pub = false;
   DeclKind kind{};
   Span span{};
@@ -31,14 +39,16 @@ struct Decl {
 
 struct ImplDecl {
   SymId type_name{};
+  std::vector<SymId> generic_params; // param names from impl List<T, N>
   std::vector<Decl> methods;
   Span span{};
 };
 
 struct Module {
-  std::vector<u32>        sym_list; // for module paths etc. stores SymId
-  std::vector<FuncParam>  params;
+  std::vector<u32> sym_list; // for module paths etc. stores SymId
+  std::vector<FuncParam> params;
   std::vector<ImportDecl> imports;
-  std::vector<Decl>       decls;
-  std::vector<ImplDecl>   impls;
+  std::vector<Decl> decls;
+  std::vector<ImplDecl> impls;
+  std::vector<GenericParam> generic_params;
 };

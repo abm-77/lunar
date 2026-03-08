@@ -9,7 +9,6 @@
   X(Struct, "struct")                                                           \
   X(Type, "type")                                                              \
   X(Impl, "impl")                                                              \
-  X(Module, "module")                                                          \
   X(Import, "import")                                                          \
   X(Pub, "pub")                                                                \
   X(True_, "true")                                                             \

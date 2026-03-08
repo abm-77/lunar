@@ -10,6 +10,11 @@ template <class IdT, class KindT, class ListElemT = u32> struct NodeStore {
   std::vector<u32> a, b, c;
   std::vector<ListElemT> list; // L list pool
 
+  // Reserve index 0 as the invalid/null sentinel so that 0 can be used
+  // as "no node" / "no type" throughout without colliding with real nodes.
+  NodeStore() { kind.push_back(KindT{}); span_s.push_back(0); span_e.push_back(0);
+                a.push_back(0); b.push_back(0); c.push_back(0); }
+
   IdT make(KindT k, Span sp, u32 A = 0, u32 B = 0, u32 C = 0) {
     IdT id = static_cast<IdT>(kind.size());
     kind.push_back(k);

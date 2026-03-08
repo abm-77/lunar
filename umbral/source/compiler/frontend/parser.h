@@ -47,6 +47,26 @@ private:
     if (!err) err = Error{s, msg};
   }
 
+  // Parse a generic parameter list: < Name : type|Kind , ... >
+  // Called after consuming the opening '<'.
+  // Returns {start, count} into mod.generic_params.
+  std::pair<u32, u32> parse_generic_params() {
+    u32 start = static_cast<u32>(mod.generic_params.size());
+    do {
+      SymId pname = expect_ident("expected generic parameter name");
+      expect(TokenKind::Colon, "expected ':' in generic parameter");
+      if (match(TokenKind::KwType)) {
+        mod.generic_params.push_back({pname, true, 0});
+      } else {
+        TypeId kind = parse_type();
+        mod.generic_params.push_back({pname, false, kind});
+      }
+    } while (match(TokenKind::Comma));
+    expect(TokenKind::Greater, "expected '>' after generic parameters");
+    u32 count = static_cast<u32>(mod.generic_params.size()) - start;
+    return {start, count};
+  }
+
   // util
   SymId expect_ident(const char *msg) {
     if (!match(TokenKind::Ident)) {
@@ -120,16 +140,20 @@ private:
       Span endsp = {start.start, type_ast.span_e[ret]};
       return type_ast.make(TypeKind::Fn, endsp, ret, ls, cnt);
     }
-    // array type: '[' [count] ']' elem_type
+    // array type: '[' [count | ident] ']' elem_type
     if (match(TokenKind::LBracket)) {
       u32 count = static_cast<u32>(-1);
       if (!at(TokenKind::RBracket)) {
-        if (!at(TokenKind::Int)) {
-          set_error(sp(), "expected integer count in array type");
+        if (at(TokenKind::Int)) {
+          count = t.payload[i];
+          ++i;
+        } else if (at(TokenKind::Ident)) {
+          // const generic parameter (e.g., [N]T) — value unknown until instantiation
+          ++i;
+        } else {
+          set_error(sp(), "expected integer count or identifier in array type");
           return type_ast.make(TypeKind::Named, start, 0);
         }
-        count = t.payload[i];
-        ++i;
       }
       expect(TokenKind::RBracket, "expected ']'");
       TypeId elem = parse_type();
@@ -143,12 +167,22 @@ private:
       return type_ast.make(TypeKind::Named, start, name);
     }
 
-    // named type: Ident ( :: Ident)*
+    // named type: Ident [< TypeArg, ... >]
     SymId name = expect_ident("expected type name");
     while (match(TokenKind::ColonColon))
       name = expect_ident("expected type segment");
+    // optional generic type arguments: List<i32, 5>
+    u32 targs_start = 0, targs_count = 0;
+    if (match(TokenKind::Less)) {
+      std::vector<TypeId> args;
+      do { args.push_back(parse_type()); } while (match(TokenKind::Comma));
+      expect(TokenKind::Greater, "expected '>' after type arguments");
+      auto [ls, cnt] = type_ast.push_list(args.data(), args.size());
+      targs_start = ls;
+      targs_count = cnt;
+    }
     Span endsp = {start.start, t.end[i - 1]};
-    return type_ast.make(TypeKind::Named, endsp, name);
+    return type_ast.make(TypeKind::Named, endsp, name, targs_start, targs_count);
   }
 
   // expressions
@@ -626,22 +660,27 @@ private:
     if (match(TokenKind::KwFor)) {
       expect(TokenKind::LParen, "expected '(' after 'for'");
       NodeId init = 0;
-      if (!at(TokenKind::Semicolon)) {
-        auto ps = sp();
-        NodeId lhs = parse_expr();
-        if (is_assign(k())) {
-          TokenKind op = k();
-          match(op);
-          NodeId rhs = parse_expr();
-          Span endsp = {ps.start, body_ir.nodes.span_e[rhs]};
-          init = body_ir.nodes.make(NodeKind::AssignStmt, endsp, lhs, rhs,
-                                    static_cast<u32>(op));
-        } else {
-          init = body_ir.nodes.make(NodeKind::ExprStmt,
-                                    {ps.start, body_ir.nodes.span_e[lhs]}, lhs);
+      if (at(TokenKind::KwVar) || at(TokenKind::KwConst)) {
+        // var/const declaration as for-init; parse_stmt also consumes the ';'
+        init = parse_stmt();
+      } else {
+        if (!at(TokenKind::Semicolon)) {
+          auto ps = sp();
+          NodeId lhs = parse_expr();
+          if (is_assign(k())) {
+            TokenKind op = k();
+            match(op);
+            NodeId rhs = parse_expr();
+            Span endsp = {ps.start, body_ir.nodes.span_e[rhs]};
+            init = body_ir.nodes.make(NodeKind::AssignStmt, endsp, lhs, rhs,
+                                      static_cast<u32>(op));
+          } else {
+            init = body_ir.nodes.make(NodeKind::ExprStmt,
+                                      {ps.start, body_ir.nodes.span_e[lhs]}, lhs);
+          }
         }
+        expect(TokenKind::Semicolon, "expected ';' after for-init");
       }
-      expect(TokenKind::Semicolon, "expected ';' after for-init");
       NodeId cond = at(TokenKind::Semicolon) ? 0 : parse_expr();
       expect(TokenKind::Semicolon, "expected ';' after for-cond");
       NodeId step = 0;
@@ -702,19 +741,22 @@ private:
   void parse_module_item() {
     auto s = sp();
 
-    // module <name> ; — consume module declaration
-    if (match(TokenKind::KwModule)) {
-      parse_module_path();
-      expect(TokenKind::Semicolon, "expected ';'");
-      return;
-    }
-
-    // impl <TypeName> { [const/var decls]* } [;]
+    // impl <TypeName>[<T, N, ...>] { [const/var decls]* } [;]
     if (match(TokenKind::KwImpl)) {
       SymId type_name = expect_ident("expected type name after 'impl'");
+      // optional generic params: impl List<T, N> — just the param names,
+      // referencing the same type params declared on the struct/enum
+      std::vector<SymId> impl_generics;
+      if (match(TokenKind::Less)) {
+        do {
+          impl_generics.push_back(expect_ident("expected generic param name"));
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Greater, "expected '>' after impl generic params");
+      }
       expect(TokenKind::LBrace, "expected '{'");
       ImplDecl impl_block;
       impl_block.type_name = type_name;
+      impl_block.generic_params = std::move(impl_generics);
       while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
         auto ms = sp();
         DeclKind mkind;
@@ -735,7 +777,7 @@ private:
         }
         match(TokenKind::Semicolon); // optional
         Span mend = {ms.start, t.end[i - 1]};
-        impl_block.methods.push_back({mname, mty, minit, false, mkind, mend});
+        impl_block.methods.push_back({mname, mty, minit, 0, 0, false, mkind, mend});
       }
       expect(TokenKind::RBrace, "expected '}'");
       match(TokenKind::Semicolon); // optional trailing ';'
@@ -769,6 +811,12 @@ private:
     }
 
     SymId name = expect_ident("expected name");
+    u32 generics_start = 0, generics_count = 0;
+    if (match(TokenKind::Less)) {
+      auto [gs, gc] = parse_generic_params();
+      generics_start = gs;
+      generics_count = gc;
+    }
     TypeId ty = 0;
     NodeId init = 0;
     if (match(TokenKind::ColonEqual)) {
@@ -779,6 +827,7 @@ private:
     }
     match(TokenKind::Semicolon); // optional at module level
     Span endsp = {s.start, t.end[i - 1]};
-    mod.decls.push_back({name, ty, init, is_pub, kind, endsp});
+    mod.decls.push_back({name, ty, init, generics_start, generics_count,
+                         is_pub, kind, endsp});
   }
 };

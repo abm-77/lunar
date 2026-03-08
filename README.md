@@ -61,17 +61,13 @@ Function literals and struct types are first-class expressions.
 ### Module items
 
 ```
-module_item := 'module' path ';'
-             | ['pub'] 'import' path ['as' ident] ';'
+module_item := ['pub'] 'import' path ['as' ident] ';'
              | ['pub'] ('const' | 'var') ident (':=' expr | [':' type] ['=' expr]) [';']
 
 path := ident ('.' ident)*
 ```
 
 ```
-# module declaration — required at the top of every file
-module myapp;
-
 # import with optional alias
 import std.io;
 import std.math as math;
@@ -163,7 +159,7 @@ if (x > 0) {
 }
 
 # for — all three parts are optional
-for (var i = 0; i < 10; i += 1) {}   # classic counted loop
+for (var i := 0; i < 10; i += 1) {}   # classic counted loop
 for (; done == false;) {}             # condition only
 for (;;) {}                           # infinite loop
 

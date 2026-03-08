@@ -106,6 +106,13 @@ target_include_directories(parser_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(parser_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(parser_tests)
 
+add_executable(sema_tests
+  ./source/compiler/test/unit/sema_test.cc
+)
+target_include_directories(sema_tests PRIVATE ${COMPILER_DIR})
+target_link_libraries(sema_tests PRIVATE GTest::gtest_main)
+gtest_discover_tests(sema_tests)
+
 # lit functional tests
 set(FILECHECK "" CACHE PATH "Path to FileCheck binary")
 set(LIT_PY "${CMAKE_SOURCE_DIR}/../third_party/llvm-project/llvm/utils/lit/lit.py")

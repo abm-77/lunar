@@ -11,7 +11,8 @@ struct ParseFixture : ::testing::Test {
   Interner interner;
   KeywordTable kws;
 
-  // Keep the lex result alive so the Parser's TokenStream reference stays valid.
+  // Keep the lex result alive so the Parser's TokenStream reference stays
+  // valid.
   std::optional<Result<TokenStream>> lex_result;
   std::optional<Parser> p;
 
@@ -30,7 +31,7 @@ struct ParseFixture : ::testing::Test {
 
   // Wrap body_src in a module + const fn so parse_module() exercises stmts.
   Parser &parse_fn(std::string_view body_src) {
-    std::string src = "module t; const f := fn() -> void {";
+    std::string src = "const f := fn() -> void {";
     src += body_src;
     src += "}";
     return parse_mod(src);
@@ -53,14 +54,14 @@ struct ParseFixture : ::testing::Test {
 // ============================================================
 
 TEST_F(ParseFixture, EmptyModule) {
-  auto &p = parse_mod("module main;");
+  auto &p = parse_mod("");
   EXPECT_FALSE(p.error().has_value());
   EXPECT_TRUE(p.mod.decls.empty());
   EXPECT_TRUE(p.mod.imports.empty());
 }
 
 TEST_F(ParseFixture, ImportNoAlias) {
-  auto &p = parse_mod("module t; import std.io;");
+  auto &p = parse_mod("import std.io;");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.imports.size(), 1u);
   EXPECT_EQ(p.mod.imports[0].path_list_count, 2u);
@@ -68,7 +69,7 @@ TEST_F(ParseFixture, ImportNoAlias) {
 }
 
 TEST_F(ParseFixture, ImportWithAlias) {
-  auto &p = parse_mod("module t; import std.io as io;");
+  auto &p = parse_mod("import std.io as io;");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.imports.size(), 1u);
   EXPECT_NE(p.mod.imports[0].alias, 0u);
@@ -78,7 +79,7 @@ TEST_F(ParseFixture, ImportWithAlias) {
 
 TEST_F(ParseFixture, StructDecl) {
   // const Point := struct { x: u32, y: u32 }  — init node is StructType
-  auto &p = parse_mod("module t; const Point := struct { x: u32, y: u32 }");
+  auto &p = parse_mod("const Point := struct { x: u32, y: u32 }");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_EQ(interner.view(p.mod.decls[0].name), "Point");
@@ -90,7 +91,7 @@ TEST_F(ParseFixture, StructDecl) {
 }
 
 TEST_F(ParseFixture, PubStructDecl) {
-  auto &p = parse_mod("module t; pub const Foo := struct { v: i32 }");
+  auto &p = parse_mod("pub const Foo := struct { v: i32 }");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_TRUE(p.mod.decls[0].is_pub);
@@ -99,7 +100,7 @@ TEST_F(ParseFixture, PubStructDecl) {
 
 TEST_F(ParseFixture, FuncDeclNoParams) {
   // const greet := fn() -> void {}  — init node is FnLit
-  auto &p = parse_mod("module t; const greet := fn() -> void {}");
+  auto &p = parse_mod("const greet := fn() -> void {}");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_EQ(interner.view(p.mod.decls[0].name), "greet");
@@ -111,7 +112,7 @@ TEST_F(ParseFixture, FuncDeclNoParams) {
 }
 
 TEST_F(ParseFixture, PubFuncDecl) {
-  auto &p = parse_mod("module t; pub const add := fn(a: i32, b: i32) -> i32 {}");
+  auto &p = parse_mod("pub const add := fn(a: i32, b: i32) -> i32 {}");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_TRUE(p.mod.decls[0].is_pub);
@@ -125,8 +126,7 @@ TEST_F(ParseFixture, PubFuncDecl) {
 }
 
 TEST_F(ParseFixture, MultipleDecls) {
-  auto &p = parse_mod(
-      "module t; const x := 1; var y: i32 = 2; pub const z := 3");
+  auto &p = parse_mod("const x := 1; var y: i32 = 2; pub const z := 3");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 3u);
   EXPECT_EQ(p.mod.decls[0].kind, DeclKind::Const);
@@ -155,7 +155,8 @@ TEST_F(ParseFixture, LetWithTypeAndInit) {
   ASSERT_EQ(stmts.size(), 1u);
   NodeId s = stmts[0];
   EXPECT_EQ(p.body_ir.nodes.kind[s], NodeKind::LetStmt);
-  EXPECT_NE(p.body_ir.nodes.b[s], 0u); // has type (TypeId 0 = void, i32 is later)
+  EXPECT_NE(p.body_ir.nodes.b[s],
+            0u); // has type (TypeId 0 = void, i32 is later)
   // init is NodeId 0 (first node) — check it's an IntLit rather than != 0
   EXPECT_EQ(p.body_ir.nodes.kind[p.body_ir.nodes.c[s]], NodeKind::IntLit);
 }
@@ -513,7 +514,8 @@ TEST_F(ParseFixture, FnLitNoCapture) {
 }
 
 TEST_F(ParseFixture, FnLitWithCapture) {
-  // b is a free variable — parser just records it as an Ident, no special handling
+  // b is a free variable — parser just records it as an Ident, no special
+  // handling
   auto &p = parse_fn("var add = fn (a: i32) -> i32 { return a + b; };");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
@@ -543,7 +545,7 @@ static TypeId fn_lit_ret(Parser &p) {
 }
 
 TEST_F(ParseFixture, NamedType) {
-  auto &p = parse_mod("module t; const f := fn() -> i32 {}");
+  auto &p = parse_mod("const f := fn() -> i32 {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId ret = fn_lit_ret(p);
   EXPECT_EQ(p.type_ast.kind[ret], TypeKind::Named);
@@ -551,7 +553,7 @@ TEST_F(ParseFixture, NamedType) {
 }
 
 TEST_F(ParseFixture, RefType) {
-  auto &p = parse_mod("module t; const f := fn() -> &i32 {}");
+  auto &p = parse_mod("const f := fn() -> &i32 {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId ret = fn_lit_ret(p);
   EXPECT_EQ(p.type_ast.kind[ret], TypeKind::Ref);
@@ -559,7 +561,7 @@ TEST_F(ParseFixture, RefType) {
 }
 
 TEST_F(ParseFixture, RefMutType) {
-  auto &p = parse_mod("module t; const f := fn() -> &mut i32 {}");
+  auto &p = parse_mod("const f := fn() -> &mut i32 {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId ret = fn_lit_ret(p);
   EXPECT_EQ(p.type_ast.kind[ret], TypeKind::Ref);
@@ -567,7 +569,7 @@ TEST_F(ParseFixture, RefMutType) {
 }
 
 TEST_F(ParseFixture, TupleType) {
-  auto &p = parse_mod("module t; const f := fn() -> (i32, u32) {}");
+  auto &p = parse_mod("const f := fn() -> (i32, u32) {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId ret = fn_lit_ret(p);
   EXPECT_EQ(p.type_ast.kind[ret], TypeKind::Tuple);
@@ -576,7 +578,7 @@ TEST_F(ParseFixture, TupleType) {
 
 TEST_F(ParseFixture, FnTypeAsReturnType) {
   // fn type in type position (return type annotation)
-  auto &p = parse_mod("module t; const f := fn() -> fn(i32) -> void {}");
+  auto &p = parse_mod("const f := fn() -> fn(i32) -> void {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId ret = fn_lit_ret(p);
   EXPECT_EQ(p.type_ast.kind[ret], TypeKind::Fn);
@@ -588,7 +590,7 @@ TEST_F(ParseFixture, FnTypeAsReturnType) {
 // ============================================================
 
 TEST_F(ParseFixture, ArrayTypeWithCount) {
-  auto &p = parse_mod("module t; const f := fn(x: [10]i32) -> void {}");
+  auto &p = parse_mod("const f := fn(x: [10]i32) -> void {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId param_ty = p.mod.params[0].type;
   EXPECT_EQ(p.type_ast.kind[param_ty], TypeKind::Array);
@@ -600,7 +602,7 @@ TEST_F(ParseFixture, ArrayTypeWithCount) {
 }
 
 TEST_F(ParseFixture, ArrayTypeUnsized) {
-  auto &p = parse_mod("module t; const f := fn(x: []u8) -> void {}");
+  auto &p = parse_mod("const f := fn(x: []u8) -> void {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId param_ty = p.mod.params[0].type;
   EXPECT_EQ(p.type_ast.kind[param_ty], TypeKind::Array);
@@ -610,7 +612,7 @@ TEST_F(ParseFixture, ArrayTypeUnsized) {
 }
 
 TEST_F(ParseFixture, ArrayTypeAsReturnType) {
-  auto &p = parse_mod("module t; const f := fn() -> [3]u8 {}");
+  auto &p = parse_mod("const f := fn() -> [3]u8 {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId ret = fn_lit_ret(p);
   EXPECT_EQ(p.type_ast.kind[ret], TypeKind::Array);
@@ -619,7 +621,7 @@ TEST_F(ParseFixture, ArrayTypeAsReturnType) {
 
 TEST_F(ParseFixture, ArrayTypeNested) {
   // [2][3]i32 → array of 2 elements of type [3]i32
-  auto &p = parse_mod("module t; const f := fn(x: [2][3]i32) -> void {}");
+  auto &p = parse_mod("const f := fn(x: [2][3]i32) -> void {}");
   EXPECT_FALSE(p.error().has_value());
   TypeId outer = p.mod.params[0].type;
   EXPECT_EQ(p.type_ast.kind[outer], TypeKind::Array);
@@ -674,7 +676,8 @@ TEST_F(ParseFixture, ArrayLitCountLessThanValuesIsError) {
   // [2]i32{1, 2, 3} — count 2 < 3 values, error
   auto &p = parse_fn("[2]i32{1, 2, 3};");
   EXPECT_TRUE(p.error().has_value());
-  EXPECT_STREQ(p.error()->msg, "array count is less than number of initializers");
+  EXPECT_STREQ(p.error()->msg,
+               "array count is less than number of initializers");
 }
 
 TEST_F(ParseFixture, ArrayLitEmpty) {
@@ -734,7 +737,7 @@ TEST_F(ParseFixture, MissingSemicolonAfterLet) {
 }
 
 TEST_F(ParseFixture, UnknownModuleItem) {
-  auto &p = parse_mod("module t; 42");
+  auto &p = parse_mod("42");
   EXPECT_TRUE(p.error().has_value());
 }
 
@@ -766,7 +769,7 @@ TEST_F(ParseFixture, VarColonEqualShorthandInStmt) {
 
 TEST_F(ParseFixture, StructTypeNode) {
   // const S := struct { x: u32, y: u32 }  — StructType expression node
-  auto &p = parse_mod("module t; const S := struct { x: u32, y: u32 }");
+  auto &p = parse_mod("const S := struct { x: u32, y: u32 }");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   NodeId init = p.mod.decls[0].init;
@@ -779,7 +782,7 @@ TEST_F(ParseFixture, StructTypeNode) {
 
 TEST_F(ParseFixture, FnTypeExprNode) {
   // const F := fn(i32, i32) -> i32  — FnType expression node (no body)
-  auto &p = parse_mod("module t; const F := fn(i32, i32) -> i32");
+  auto &p = parse_mod("const F := fn(i32, i32) -> i32");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   NodeId init = p.mod.decls[0].init;
@@ -793,7 +796,7 @@ TEST_F(ParseFixture, FnTypeExprNode) {
 
 TEST_F(ParseFixture, VarWithTypeNoInit) {
   // var fp: fn(i32) -> i32  — type annotation, no initializer
-  auto &p = parse_mod("module t; var fp: fn(i32) -> i32");
+  auto &p = parse_mod("var fp: fn(i32) -> i32");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_EQ(p.mod.decls[0].kind, DeclKind::Var);
@@ -809,8 +812,7 @@ TEST_F(ParseFixture, ConstWithExplicitType) {
   // Use two decls so i32 is not TypeId 0 (which doubles as "no type" sentinel).
   // First decl: const f := fn() -> void {}  → parses void as TypeId 0.
   // Second decl: const a: i32 = 10         → i32 gets TypeId 1 (non-zero).
-  auto &p = parse_mod(
-      "module t; const f := fn() -> void {}; const a: i32 = 10");
+  auto &p = parse_mod("const f := fn() -> void {}; const a: i32 = 10");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 2u);
   EXPECT_EQ(p.mod.decls[1].kind, DeclKind::Const);
@@ -869,7 +871,7 @@ TEST_F(ParseFixture, PathInComparison) {
 // ============================================================
 
 TEST_F(ParseFixture, EnumTypeDecl) {
-  auto &p = parse_mod("module t; const Color : type = enum { Red, Green, Blue }");
+  auto &p = parse_mod("const Color : type = enum { Red, Green, Blue }");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   NodeId init = p.mod.decls[0].init;
@@ -882,7 +884,7 @@ TEST_F(ParseFixture, EnumTypeDecl) {
 }
 
 TEST_F(ParseFixture, EnumTypeInferred) {
-  auto &p = parse_mod("module t; const Color2 := enum { Red, Green, Blue }");
+  auto &p = parse_mod("const Color2 := enum { Red, Green, Blue }");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   NodeId init = p.mod.decls[0].init;
@@ -891,7 +893,7 @@ TEST_F(ParseFixture, EnumTypeInferred) {
 }
 
 TEST_F(ParseFixture, EnumTypeTrailingComma) {
-  auto &p = parse_mod("module t; const E := enum { A, B, }");
+  auto &p = parse_mod("const E := enum { A, B, }");
   EXPECT_FALSE(p.error().has_value());
   NodeId init = p.mod.decls[0].init;
   EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::EnumType);
@@ -899,7 +901,7 @@ TEST_F(ParseFixture, EnumTypeTrailingComma) {
 }
 
 TEST_F(ParseFixture, EnumTypeEmpty) {
-  auto &p = parse_mod("module t; const E := enum {}");
+  auto &p = parse_mod("const E := enum {}");
   EXPECT_FALSE(p.error().has_value());
   NodeId init = p.mod.decls[0].init;
   EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::EnumType);
@@ -911,8 +913,7 @@ TEST_F(ParseFixture, EnumTypeEmpty) {
 // ============================================================
 
 TEST_F(ParseFixture, ImplBasic) {
-  auto &p = parse_mod(
-      "module t; impl Foo { const method := fn (&self) -> void {} };");
+  auto &p = parse_mod("impl Foo { const method := fn (&self) -> void {} };");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.impls.size(), 1u);
   EXPECT_EQ(interner.view(p.mod.impls[0].type_name), "Foo");
@@ -922,8 +923,8 @@ TEST_F(ParseFixture, ImplBasic) {
 }
 
 TEST_F(ParseFixture, ImplSelfReceiver) {
-  auto &p = parse_mod(
-      "module t; impl Foo { const area := fn (&self) -> u32 { return 0; } };");
+  auto &p =
+      parse_mod("impl Foo { const area := fn (&self) -> u32 { return 0; } };");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.impls.size(), 1u);
   NodeId init = p.mod.impls[0].methods[0].init;
@@ -938,8 +939,8 @@ TEST_F(ParseFixture, ImplSelfReceiver) {
 }
 
 TEST_F(ParseFixture, ImplMutSelfWithParams) {
-  auto &p = parse_mod(
-      "module t; impl Foo { const set := fn (&mut self, x: i32) -> void {} };");
+  auto &p =
+      parse_mod("impl Foo { const set := fn (&mut self, x: i32) -> void {} };");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.impls.size(), 1u);
   NodeId init = p.mod.impls[0].methods[0].init;
@@ -953,8 +954,7 @@ TEST_F(ParseFixture, ImplMutSelfWithParams) {
 
 TEST_F(ParseFixture, ImplStaticMethod) {
   // No receiver — regular named params only
-  auto &p = parse_mod(
-      "module t; impl Foo { const new := fn (x: i32) -> Foo {} };");
+  auto &p = parse_mod("impl Foo { const new := fn (x: i32) -> Foo {} };");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.impls.size(), 1u);
   NodeId init = p.mod.impls[0].methods[0].init;
@@ -963,14 +963,125 @@ TEST_F(ParseFixture, ImplStaticMethod) {
 }
 
 TEST_F(ParseFixture, ImplMultipleMethods) {
-  auto &p = parse_mod(
-      "module t; impl Foo {"
-      "  const area := fn (&self) -> u32 { return 0; }"
-      "  const max := fn (a: Foo, b: Foo) -> Foo { return a; }"
-      "};");
+  auto &p = parse_mod("impl Foo {"
+                      "  const area := fn (&self) -> u32 { return 0; }"
+                      "  const max := fn (a: Foo, b: Foo) -> Foo { return a; }"
+                      "};");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.impls.size(), 1u);
   EXPECT_EQ(p.mod.impls[0].methods.size(), 2u);
   EXPECT_EQ(interner.view(p.mod.impls[0].methods[0].name), "area");
   EXPECT_EQ(interner.view(p.mod.impls[0].methods[1].name), "max");
+}
+
+// ============================================================
+// Generic declarations
+// ============================================================
+
+TEST_F(ParseFixture, GenericStructOneTypeParam) {
+  auto &p = parse_mod("const List<T: type> : type = struct { data: T }");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.decls.size(), 1u);
+  EXPECT_EQ(interner.view(p.mod.decls[0].name), "List");
+  EXPECT_EQ(p.mod.decls[0].generics_count, 1u);
+  EXPECT_TRUE(p.mod.generic_params[p.mod.decls[0].generics_start].is_type);
+  EXPECT_EQ(
+      interner.view(p.mod.generic_params[p.mod.decls[0].generics_start].name),
+      "T");
+}
+
+TEST_F(ParseFixture, GenericStructTwoParams) {
+  auto &p =
+      parse_mod("const List<T: type, N: i32> : type = struct { data: [N]T }");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.decls.size(), 1u);
+  EXPECT_EQ(p.mod.decls[0].generics_count, 2u);
+  u32 gs = p.mod.decls[0].generics_start;
+  EXPECT_TRUE(p.mod.generic_params[gs].is_type);      // T: type
+  EXPECT_FALSE(p.mod.generic_params[gs + 1].is_type); // N: i32
+  EXPECT_EQ(interner.view(p.mod.generic_params[gs].name), "T");
+  EXPECT_EQ(interner.view(p.mod.generic_params[gs + 1].name), "N");
+}
+
+TEST_F(ParseFixture, GenericFunctionInferred) {
+  auto &p = parse_mod("const id<T: type> := fn (a: T) -> T { return a; }");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.decls.size(), 1u);
+  EXPECT_EQ(p.mod.decls[0].generics_count, 1u);
+  // Should parse as a FnLit (has body)
+  EXPECT_EQ(p.body_ir.nodes.kind[p.mod.decls[0].init], NodeKind::FnLit);
+}
+
+TEST_F(ParseFixture, GenericFunctionExplicitType) {
+  auto &p = parse_mod(
+      "const add<T: type>: fn(T,T)->T = fn(a: T, b: T)->T { return a; }");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.decls.size(), 1u);
+  EXPECT_EQ(p.mod.decls[0].generics_count, 1u);
+}
+
+TEST_F(ParseFixture, GenericImplBlock) {
+  auto &p = parse_mod("const List<T: type> : type = struct { data: T }"
+                      "impl List<T> {"
+                      "  const get := fn (&self) -> T { return self.data; }"
+                      "}");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.impls.size(), 1u);
+  EXPECT_EQ(interner.view(p.mod.impls[0].type_name), "List");
+  EXPECT_EQ(p.mod.impls[0].generic_params.size(), 1u);
+  EXPECT_EQ(interner.view(p.mod.impls[0].generic_params[0]), "T");
+  EXPECT_EQ(p.mod.impls[0].methods.size(), 1u);
+}
+
+TEST_F(ParseFixture, ForVarInit) {
+  auto &p = parse_fn("for (var i = 0; i < 10; i += 1) {}");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  ASSERT_EQ(stmts.size(), 1u);
+  EXPECT_EQ(p.body_ir.nodes.kind[stmts[0]], NodeKind::ForStmt);
+  // The for init should be a VarStmt
+  u32 for_idx = p.body_ir.nodes.a[stmts[0]];
+  EXPECT_EQ(p.body_ir.nodes.kind[p.body_ir.fors[for_idx].init],
+            NodeKind::VarStmt);
+}
+
+TEST_F(ParseFixture, ForConstInit) {
+  auto &p = parse_fn("for (const i = 0; i < 10; i += 1) {}");
+  EXPECT_FALSE(p.error().has_value());
+  auto stmts = fn_stmts();
+  ASSERT_EQ(stmts.size(), 1u);
+  u32 for_idx = p.body_ir.nodes.a[stmts[0]];
+  EXPECT_EQ(p.body_ir.nodes.kind[p.body_ir.fors[for_idx].init],
+            NodeKind::LetStmt);
+}
+
+TEST_F(ParseFixture, TypeArgInTypeAnnotation) {
+  // List<i32> in type position should parse without error
+  auto &p = parse_mod("var x: List<i32>;");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.decls.size(), 1u);
+  // The type annotation TypeId should be a Named node with 1 type arg
+  TypeId ty = p.mod.decls[0].type;
+  EXPECT_EQ(p.type_ast.kind[ty], TypeKind::Named);
+  EXPECT_EQ(p.type_ast.c[ty], 1u); // 1 type arg
+}
+
+TEST_F(ParseFixture, TypeArgTwoArgs) {
+  auto &p = parse_mod("var x: Map<i32, bool>;");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.decls.size(), 1u);
+  TypeId ty = p.mod.decls[0].type;
+  EXPECT_EQ(p.type_ast.kind[ty], TypeKind::Named);
+  EXPECT_EQ(p.type_ast.c[ty], 2u); // 2 type args
+}
+
+TEST_F(ParseFixture, ArrayTypeIdentCount) {
+  // [N]T — identifier used as array count (const generic param)
+  auto &p = parse_mod("var x: [N]i32;");
+  EXPECT_FALSE(p.error().has_value());
+  ASSERT_EQ(p.mod.decls.size(), 1u);
+  TypeId ty = p.mod.decls[0].type;
+  EXPECT_EQ(p.type_ast.kind[ty], TypeKind::Array);
+  // count stored as -1 (unsized) since N is not a literal
+  EXPECT_EQ(p.type_ast.a[ty], static_cast<u32>(-1));
 }

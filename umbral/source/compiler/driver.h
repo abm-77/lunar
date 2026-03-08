@@ -11,6 +11,8 @@
 #include <common/interner.h>
 #include <compiler/frontend/lexer.h>
 #include <compiler/frontend/parser.h>
+#include <compiler/loader.h>
+#include <compiler/sema/sema.h>
 
 // declared in runtime_blob.cc and generated at build time by
 // cmake/embed_blob.cmake
@@ -28,7 +30,8 @@ public:
   // libruntime.a is embedded in uc and written to a temp file at link time.
   // The output binary is fully self-contained — Vulkan loader (libvulkan.so)
   // must be present on the target system, but nothing else.
-  DriverResult run(const std::string &src_path, const std::string &out_path);
+  DriverResult run(const std::string &src_path, const std::string &out_path,
+                   const std::string &root_override = {});
 
 private:
   DriverResult write_runtime(std::filesystem::path &out);
@@ -38,33 +41,31 @@ private:
 };
 
 inline DriverResult Driver::run(const std::string &src_path,
-                                const std::string &out_path) {
-  // read source
-  std::ifstream f(src_path);
-  if (!f) return {false, "cannot open '" + src_path + "'"};
-  std::string src((std::istreambuf_iterator<char>(f)), {});
+                                const std::string &out_path,
+                                const std::string &root_override) {
+  std::filesystem::path entry(src_path);
+  std::filesystem::path root =
+      root_override.empty() ? entry.parent_path()
+                            : std::filesystem::path(root_override);
 
-  // lex
   Interner interner;
   KeywordTable kws;
   kws.init(interner);
-  auto lex_result = lex_source(src, interner, kws);
-  if (!lex_result)
-    return {false, format_error(lex_result.error(), src, src_path)};
 
-  // parse
-  Parser parser(*lex_result);
-  parser.parse_module();
-  if (parser.error())
-    return {false, format_error(*parser.error(), src, src_path)};
+  // Load entry file and all transitive imports (topological order).
+  auto load_r = load_modules(entry, root, interner, kws);
+  if (!load_r) return {false, load_r.error()};
+  auto &modules = *load_r;
 
-  // TODO: type check
+  // Sema over all modules.
+  auto sema_r = run_sema(modules, interner);
+  if (!sema_r) {
+    // Use the entry module's src for error formatting (last in the vector).
+    const std::string &entry_src = modules.back().src;
+    return {false, format_error(sema_r.error(), entry_src, src_path)};
+  }
 
-  // TODO: codegen — lower AST to LLVM IR and compile to obj_path, then:
-  //   std::filesystem::path runtime_path;
-  //   if (auto r = write_runtime(runtime_path); !r.ok) return r;
-  //   return link(obj_path, runtime_path, out_path);
-
+  // TODO: codegen
   return {false, "codegen not yet implemented"};
 }
 
