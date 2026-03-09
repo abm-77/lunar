@@ -1,0 +1,36 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Function pointer variables, passing functions as arguments, and indirect calls.
+
+const add := fn(a: i32, b: i32) -> i32 { return a + b; }
+const mul := fn(a: i32, b: i32) -> i32 { return a * b; }
+
+const apply := fn(op: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+  return op(a, b);
+}
+
+const apply_twice := fn(op: fn(i32, i32) -> i32, x: i32) -> i32 {
+  return op(op(x, x), x);
+}
+
+const main := fn() -> void {
+  # Store function in a local variable, then call through it.
+  var op: fn(i32, i32) -> i32 = add;
+  const r1 := op(3, 4);
+
+  op = mul;
+  const r2 := op(3, 4);
+
+  # Pass function as argument.
+  const r3 := apply(add, 10, 5);
+  const r4 := apply(mul, 10, 5);
+
+  # Higher-order usage.
+  const r5 := apply_twice(add, 3);
+}
+
+# CHECK: define i32 @_U_09_fn_pointers__add
+# CHECK: define i32 @_U_09_fn_pointers__mul
+# CHECK: define i32 @_U_09_fn_pointers__apply
+# CHECK: define i32 @_U_09_fn_pointers__apply_twice
+# CHECK: define void @main

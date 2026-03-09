@@ -54,6 +54,8 @@ enum class TokenKind : u16 {
   ColonColon,
   ColonEqual,
   Ampersand,
+  PipePipe,   // ||
+  AmpAmp,     // &&
   Eof,
   Count
 };
@@ -354,7 +356,11 @@ private:
       if (n == ':') return two(TokenKind::ColonColon);
       if (n == '=') return two(TokenKind::ColonEqual);
       return one(TokenKind::Colon);
-    case '&': return one(TokenKind::Ampersand);
+    case '|':
+      return (n == '|') ? two(TokenKind::PipePipe) : std::optional<std::pair<TokenKind,Span>>{std::nullopt};
+    case '&':
+      if (n == '&') return two(TokenKind::AmpAmp);
+      return one(TokenKind::Ampersand);
     default: return std::nullopt;
     }
   }

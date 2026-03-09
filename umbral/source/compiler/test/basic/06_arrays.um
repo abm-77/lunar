@@ -1,0 +1,33 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Fixed-size arrays: declaration, element access, passing by reference.
+
+const sum_arr := fn(arr: &[5]i32) -> i32 {
+  var s: i32 = 0;
+  for (var i: i32 = 0; i < 5; i += 1) {
+    s += arr[i];
+  }
+  return s;
+}
+
+const fill := fn(arr: &mut [5]i32, val: i32) -> void {
+  for (var i: i32 = 0; i < 5; i += 1) {
+    arr[i] = val;
+  }
+}
+
+const main := fn() -> void {
+  var a: [5]i32 = [5]i32{};
+  a[0] = 1;
+  a[1] = 2;
+  a[2] = 3;
+  a[3] = 4;
+  a[4] = 5;
+  const s := sum_arr(&a);
+  fill(&mut a, 0);
+  const z := sum_arr(&a);
+}
+
+# CHECK: define i32 @_U_06_arrays__sum_arr
+# CHECK: define void @_U_06_arrays__fill
+# CHECK: define void @main

@@ -114,7 +114,7 @@ target_link_libraries(sema_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(sema_tests)
 
 # lit functional tests
-set(FILECHECK "" CACHE PATH "Path to FileCheck binary")
+set(FILECHECK "${CMAKE_SOURCE_DIR}/../build/_b_llvm/bin/FileCheck" CACHE PATH "Path to FileCheck binary" FORCE)
 set(LIT_PY "${CMAKE_SOURCE_DIR}/../third_party/llvm-project/llvm/utils/lit/lit.py")
 set(LIT_TEST_DIR "${CMAKE_SOURCE_DIR}/source/compiler/test")
 
@@ -125,7 +125,7 @@ configure_file(
 )
 
 add_custom_target(check-lit
-  COMMAND python3 ${LIT_PY} -v ${LIT_TEST_DIR}
+  COMMAND python3 ${LIT_PY} -v ${CMAKE_BINARY_DIR}
   DEPENDS uc
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   COMMENT "Running lit functional tests"

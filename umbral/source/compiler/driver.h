@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -9,6 +10,7 @@
 
 #include <common/error.h>
 #include <common/interner.h>
+#include <compiler/codegen/codegen.h>
 #include <compiler/frontend/lexer.h>
 #include <compiler/frontend/parser.h>
 #include <compiler/loader.h>
@@ -24,14 +26,19 @@ struct DriverResult {
   std::string error;
 };
 
+struct DriverOptions {
+  std::string out_path = "a.out";
+  std::string root_override;
+  bool dump_ir = false; // print LLVM IR to stdout and stop
+};
+
 class Driver {
 public:
   // compile src_path to a standalone executable at out_path.
   // libruntime.a is embedded in uc and written to a temp file at link time.
   // The output binary is fully self-contained — Vulkan loader (libvulkan.so)
   // must be present on the target system, but nothing else.
-  DriverResult run(const std::string &src_path, const std::string &out_path,
-                   const std::string &root_override = {});
+  DriverResult run(const std::string &src_path, const DriverOptions &opts = {});
 
 private:
   DriverResult write_runtime(std::filesystem::path &out);
@@ -41,12 +48,16 @@ private:
 };
 
 inline DriverResult Driver::run(const std::string &src_path,
-                                const std::string &out_path,
-                                const std::string &root_override) {
+                                const DriverOptions &opts) {
   std::filesystem::path entry(src_path);
-  std::filesystem::path root =
-      root_override.empty() ? entry.parent_path()
-                            : std::filesystem::path(root_override);
+
+  if (!std::filesystem::exists(entry)) {
+    return {false, "file: " + src_path + " does not exist"};
+  }
+
+  std::filesystem::path root = opts.root_override.empty()
+                                   ? entry.parent_path()
+                                   : std::filesystem::path(opts.root_override);
 
   Interner interner;
   KeywordTable kws;
@@ -65,8 +76,18 @@ inline DriverResult Driver::run(const std::string &src_path,
     return {false, format_error(sema_r.error(), entry_src, src_path)};
   }
 
-  // TODO: codegen
-  return {false, "codegen not yet implemented"};
+  auto llvm_ir = run_codegen(*sema_r, modules, interner, entry.stem().string());
+  if (!llvm_ir) {
+    const std::string &entry_src = modules.back().src;
+    return {false, format_error(llvm_ir.error(), entry_src, src_path)};
+  }
+
+  if (opts.dump_ir) {
+    std::fputs(llvm_ir->ir.c_str(), stdout);
+    return {true};
+  }
+
+  return {true};
 }
 
 inline DriverResult Driver::write_runtime(std::filesystem::path &out) {

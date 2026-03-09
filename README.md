@@ -1,10 +1,10 @@
 # Lunar
 
 ## What is Lunar?
-`lunar` is a framework for making graphical applications
+`lunar` is a framework for making graphical applications.
 
 ## Umbral
-`umbral` is the language used by `lunar`
+`umbral` is the language used by `lunar`. Source files use the `.um` extension; the compiler binary is `uc`.
 
 ## Building
 
@@ -40,8 +40,8 @@ Unit tests live in `umbral/source/compiler/test/unit/` and are built with the in
 
 **Build and run all unit tests:**
 ```sh
-ninja -C build/_b_umbral interner_tests lexer_tests parser_tests
-./build/_b_umbral/interner_tests
+ninja -C build/_b_umbral sema_tests lexer_tests parser_tests
+./build/_b_umbral/sema_tests
 ./build/_b_umbral/lexer_tests
 ./build/_b_umbral/parser_tests
 ```
@@ -51,20 +51,25 @@ ninja -C build/_b_umbral interner_tests lexer_tests parser_tests
 ninja -C build/_b_umbral check-lit
 ```
 
-## Umbral Language Grammar
+---
+
+## Umbral Language Reference
 
 Comments use `#`. All module-level items end with an optional `;`. Statements inside function bodies require `;` except blocks.
 
-All declarations (functions, types, globals) are unified `const`/`var` bindings.
-Function literals and struct types are first-class expressions.
+All declarations (functions, types, globals) are unified `const`/`var` bindings. Function literals and struct types are first-class expressions.
 
-### Module items
+### Module Items
 
 ```
 module_item := ['pub'] 'import' path ['as' ident] ';'
-             | ['pub'] ('const' | 'var') ident (':=' expr | [':' type] ['=' expr]) [';']
+             | ['pub'] ('const' | 'var') ident ['<' generic_params '>']
+                   (':=' expr | [':' type] ['=' expr]) [';']
+             | 'impl' ident ['<' ident (',' ident)* '>'] '{' impl_method* '}'
 
-path := ident ('.' ident)*
+path          := ident ('.' ident)*
+generic_params := ident ':' ('type' | type) (',' ident ':' ('type' | type))*
+impl_method   := ['pub'] ('const' | 'var') ident ':=' expr [';']
 ```
 
 ```
@@ -72,13 +77,13 @@ path := ident ('.' ident)*
 import std.io;
 import std.math as math;
 
-# named struct type — const binding holding a StructType expression
+# named struct type
 const Point := struct {
     x: i32,
     y: i32,
 }
 
-# function — const binding holding a FnLit expression
+# function
 const add := fn(a: i32, b: i32) -> i32 {
     return a + b;
 }
@@ -99,18 +104,97 @@ const max_size: i32 = 1024;
 ### Types
 
 ```
-type := '&' ['mut'] type               # reference
-      | '(' type (',' type)+ ')'       # tuple
-      | 'fn' '(' (type (',' type)*)? ')' '->' type  # function type
-      | ident ('::' ident)*            # named type
+type := '&' ['mut'] type                        # reference
+      | '[' (int | ident) ']' type              # array: [N]T
+      | '(' type (',' type)+ ')'                # tuple
+      | 'fn' '(' (type (',' type)*)? ')' '->' type   # function type
+      | ident ['<' type (',' type)* '>']        # named type, optional generic args
 ```
 
 ```
-const a: i32;                    # named type
-const b: &i32;                   # immutable reference
-const c: &mut i32;               # mutable reference
-const d: (i32, i32);             # tuple type
-const e: fn(i32, i32) -> i32;    # function type
+const a: i32;                       # named type
+const b: &i32;                      # immutable reference
+const c: &mut i32;                  # mutable reference
+const d: (i32, i32);                # tuple type
+const e: fn(i32, i32) -> i32;       # function type
+const f: [10]i32;                   # array of 10 i32s
+const g: [N]T;                      # array with const-generic count
+const h: Option<i32>;               # generic named type
+const k: Array<i32, 10>;            # generic type with const-generic arg
+```
+
+### Generics
+
+Type parameters are declared with `Name: type`. Const-generic parameters use `Name: IntType`.
+
+```
+# Generic struct
+const Option<T: type> := struct {
+    has_value: bool,
+    value: T,
+}
+
+# Multiple type and const-generic params
+const Array<T: type, N: u32> := struct {
+    data: [N]T,
+    count: u32,
+}
+
+# Generic function
+const identity<T: type> := fn(x: T) -> T {
+    return x;
+}
+```
+
+### impl Blocks
+
+Methods are defined in `impl` blocks. Instance methods take `&self` or `&mut self` as the first parameter. Static methods do not. All methods can be marked `pub`.
+
+```
+impl Option<T> {
+    pub const create := fn(v: T) -> Option<T> {
+        return Option<T> { has_value = true, value = v };
+    }
+
+    pub const nullopt := fn() -> Option<T> {
+        return Option<T> { has_value = false };
+    }
+}
+
+impl Array<T, N> {
+    pub const create := fn() -> Array<T, N> {
+        return Array<T, N> { data = [N]T{}, count = 0 };
+    }
+
+    pub const push := fn(&mut self, v: T) -> void {
+        if (self.count >= N) return;
+        self.data[self.count] = v;
+        self.count += 1;
+    }
+
+    pub const get := fn(&self, idx: u32) -> Option<T> {
+        if (idx >= self.count) return Option<T>::nullopt();
+        return Option<T>::create(self.data[idx]);
+    }
+
+    pub const get_count := fn(&self) -> u32 {
+        return self.count;
+    }
+}
+```
+
+### Enums
+
+```
+const Color := enum {
+    Red,
+    Green,
+    Blue,
+}
+
+const is_red := fn(c: Color) -> bool {
+    return c == Color::Red;
+}
 ```
 
 ### Statements
@@ -124,7 +208,7 @@ stmt := 'const' ident (':=' expr | [':' type] ['=' expr]) ';'
       | block
       | expr (assign_op expr)? ';'
 
-for_part   := expr | expr assign_op expr
+for_part   := ('const' | 'var') ident ':=' expr | expr assign_op expr
 assign_op  := '=' | '+=' | '-=' | '*=' | '/='
 ```
 
@@ -136,14 +220,10 @@ const z: i32;        # explicit type, no initializer
 
 # mutable binding
 var counter := 0;
-var name: i32;
 
 # assignment and compound assignment
 counter = 1;
 counter += 2;
-counter -= 1;
-counter *= 3;
-counter /= 2;
 
 # return
 return;
@@ -158,18 +238,10 @@ if (x > 0) {
     return -x;
 }
 
-# for — all three parts are optional
+# for — all three parts optional
 for (var i := 0; i < 10; i += 1) {}   # classic counted loop
-for (; done == false;) {}             # condition only
-for (;;) {}                           # infinite loop
-
-# bare block
-{
-    const tmp := x + y;
-}
-
-# expression statement
-foo(x, y);
+for (; done == false;) {}              # condition only
+for (;;) {}                            # infinite loop
 ```
 
 ### Expressions
@@ -178,78 +250,93 @@ Operator precedence (low to high):
 
 | Operators             | Precedence |
 |-----------------------|------------|
-| `==`  `!=`            | 40         |
+| `\|\|`                | 30         |
+| `&&`                  | 35         |
+| `==` `!=`             | 40         |
 | `<` `<=` `>` `>=`     | 50         |
-| `+`  `-`              | 60         |
-| `*`  `/`              | 70         |
+| `+` `-`               | 60         |
+| `*` `/`               | 70         |
+| unary `-` `!` `*` `&` | 80         |
 | postfix `.` `[]` `()` | 90         |
 
 ```
-expr    := unary (infix_op unary)*
-unary   := '-' expr | '!' expr | '*' expr | '&' ['mut'] expr | postfix
-postfix := primary ('.' ident | '[' expr ']' | '(' args ')')*
-
 primary := int_lit
          | string_lit
          | 'true' | 'false'
-         | '(' ')'                                           # unit tuple
-         | '(' expr ',' expr (',' expr)* ')'                # tuple literal
-         | '(' expr ')'                                      # grouped expr
-         | ident '{' (ident ':' expr ','?)* '}'              # struct initializer
-         | ident                                             # identifier
-         | 'struct' '{' (ident ':' type ','?)* '}'           # StructType expression
-         | 'struct' '{' (ident ':' type '=' expr ','?)* '}'  # StructExpr (has =)
-         | 'fn' '(' (ident ':' type ','?)* ')' '->' type block  # FnLit (named params)
-         | 'fn' '(' (type ','?)* ')' '->' type               # FnType (bare types, no body)
+         | '(' ')'                                                    # unit tuple
+         | '(' expr ',' expr (',' expr)* ')'                          # tuple literal
+         | '(' expr ')'                                               # grouped expr
+         | ident ['<' type (',' type)* '>'] '{' (ident '=' expr ','?)* '}'  # struct init
+         | ident ['<' type (',' type)* '>'] '::' ident (...)          # path expression
+         | ident                                                       # identifier
+         | '[' (int | ident) ']' type '{' (expr ','?)* '}'           # array literal
+         | 'struct' '{' (ident ':' type ','?)* '}'                   # StructType
+         | 'struct' '{' (ident ':' type '=' expr ','?)* '}'          # StructExpr
+         | 'fn' '(' (ident ':' type ','?)* ')' '->' type block       # FnLit
+         | 'fn' '(' (type ','?)* ')' '->' type                       # FnType
+         | 'enum' '{' (ident ','?)* '}'                              # EnumType
 ```
 
-Disambiguation: after `fn(`, if the first param has the form `ident :` it's a FnLit (has a body block). Otherwise it's a FnType (no body). For `struct {`, if the first field has `=` after its type it's a StructExpr; otherwise a StructType. An empty `struct {}` is always a StructType.
+**Disambiguation:**
+- After `fn(`, if the first param is `ident :` (or `&self` / `&mut self`) → FnLit with body. Otherwise → FnType.
+- After `struct {`, if the first field has `= expr` after its type → StructExpr. Otherwise → StructType.
+- After `Ident <`, if `>` is followed by `{` or `::` → generic type args. Otherwise → binary `<`.
 
 ```
-# literals
-const n := 42;
-const s := "hello";
-const b := true;
-
-# arithmetic and comparison
-const sum := a + b * 2;       # precedence: * before +
-const ok := x >= 0 == true;
-
-# unary
-const neg := -x;
-const inv := !flag;
-
-# dereference and address-of
-const val := *ptr;
-const r := &x;
-const rm := &mut x;
-
-# field access, indexing, call
-const len := point.x;
-const elem := arr[i];
-const result := add(1, 2);
-const chained := obj.method()(0).field;
-
-# unit and tuple literals
-const unit := ();
-const pair := (1, 2);
-const triple := (a, b, c);
-
-# struct initializer — construct a named type
-const p := Point { x: 10, y: 20 };
+# struct initializer — fields use '='
+const p := Point { x = 10, y = 20 };
 const empty := Foo {};
 
-# StructType expression — struct type with field names and types (no values)
+# generic struct initializer
+const opt := Option<i32> { has_value = true, value = 42 };
+
+# path expressions
+const v := Color::Red;                       # enum variant
+const q := Quad::max(a, b);                  # static method
+const arr := Array<i32, 10>::create();       # static method with type args
+const elem := Option<i32>::create(5);        # static method with type args
+
+# array literals
+const buf := [3]i32{ 1, 2, 3 };   # with values
+const zero := [10]i32{};           # zero-initialized
+const gen := [N]T{};               # const-generic count
+
+# logical operators
+if (x > 0 && y > 0) {}
+if (done || failed) {}
+
+# StructType expression
 const Point := struct { x: i32, y: i32 };
 
-# StructExpr — anonymous struct value with inline types and values
+# StructExpr — anonymous struct value
 const player := struct { x: i32 = 0, y: i32 = 0 };
 
-# FnLit — function with named params and a body block
-const adder := fn (a: i32) -> i32 { return a + offset; };
-const noop := fn () -> void {};
+# FnLit
+const adder := fn(a: i32) -> i32 { return a + 1; };
 
-# FnType — function type expression (no body, bare param types)
+# FnType
 const BinaryOp := fn(i32, i32) -> i32;
-var callback: fn(i32) -> void;
 ```
+
+### Reference Expressions
+
+```
+const r  := &x;       # immutable reference
+const rm := &mut x;   # mutable reference
+const v  := *ptr;     # dereference
+```
+
+### Imports and Cross-Module Access
+
+```
+import game.ecs.world;         # alias = last segment: world
+import game.ecs.world as w;    # explicit alias
+
+const e := world::spawn(1);    # call exported function
+```
+
+---
+
+## Keywords
+
+`fn` `const` `var` `mut` `if` `else` `for` `return` `struct` `enum` `type` `impl` `import` `pub` `true` `false` `as` `self`

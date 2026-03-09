@@ -1,0 +1,39 @@
+
+import std.core.optional;
+
+const Option<T> := optional::Option<T>;
+
+pub const Array<T: type, N: u32> := struct {
+  data: [N]T,
+  count: u32,
+};
+
+impl Array<T, N> {
+  pub const create := fn() -> Array<T, N> {
+    return Array<T, N> {
+        data = [N]T{},
+        count = 0,
+    };
+  };
+
+  pub const push := fn (&mut self, v: T) -> void {
+    if (self.count >= N) return;
+
+    self.data[self.count] = v;
+    self.count += 1;
+  }
+
+  pub const pop := fn (&mut self) -> void {
+    if (self.count <= 0) return;
+    self.count -= 1;
+  }
+
+  pub const get := fn (&self, idx: u32) -> Option<T>  {
+    if (idx < 0 || idx >= self.count) return  Option<T>::nullopt();
+    return Option<T>::create(self.data[idx]);
+  }
+
+  pub const get_count := fn (&self) -> u32 {
+      return self.count;
+  }
+}

@@ -1,0 +1,56 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# if/else chains, for loops, early return.
+
+const clamp := fn(x: i32, lo: i32, hi: i32) -> i32 {
+  if (x < lo) {
+    return lo;
+  } else if (x > hi) {
+    return hi;
+  } else {
+    return x;
+  }
+}
+
+const sign := fn(x: i32) -> i32 {
+  if (x > 0) {
+    return 1;
+  } else if (x < 0) {
+    return -1;
+  } else {
+    return 0;
+  }
+}
+
+const sum_range := fn(lo: i32, hi: i32) -> i32 {
+  var s: i32 = 0;
+  for (var i: i32 = lo; i < hi; i += 1) {
+    s += i;
+  }
+  return s;
+}
+
+const count_down := fn(n: i32) -> i32 {
+  var c: i32 = 0;
+  for (var i: i32 = n; i > 0; i -= 1) {
+    c += 1;
+  }
+  return c;
+}
+
+const main := fn() -> void {
+  const a := clamp(5, 0, 3);
+  const b := clamp(-1, 0, 10);
+  const c := clamp(7, 0, 10);
+  const s := sign(-42);
+  const t := sign(0);
+  const u := sign(7);
+  const sum := sum_range(1, 6);
+  const cd := count_down(4);
+}
+
+# CHECK: define i32 @_U_01_control_flow__clamp
+# CHECK: define i32 @_U_01_control_flow__sign
+# CHECK: define i32 @_U_01_control_flow__sum_range
+# CHECK: define i32 @_U_01_control_flow__count_down
+# CHECK: define void @main

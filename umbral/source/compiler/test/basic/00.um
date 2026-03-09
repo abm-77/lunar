@@ -1,6 +1,0 @@
-# RUN: %uc %s
-
-
-pub fn main () void {
-  return 0;
-}

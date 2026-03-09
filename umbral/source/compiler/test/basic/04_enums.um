@@ -1,0 +1,41 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Enums, boolean logic, and references.
+
+const Direction := enum {
+  North,
+  South,
+  East,
+  West,
+}
+
+const is_horizontal := fn(d: Direction) -> bool {
+  return d == Direction::East || d == Direction::West;
+}
+
+const is_vertical := fn(d: Direction) -> bool {
+  return d == Direction::North || d == Direction::South;
+}
+
+const negate := fn(x: bool) -> bool {
+  return !x;
+}
+
+const bump := fn(p: &mut i32) -> void {
+  *p += 1;
+}
+
+const main := fn() -> void {
+  const d := Direction::North;
+  const h := is_horizontal(d);
+  const v := is_vertical(d);
+  const n := negate(h);
+  var counter: i32 = 0;
+  bump(&mut counter);
+}
+
+# CHECK: define i1 @_U_04_enums__is_horizontal
+# CHECK: define i1 @_U_04_enums__is_vertical
+# CHECK: define i1 @_U_04_enums__negate
+# CHECK: define void @_U_04_enums__bump
+# CHECK: define void @main

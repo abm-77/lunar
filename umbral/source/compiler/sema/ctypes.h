@@ -41,7 +41,7 @@ struct CType {
 
 struct TypeTable {
   std::vector<CType> types;
-  std::vector<CTypeId> list; // flat pool fo rTyple/Fn elem list
+  std::vector<CTypeId> list; // flat pool for Type/Fn elem list
 
   TypeTable() {
     for (i32 k = static_cast<i32>(CTypeKind::Void);
@@ -57,10 +57,18 @@ struct TypeTable {
   CTypeId intern(CType t) {
     for (u32 i = 0; i < static_cast<u32>(types.size()); ++i) {
       const auto &e = types[i];
-      if (e.kind == t.kind && e.is_mut == t.is_mut && e.inner == t.inner &&
-          e.count == t.count && e.list_start == t.list_start &&
-          e.list_count == t.list_count && e.symbol == t.symbol)
-        return i;
+      if (e.kind != t.kind || e.is_mut != t.is_mut || e.inner != t.inner ||
+          e.count != t.count || e.list_count != t.list_count ||
+          e.symbol != t.symbol)
+        continue;
+      // Compare list contents (not just list_start) to enable dedup when the
+      // same type args are pushed multiple times at different offsets.
+      if (e.list_count > 0 &&
+          !std::equal(list.begin() + e.list_start,
+                      list.begin() + e.list_start + e.list_count,
+                      list.begin() + t.list_start))
+        continue;
+      return i;
     }
 
     CTypeId id = static_cast<CTypeId>(types.size());

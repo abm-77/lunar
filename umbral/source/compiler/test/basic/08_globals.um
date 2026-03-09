@@ -1,0 +1,45 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Global variables: declaration, reads, and writes from functions.
+
+const ZERO: i32 = 0;
+const TRUE_FLAG: bool = true;
+var counter: i32 = 0;
+var total: i32 = 0;
+
+const get_zero := fn() -> i32 {
+  return ZERO;
+}
+
+const increment := fn() -> void {
+  counter += 1;
+  total += counter;
+}
+
+const reset := fn() -> void {
+  counter = 0;
+  total = 0;
+}
+
+const get_counter := fn() -> i32 {
+  return counter;
+}
+
+const main := fn() -> void {
+  increment();
+  increment();
+  increment();
+  const c := get_counter();
+  reset();
+  const z := get_zero();
+}
+
+# CHECK: @_U_08_globals__ZERO
+# CHECK: @_U_08_globals__TRUE_FLAG
+# CHECK: @_U_08_globals__counter
+# CHECK: @_U_08_globals__total
+# CHECK: define i32 @_U_08_globals__get_zero
+# CHECK: define void @_U_08_globals__increment
+# CHECK: define void @_U_08_globals__reset
+# CHECK: define i32 @_U_08_globals__get_counter
+# CHECK: define void @main

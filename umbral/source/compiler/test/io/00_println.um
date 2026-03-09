@@ -1,0 +1,17 @@
+
+
+import sys.io.fmt as fmt;
+
+
+
+const main := fn () -> i32 {
+  const name := "umbral";
+  const x : i64 = 100;
+  const y : u32 = 8;
+
+  fmt::println("hello {}", { fmt::arg_bytes(name) });
+  fmt::println("x={}, y={}", { fmt::arg(x), fmt::arg(y) });
+  fmt::println("ok={{}}", {  });
+
+  return 0;
+}

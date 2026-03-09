@@ -1,0 +1,36 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Recursive functions.
+
+const fib := fn(n: i32) -> i32 {
+  if (n <= 1) {
+    return n;
+  }
+  return fib(n - 1) + fib(n - 2);
+}
+
+const factorial := fn(n: i32) -> i32 {
+  if (n <= 1) {
+    return 1;
+  }
+  return n * factorial(n - 1);
+}
+
+const count_steps := fn(n: i32) -> i32 {
+  if (n <= 0) {
+    return 0;
+  }
+  return 1 + count_steps(n - 1);
+}
+
+const main := fn() -> void {
+  const f7 := fib(7);
+  const f10 := fib(10);
+  const fact5 := factorial(5);
+  const s := count_steps(10);
+}
+
+# CHECK: define i32 @_U_07_recursion__fib
+# CHECK: define i32 @_U_07_recursion__factorial
+# CHECK: define i32 @_U_07_recursion__count_steps
+# CHECK: define void @main

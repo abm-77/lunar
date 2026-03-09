@@ -1,0 +1,32 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Integer and boolean literals, arithmetic and logical operators.
+
+const add := fn(a: i32, b: i32) -> i32 { return a + b; }
+const sub := fn(a: i32, b: i32) -> i32 { return a - b; }
+const mul := fn(a: i32, b: i32) -> i32 { return a * b; }
+const div := fn(a: i32, b: i32) -> i32 { return a / b; }
+const bool_ops := fn(x: bool, y: bool) -> bool {
+  return x && y || !x;
+}
+
+const cmp := fn(a: i32, b: i32) -> bool {
+  return a == b || a != b || a < b || a <= b || a > b || a >= b;
+}
+
+const main := fn() -> void {
+  const a := add(10, 32);
+  const b := sub(100, 58);
+  const c := mul(6, 7);
+  const d := div(84, 2);
+  const e := bool_ops(true, false);
+  const g := cmp(a, b);
+}
+
+# CHECK: define i32 @_U_00_literals__add
+# CHECK: define i32 @_U_00_literals__sub
+# CHECK: define i32 @_U_00_literals__mul
+# CHECK: define i32 @_U_00_literals__div
+# CHECK: define i1 @_U_00_literals__bool_ops
+# CHECK: define i1 @_U_00_literals__cmp
+# CHECK: define void @main

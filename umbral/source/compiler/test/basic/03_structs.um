@@ -1,0 +1,37 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Structs, impl methods, and field access.
+
+const Vec2 := struct {
+  x: i32,
+  y: i32,
+}
+
+impl Vec2 {
+  const dot := fn(&self, other: Vec2) -> i32 {
+    return self.x * other.x + self.y * other.y;
+  }
+
+  const scale := fn(&mut self, s: i32) -> void {
+    self.x = self.x * s;
+    self.y = self.y * s;
+  }
+
+  const add := fn(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2 { x = a.x + b.x, y = a.y + b.y };
+  }
+}
+
+const main := fn() -> void {
+  var v := Vec2 { x = 3, y = 4 };
+  v.scale(2);
+  const u := Vec2 { x = 1, y = 0 };
+  const d := v.dot(u);
+  const w := Vec2::add(v, u);
+}
+
+# CHECK: %Vec2
+# CHECK: define void @main
+# CHECK: @_U_03_structs__Vec2__dot
+# CHECK: @_U_03_structs__Vec2__scale
+# CHECK: @_U_03_structs__Vec2__add

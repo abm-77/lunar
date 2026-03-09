@@ -1,0 +1,34 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Basic arithmetic, control flow, and local variables.
+
+const add := fn(a: i32, b: i32) -> i32 {
+  return a + b;
+}
+
+const max := fn(a: i32, b: i32) -> i32 {
+  if (a > b) {
+    return a;
+  } else {
+    return b;
+  }
+}
+
+const sum_to := fn(n: i32) -> i32 {
+  var s: i32 = 0;
+  for (var i: i32 = 0; i < n; i += 1) {
+    s += i;
+  }
+  return s;
+}
+
+const main := fn() -> void {
+  const x := add(1, 2);
+  const y := max(x, 10);
+  const z := sum_to(y);
+}
+
+# CHECK: define i32 @_U_02_functions__add
+# CHECK: define i32 @_U_02_functions__max
+# CHECK: define i32 @_U_02_functions__sum_to
+# CHECK: define void @main

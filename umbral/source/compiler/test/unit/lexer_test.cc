@@ -290,7 +290,7 @@ TEST_F(LexFixture, HexIntegerSpan) {
 TEST_F(LexFixture, HexNoDigitsIsError) {
   auto r = lex("0x");
   ASSERT_FALSE(r.has_value());
-  EXPECT_STREQ(r.error().msg, "expected hex digit after '0x'");
+  EXPECT_EQ(r.error().msg, "expected hex digit after '0x'");
 }
 
 TEST_F(LexFixture, BinaryIntegerLiteral) {
@@ -309,7 +309,7 @@ TEST_F(LexFixture, BinaryIntegerSpan) {
 TEST_F(LexFixture, BinaryNoDigitsIsError) {
   auto r = lex("0b");
   ASSERT_FALSE(r.has_value());
-  EXPECT_STREQ(r.error().msg, "expected binary digit after '0b'");
+  EXPECT_EQ(r.error().msg, "expected binary digit after '0b'");
 }
 
 TEST_F(LexFixture, BinaryStopsAtNonBinaryDigit) {
@@ -347,7 +347,7 @@ TEST_F(LexFixture, FloatWithExponent) {
 TEST_F(LexFixture, FloatBadExponentIsError) {
   auto r = lex("1.5eX");
   ASSERT_FALSE(r.has_value());
-  EXPECT_STREQ(r.error().msg, "expected digit in float exponent");
+  EXPECT_EQ(r.error().msg, "expected digit in float exponent");
 }
 
 TEST_F(LexFixture, IntegerDotIsNotFloat) {
@@ -390,13 +390,13 @@ TEST_F(LexFixture, StringSpanIncludesQuotes) {
 TEST_F(LexFixture, UnterminatedStringIsError) {
   auto r = lex(R"("unterminated)");
   ASSERT_FALSE(r.has_value());
-  EXPECT_STREQ(r.error().msg, "unterminated string");
+  EXPECT_EQ(r.error().msg, "unterminated string");
 }
 
 TEST_F(LexFixture, StringWithNewlineIsError) {
   auto r = lex("\"line1\nline2\"");
   ASSERT_FALSE(r.has_value());
-  EXPECT_STREQ(r.error().msg, "unterminated string");
+  EXPECT_EQ(r.error().msg, "unterminated string");
 }
 
 // ============================================================
@@ -406,14 +406,14 @@ TEST_F(LexFixture, StringWithNewlineIsError) {
 TEST_F(LexFixture, UnexpectedCharIsError) {
   auto r = lex("@");
   ASSERT_FALSE(r.has_value());
-  EXPECT_STREQ(r.error().msg, "unexpected character");
+  EXPECT_EQ(r.error().msg, "unexpected character");
 }
 
 TEST_F(LexFixture, ValidTokensBeforeErrorAreEmitted) {
   // With std::unexpected, we only get an error — no partial token stream.
   auto r = lex("fn @");
   ASSERT_FALSE(r.has_value());
-  EXPECT_STREQ(r.error().msg, "unexpected character");
+  EXPECT_EQ(r.error().msg, "unexpected character");
 }
 
 // ============================================================

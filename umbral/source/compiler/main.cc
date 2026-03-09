@@ -5,26 +5,26 @@
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    std::fprintf(stderr, "usage: uc <file>.um [-o <output>] [--root <dir>]\n");
+    std::fprintf(stderr,
+                 "usage: uc <file>.um [-o <output>] [--root <dir>] [--dump-ir]\n");
     return 1;
   }
 
   std::string src = argv[1];
-  std::string out = "a.out";
-  std::string root;
-  for (int i = 2; i < argc - 1; ++i) {
+  DriverOptions opts;
+  for (int i = 2; i < argc; ++i) {
     std::string flag = argv[i];
-    if (flag == "-o") {
-      out = argv[i + 1];
-      ++i;
-    } else if (flag == "--root") {
-      root = argv[i + 1];
-      ++i;
+    if (flag == "-o" && i + 1 < argc) {
+      opts.out_path = argv[++i];
+    } else if (flag == "--root" && i + 1 < argc) {
+      opts.root_override = argv[++i];
+    } else if (flag == "--dump-ir") {
+      opts.dump_ir = true;
     }
   }
 
   Driver driver;
-  auto result = driver.run(src, out, root);
+  auto result = driver.run(src, opts);
   if (!result.ok) {
     std::fprintf(stderr, "uc: %s\n", result.error.c_str());
     return 1;

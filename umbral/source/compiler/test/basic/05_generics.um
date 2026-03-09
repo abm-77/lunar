@@ -1,0 +1,28 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Generic structs and functions (monomorphization).
+
+const Pair<A: type, B: type> := struct {
+  first: A,
+  second: B,
+}
+
+impl Pair<A, B> {
+  const make := fn(a: A, b: B) -> Pair<A, B> {
+    return Pair<A, B> { first = a, second = b };
+  }
+}
+
+const identity<T: type> := fn(x: T) -> T {
+  return x;
+}
+
+const main := fn() -> void {
+  const p := Pair<i32, bool>::make(42, true);
+  const x := identity(7);
+  const y := identity(false);
+}
+
+# CHECK: define void @main
+# CHECK: @_U_05_generics__identity
+# CHECK: @_U_05_generics__Pair__make

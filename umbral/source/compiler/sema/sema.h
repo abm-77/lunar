@@ -10,8 +10,9 @@
 
 struct SemaResult {
   SymbolTable syms;
-  TypeTable   types;
+  TypeTable types;
   MethodTable methods;
+  std::unordered_map<SymbolId, BodySema> body_semas;
 };
 
 // ── Single-module entry point (used by tests) ─────────────────────────────
@@ -20,14 +21,17 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
                                    const TypeAst &type_ast,
                                    const Interner &interner,
                                    std::string_view src) {
+
   // Phase 1: collect declarations
   auto syms_r = collect_symbols(mod, ir, src);
   if (!syms_r) return std::unexpected(syms_r.error());
   SymbolTable syms = std::move(*syms_r);
 
   // Phase 2: canonical type table + lowerer
-  TypeTable   types;
+  TypeTable types;
   TypeLowerer lowerer(type_ast, syms, interner, types);
+  std::vector<const BodyIR *> single_irs{&ir};
+  lowerer.dep_irs = &single_irs;
 
   // Phase 3: method table
   auto methods_r = build_method_table(mod, /*module_idx=*/0, syms, lowerer);
@@ -37,17 +41,21 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
   // Phase 4: type-check non-generic function bodies.
   MonoCache mono_cache;
   u32 n_original_syms = static_cast<u32>(syms.symbols.size());
+  std::unordered_map<SymbolId, BodySema> body_semas;
   for (u32 i = 1; i < n_original_syms; ++i) {
     const Symbol &sym = syms.symbols[i];
     if (sym.kind != SymbolKind::Func || sym.body == 0) continue;
     if (sym.generics_count > 0) continue;
     BodyChecker checker(ir, mod, syms, methods, types, lowerer, interner, src,
                         mono_cache);
+    checker.body_semas_out = &body_semas;
     auto body_r = checker.check(sym);
     if (!body_r) return std::unexpected(body_r.error());
+    body_semas[i] = std::move(*body_r);
   }
 
-  return SemaResult{std::move(syms), std::move(types), std::move(methods)};
+  return SemaResult{std::move(syms), std::move(types), std::move(methods),
+                    std::move(body_semas)};
 }
 
 // ── Multi-module entry point ───────────────────────────────────────────────
@@ -79,8 +87,7 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     lowerer.module_idx = i;
     auto mt_r = build_method_table(lm.mod, i, syms, lowerer);
     if (!mt_r) return std::unexpected(mt_r.error());
-    for (auto &[k, v] : mt_r->table)
-      methods.table[k] = v;
+    for (auto &[k, v] : mt_r->table) methods.table[k] = v;
   }
 
   // Phase 4a: resolve cross-module type aliases (const E := world::E).
@@ -93,24 +100,23 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
       continue;
     const BodyIR &sym_ir = modules[sym.module_idx].ir;
     if (sym_ir.nodes.kind[sym.type_node] != NodeKind::Path) continue;
-    u32 ls  = sym_ir.nodes.b[sym.type_node];
+    u32 ls = sym_ir.nodes.b[sym.type_node];
     u32 cnt = sym_ir.nodes.c[sym.type_node];
     if (cnt < 2) continue;
-    SymId first_seg  = static_cast<SymId>(sym_ir.nodes.list[ls]);
+    SymId first_seg = static_cast<SymId>(sym_ir.nodes.list[ls]);
     SymId second_seg = static_cast<SymId>(sym_ir.nodes.list[ls + 1]);
     const auto &imp = modules[sym.module_idx].import_map;
     auto mit = imp.find(first_seg);
     if (mit == imp.end()) continue;
     u32 dep_mod_idx = mit->second;
     SymbolId actual = syms.lookup_pub(dep_mod_idx, second_seg);
-    if (actual != kInvalidSymbol)
-      sym.aliased_sym = actual;
+    if (actual != kInvalidSymbol) sym.aliased_sym = actual;
   }
 
   // Phase 4b: collect per-module TypeAst and BodyIR pointers for cross-module
   // type resolution and struct field access.
   std::vector<const TypeAst *> dep_type_asts;
-  std::vector<const BodyIR *>  dep_irs;
+  std::vector<const BodyIR *> dep_irs;
   dep_type_asts.reserve(modules.size());
   dep_irs.reserve(modules.size());
   for (auto &lm : modules) {
@@ -122,26 +128,31 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
   // Each symbol carries module_idx; use it to select the right module data.
   MonoCache mono_cache;
   u32 n_original_syms = static_cast<u32>(syms.symbols.size());
+  std::unordered_map<SymbolId, BodySema> body_semas;
   for (u32 i = 1; i < n_original_syms; ++i) {
     const Symbol &sym = syms.symbols[i];
     if (sym.kind != SymbolKind::Func || sym.body == 0) continue;
     if (sym.generics_count > 0) continue;
 
-    u32 mod_i  = sym.module_idx;
-    auto &lm   = modules[mod_i];
+    u32 mod_i = sym.module_idx;
+    auto &lm = modules[mod_i];
     TypeLowerer lowerer(lm.type_ast, syms, interner, types);
     lowerer.module_idx = mod_i;
+    lowerer.dep_irs = &dep_irs;
 
-    BodyChecker checker(lm.ir, lm.mod, syms, methods, types, lowerer,
-                        interner, lm.src, mono_cache);
-    checker.module_idx    = mod_i;
-    checker.import_map    = &lm.import_map;
+    BodyChecker checker(lm.ir, lm.mod, syms, methods, types, lowerer, interner,
+                        lm.src, mono_cache);
+    checker.module_idx = mod_i;
+    checker.import_map = &lm.import_map;
     checker.dep_type_asts = &dep_type_asts;
-    checker.dep_irs       = &dep_irs;
+    checker.dep_irs = &dep_irs;
+    checker.body_semas_out = &body_semas;
 
     auto body_r = checker.check(sym);
     if (!body_r) return std::unexpected(body_r.error());
+    body_semas[i] = std::move(*body_r);
   }
 
-  return SemaResult{std::move(syms), std::move(types), std::move(methods)};
+  return SemaResult{std::move(syms), std::move(types), std::move(methods),
+                    std::move(body_semas)};
 }

@@ -1,0 +1,39 @@
+
+const ArgTag := enum {
+  # store in a
+  I8, I16, I32, I64, 
+  U8, U16, U32, U64, 
+  Bool,
+
+  # store in a (f32 in low 32-bits, f64 in full)
+  F32, F64,
+
+  # store ptr in a and length in b
+  Bytes,
+}
+
+const Arg := struct {
+  tag: ArgTag,
+  a: u64,
+  b: u64,
+}
+
+const println := fn (fmt: []u8, args: []Arg) {
+
+}
+
+const arg_u64 := fn (v: u64) -> Arg {
+  return Arg {
+      tag = ArgTag::U64,
+      a = v,
+      b = 0,
+  };
+};
+
+const arg_i64 := fn (v: i64) -> Arg {
+  return Arg {
+      tag = ArgTag::I64,
+      a = v,
+      b = 0,
+  };
+};

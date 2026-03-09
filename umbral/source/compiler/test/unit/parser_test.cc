@@ -143,7 +143,7 @@ TEST_F(ParseFixture, LetNoTypeNoInit) {
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   ASSERT_EQ(stmts.size(), 1u);
-  EXPECT_EQ(p.body_ir.nodes.kind[stmts[0]], NodeKind::LetStmt);
+  EXPECT_EQ(p.body_ir.nodes.kind[stmts[0]], NodeKind::ConstStmt);
   EXPECT_EQ(p.body_ir.nodes.b[stmts[0]], 0u); // no type
   EXPECT_EQ(p.body_ir.nodes.c[stmts[0]], 0u); // no init
 }
@@ -154,7 +154,7 @@ TEST_F(ParseFixture, LetWithTypeAndInit) {
   auto stmts = fn_stmts();
   ASSERT_EQ(stmts.size(), 1u);
   NodeId s = stmts[0];
-  EXPECT_EQ(p.body_ir.nodes.kind[s], NodeKind::LetStmt);
+  EXPECT_EQ(p.body_ir.nodes.kind[s], NodeKind::ConstStmt);
   EXPECT_NE(p.body_ir.nodes.b[s],
             0u); // has type (TypeId 0 = void, i32 is later)
   // init is NodeId 0 (first node) — check it's an IntLit rather than != 0
@@ -465,7 +465,7 @@ TEST_F(ParseFixture, StructInitNoFields) {
 }
 
 TEST_F(ParseFixture, StructInitWithFields) {
-  auto &p = parse_fn("Point { x: 1, y: 2 };");
+  auto &p = parse_fn("Point { x = 1, y = 2 };");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   NodeId expr = p.body_ir.nodes.a[stmts[0]];
@@ -474,16 +474,16 @@ TEST_F(ParseFixture, StructInitWithFields) {
 }
 
 TEST_F(ParseFixture, StructExpr) {
-  auto &p = parse_fn("const player = struct { x: i32 = 10, y: i32 = 4 };");
+  auto &p = parse_fn("const player := struct { x = 10, y = 4 };");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   ASSERT_EQ(stmts.size(), 1u);
   NodeId let = stmts[0];
-  EXPECT_EQ(p.body_ir.nodes.kind[let], NodeKind::LetStmt);
+  EXPECT_EQ(p.body_ir.nodes.kind[let], NodeKind::ConstStmt);
   NodeId init = p.body_ir.nodes.c[let];
   EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::StructExpr);
-  EXPECT_EQ(p.body_ir.nodes.c[init], 2u); // 2 fields
-  // check first field name
+  EXPECT_EQ(p.body_ir.nodes.c[init], 2u); // 2 field pairs
+  // check first field name (pairs: [SymId, NodeId])
   u32 ls = p.body_ir.nodes.b[init];
   EXPECT_EQ(interner.view(p.body_ir.nodes.list[ls]), "x");
 }
@@ -676,8 +676,7 @@ TEST_F(ParseFixture, ArrayLitCountLessThanValuesIsError) {
   // [2]i32{1, 2, 3} — count 2 < 3 values, error
   auto &p = parse_fn("[2]i32{1, 2, 3};");
   EXPECT_TRUE(p.error().has_value());
-  EXPECT_STREQ(p.error()->msg,
-               "array count is less than number of initializers");
+  EXPECT_EQ(p.error()->msg, "array count is less than number of initializers");
 }
 
 TEST_F(ParseFixture, ArrayLitEmpty) {
@@ -752,7 +751,7 @@ TEST_F(ParseFixture, ColonEqualShorthandInStmt) {
   auto stmts = fn_stmts();
   ASSERT_EQ(stmts.size(), 1u);
   NodeId s = stmts[0];
-  EXPECT_EQ(p.body_ir.nodes.kind[s], NodeKind::LetStmt);
+  EXPECT_EQ(p.body_ir.nodes.kind[s], NodeKind::ConstStmt);
   EXPECT_EQ(p.body_ir.nodes.b[s], 0u); // no explicit type
   EXPECT_EQ(p.body_ir.nodes.kind[p.body_ir.nodes.c[s]], NodeKind::IntLit);
 }
@@ -1052,7 +1051,7 @@ TEST_F(ParseFixture, ForConstInit) {
   ASSERT_EQ(stmts.size(), 1u);
   u32 for_idx = p.body_ir.nodes.a[stmts[0]];
   EXPECT_EQ(p.body_ir.nodes.kind[p.body_ir.fors[for_idx].init],
-            NodeKind::LetStmt);
+            NodeKind::ConstStmt);
 }
 
 TEST_F(ParseFixture, TypeArgInTypeAnnotation) {

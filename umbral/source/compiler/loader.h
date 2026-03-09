@@ -15,12 +15,12 @@
 
 // A fully parsed module and its resolved import map.
 struct LoadedModule {
-  std::filesystem::path abs_path;             // absolute path to .um file
-  std::string           rel_path;             // e.g. "game/ecs/world"
-  std::string           src;                  // source text (owned)
-  Module                mod;
-  BodyIR                ir;
-  TypeAst               type_ast;
+  std::filesystem::path abs_path; // absolute path to .um file
+  std::string rel_path;           // e.g. "game/ecs/world"
+  std::string src;                // source text (owned)
+  Module mod;
+  BodyIR ir;
+  TypeAst type_ast;
   // Maps alias SymId → index in the modules vector returned by load_modules.
   // Key is the alias if given, otherwise the last path segment.
   std::unordered_map<SymId, u32> import_map;
@@ -29,8 +29,8 @@ struct LoadedModule {
 // Internal DFS state for load_modules.
 struct ModuleLoader {
   const std::filesystem::path &root;
-  Interner                    &interner;
-  const KeywordTable          &kws;
+  Interner &interner;
+  const KeywordTable &kws;
 
   // Canonical path → index in `modules` (set after a module is fully loaded).
   std::unordered_map<std::string, u32> visited;
@@ -64,8 +64,6 @@ load_modules(const std::filesystem::path &entry_file, Interner &interner,
   return load_modules(entry_file, entry_file.parent_path(), interner, kws);
 }
 
-// ----- implementation -------------------------------------------------------
-
 inline std::expected<u32, std::string>
 ModuleLoader::load(const std::filesystem::path &abs_path) {
   std::string canonical_key = abs_path.string();
@@ -81,8 +79,7 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
 
   // Read source.
   std::ifstream f(abs_path);
-  if (!f)
-    return std::unexpected("cannot open '" + abs_path.string() + "'");
+  if (!f) return std::unexpected("cannot open '" + abs_path.string() + "'");
   std::string src((std::istreambuf_iterator<char>(f)), {});
 
   // Lex.
@@ -107,7 +104,8 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
     // Build filesystem path from path segments.
     std::filesystem::path rel;
     for (u32 k = 0; k < imp.path_list_count; ++k) {
-      SymId seg = static_cast<SymId>(parser.mod.sym_list[imp.path_list_start + k]);
+      SymId seg =
+          static_cast<SymId>(parser.mod.sym_list[imp.path_list_start + k]);
       rel /= interner.view(seg);
     }
     rel.replace_extension(".um");
@@ -146,12 +144,12 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
 
   u32 idx = static_cast<u32>(modules.size());
   modules.push_back(LoadedModule{
-      .abs_path   = abs_path,
-      .rel_path   = std::move(rel_path),
-      .src        = std::move(src),
-      .mod        = std::move(parser.mod),
-      .ir         = std::move(parser.body_ir),
-      .type_ast   = std::move(parser.type_ast),
+      .abs_path = abs_path,
+      .rel_path = std::move(rel_path),
+      .src = std::move(src),
+      .mod = std::move(parser.mod),
+      .ir = std::move(parser.body_ir),
+      .type_ast = std::move(parser.type_ast),
       .import_map = std::move(import_map),
   });
 

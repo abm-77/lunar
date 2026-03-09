@@ -16,6 +16,11 @@ struct TypeLowerer {
   TypeTable &out;
   std::unordered_map<SymId, CTypeId> type_subst; // type-param substitution
   u32 module_idx = 0; // which module namespace to search for user-defined types
+  bool lenient = false; // if true, unknown named types return Void instead of error
+  // Per-loaded-module BodyIR pointers for struct/enum node kind distinction.
+  const std::vector<const BodyIR *> *dep_irs = nullptr;
+  // Fallback BodyIR for the current (or only) module when dep_irs is null.
+  const BodyIR *current_ir = nullptr;
 
   TypeLowerer(const TypeAst &ta, const SymbolTable &s, const Interner &i,
               TypeTable &o)
@@ -27,6 +32,7 @@ struct TypeLowerer {
     switch (tk) {
     case TypeKind::Named: {
       SymId name = type_ast.a[tid];
+      if (name == 0) return out.builtin(CTypeKind::Void); // const-generic int placeholder
       auto sit = type_subst.find(name);
       if (sit != type_subst.end()) return sit->second;
 
@@ -48,14 +54,28 @@ struct TypeLowerer {
       // user-defined type
       SymbolId sid = syms.lookup(module_idx, name);
       if (sid == kInvalidSymbol) {
+        if (lenient) return out.builtin(CTypeKind::Void);
         Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
         return std::unexpected(Error{sp, "unknown type name"});
       }
       // Follow cross-module type alias to the actual struct/enum symbol
-      if (syms.get(sid).aliased_sym != 0)
-        sid = syms.get(sid).aliased_sym;
+      if (syms.get(sid).aliased_sym != 0) sid = syms.get(sid).aliased_sym;
       CType ct;
-      ct.kind   = CTypeKind::Struct; // TODO: distinguish Enum via BodyIR node kind
+      CTypeKind ct_kind = CTypeKind::Struct;
+      {
+        const Symbol &resolved = syms.get(sid);
+        const BodyIR *ir = nullptr;
+        if (dep_irs) {
+          u32 mod = resolved.module_idx;
+          if (mod < static_cast<u32>(dep_irs->size()))
+            ir = (*dep_irs)[mod];
+        }
+        if (!ir) ir = current_ir;
+        if (ir && resolved.type_node != 0 &&
+            ir->nodes.kind[resolved.type_node] == NodeKind::EnumType)
+          ct_kind = CTypeKind::Enum;
+      }
+      ct.kind = ct_kind;
       ct.symbol = sid;
 
       // lower generic type args (e.g., List<i32, 5>) and store in ct.list

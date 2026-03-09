@@ -10,8 +10,6 @@ static constexpr SymbolId kInvalidSymbol = 0;
 enum class SymbolKind : u8 { Type, Func, GlobalVar };
 
 struct FuncSig {
-  std::vector<SymId> param_names;  // may be empty for type only sigs
-  std::vector<TypeId> param_types; // TypeAst TypeIds (syntax-level)
   TypeId ret_type = 0;
   u32 params_start = 0; // index into Module::params
   u32 params_count = 0;
@@ -37,6 +35,12 @@ struct Symbol {
   SymId impl_owner = 0;   // non-zero for impl methods (= type name SymId)
   u32 generics_start = 0; // into Module::generic_params
   u32 generics_count = 0; // 0 = not generic
+
+  // For monomorphized instances: pre-lowered concrete CTypeIds (= u32) for the
+  // function signature (avoids re-lowering with the substitution at codegen).
+  bool is_mono_instance = false;
+  u32 mono_concrete_ret = 0; // valid only when is_mono_instance
+  std::vector<u32> mono_concrete_params;
 
   // GlobalVar
   TypeId annotate_type = 0; // syntax level (0 if inferred)

@@ -12,8 +12,14 @@ template <class IdT, class KindT, class ListElemT = u32> struct NodeStore {
 
   // Reserve index 0 as the invalid/null sentinel so that 0 can be used
   // as "no node" / "no type" throughout without colliding with real nodes.
-  NodeStore() { kind.push_back(KindT{}); span_s.push_back(0); span_e.push_back(0);
-                a.push_back(0); b.push_back(0); c.push_back(0); }
+  NodeStore() {
+    kind.push_back(KindT{});
+    span_s.push_back(0);
+    span_e.push_back(0);
+    a.push_back(0);
+    b.push_back(0);
+    c.push_back(0);
+  }
 
   IdT make(KindT k, Span sp, u32 A = 0, u32 B = 0, u32 C = 0) {
     IdT id = static_cast<IdT>(kind.size());
@@ -51,29 +57,33 @@ enum class NodeKind : u16 {
   StructInit, // a = type SymId, b = fields_start, c = fields_count (fields are
               //   pairs [SymId, NodeId] in list pool)
   StructExpr, // b = fields_start, c = fields_count (fields are
-              //   triples [SymId, TypeId, NodeId] in list pool)
+              //   pairs [SymId, NodeId] in list pool)
   Block,      // b = stmt_start, c = stmt_count
-  LetStmt,    // a = SymId, b = TypeId or 0, c = init ExprId (or 0 if none)
-  VarStmt,    // same as LetStmt
-  AssignStmt, // a = lhs place ExprId, b = rhs ExprId, c = op TokenKind (Equal/PlusEqual/...)
+  ConstStmt,  // a = SymId, b = TypeId or 0, c = init ExprId (or 0 if none)
+  VarStmt,    // same as ConstStmt
+  AssignStmt, // a = lhs place ExprId, b = rhs ExprId, c = op TokenKind
+              // (Equal/PlusEqual/...)
   ReturnStmt, // a = expr (or 0 if empty return)
   IfStmt,     // a = cond, b = then block, c = else block
   ForStmt,    // a = index into BodyIR::fors
   ExprStmt,   // a = expr
   FnLit,      // a = index into BodyIR::fn_lits
-  StructType, // b = fields_start, c = fields_count (pairs [SymId, TypeId] in list)
-  FnType,     // a = ret TypeId, b = params_start, c = params_count (TypeIds in list)
+  StructType, // b = fields_start, c = fields_count (pairs [SymId, TypeId] in
+              // list)
+  FnType,     // a = ret TypeId, b = params_start, c = params_count (TypeIds in
+              // list)
   EnumType,   // b = variants_start, c = variants_count (SymIds in list)
-  Path,       // b = segments_start, c = segments_count (SymIds in list, e.g. Color::Red)
+  Path,       // b = segments_start, c = segments_count (SymIds in list, e.g.
+              // Color::Red)
 };
 
 using TypeId = u32;
 enum class TypeKind : u16 {
-  Named,  // a = SymId
-  Ref,    // a = mutable?, b = inner TypeId
-  Tuple,  // b = list_start, c = list_count
-  Fn,     // a = ret TypeId, b = list_start, c = list_count
-  Array,  // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId
+  Named, // a = SymId, b = targs_start, c = targs_count
+  Ref,   // a = mutable?, b = inner TypeId
+  Tuple, // b = list_start, c = list_count
+  Fn,    // a = ret TypeId, b = list_start, c = list_count
+  Array, // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId
 };
 
 using ExprAst = NodeStore<NodeId, NodeKind, NodeId>;
@@ -93,7 +103,8 @@ struct FnLitPayload {
   NodeId body = 0;
 };
 
-// explicit_count == static_cast<u32>(-1) means count was omitted (inferred from values)
+// explicit_count == static_cast<u32>(-1) means count was omitted (inferred from
+// values)
 struct ArrayLitPayload {
   u32 explicit_count = static_cast<u32>(-1);
   TypeId elem_type = 0;
