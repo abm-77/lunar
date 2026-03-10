@@ -1,14 +1,28 @@
 #pragma once
 
 #include <expected>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Support/CodeGen.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
+// LLVM ≥17: llvm/TargetParser/Host.h; LLVM ≤16: llvm/Support/Host.h
+#if __has_include(<llvm/TargetParser/Host.h>)
+#include <llvm/TargetParser/Host.h>
+#else
+#include <llvm/Support/Host.h>
+#endif
 
 #include <common/error.h>
 #include <common/interner.h>
@@ -21,7 +35,13 @@
 #include "type_lower.h"
 
 struct CodegenResult {
-  std::string ir; // serialised LLVM IR text (.ll)
+  std::string ir; // serialised LLVM IR text (.ll) — only populated with dump_ir
+
+  // Ownership of the LLVM context and module, so the caller can use them
+  // for object file emission after run_codegen() returns. LLVMContext must
+  // outlive Module, so both are kept here together.
+  std::unique_ptr<llvm::LLVMContext> context;
+  std::unique_ptr<llvm::Module> module;
 };
 
 // ── Name mangling
@@ -78,10 +98,20 @@ inline void declare_globals(CodegenCtx &cg) {
     assert(ctid && "failed to lower global type");
 
     llvm::Type *ty = cg.type_lower.lower(*ctid);
-    llvm::Constant *init = llvm::Constant::getNullValue(ty);
-    auto *gv = new llvm::GlobalVariable(*cg.module, ty, !sym.is_mut,
-                                        llvm::GlobalValue::ExternalLinkage,
-                                        init, mangle(i, cg));
+    llvm::GlobalVariable *gv;
+    if (sym.is_extern) {
+      // extern global: external linkage, no initializer, unmangled name.
+      auto sv = cg.interner.view(sym.name);
+      gv = new llvm::GlobalVariable(*cg.module, ty, !sym.is_mut,
+                                    llvm::GlobalValue::ExternalLinkage,
+                                    nullptr,
+                                    llvm::StringRef{sv.data(), sv.size()});
+    } else {
+      llvm::Constant *init = llvm::Constant::getNullValue(ty);
+      gv = new llvm::GlobalVariable(*cg.module, ty, !sym.is_mut,
+                                    llvm::GlobalValue::ExternalLinkage,
+                                    init, mangle(i, cg));
+    }
     cg.global_map[i] = gv;
   }
 }
@@ -89,10 +119,47 @@ inline void declare_globals(CodegenCtx &cg) {
 inline void declare_functions(CodegenCtx &cg) {
   for (SymbolId i = 1; i < cg.sema.syms.symbols.size(); ++i) {
     const Symbol &sym = cg.sema.syms.symbols[i];
-    if (sym.kind != SymbolKind::Func || sym.body == 0) continue;
+    if (sym.kind != SymbolKind::Func) continue;
     if (sym.generics_count > 0) continue;
 
-    // Mono instances store pre-lowered concrete CTypeIds; others use TypeAst lowering.
+    if (sym.is_extern) {
+      // Extern function: build LLVM type from the FnType TypeId in annotate_type.
+      assert(sym.annotate_type != 0 && "extern func must have a type annotation");
+      const TypeAst &ta = cg.modules[sym.module_idx].type_ast;
+      assert(ta.kind[sym.annotate_type] == TypeKind::Fn &&
+             "extern func type annotation must be a function type");
+      TypeLowerer tl = cg.make_type_lowerer(sym.module_idx);
+
+      TypeId ret_tid = ta.a[sym.annotate_type];
+      llvm::Type *ret_type = llvm::Type::getVoidTy(cg.ctx);
+      if (ret_tid != 0) {
+        auto ret_r = tl.lower(ret_tid);
+        assert(ret_r && "could not lower extern func return type");
+        if (llvm::Type *t = cg.type_lower.lower(*ret_r)) ret_type = t;
+      }
+
+      u32 ps = ta.b[sym.annotate_type], pc = ta.c[sym.annotate_type];
+      std::vector<llvm::Type *> param_types;
+      param_types.reserve(pc);
+      for (u32 j = 0; j < pc; ++j) {
+        auto pt_r = tl.lower(ta.list[ps + j]);
+        assert(pt_r && "could not lower extern func param type");
+        param_types.push_back(cg.type_lower.lower(*pt_r));
+      }
+
+      auto *ft = llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
+      auto sv = cg.interner.view(sym.name);
+      auto *fn = llvm::Function::Create(
+          ft, llvm::Function::ExternalLinkage,
+          llvm::StringRef{sv.data(), sv.size()}, *cg.module);
+      cg.fn_map[i] = fn;
+      continue;
+    }
+
+    if (sym.body == 0) continue;
+
+    // Mono instances store pre-lowered concrete CTypeIds; others use TypeAst
+    // lowering.
     llvm::Type *ret_type;
     std::vector<llvm::Type *> param_types;
     if (sym.is_mono_instance) {
@@ -140,11 +207,86 @@ inline void declare_functions(CodegenCtx &cg) {
 inline void emit_function_bodies(CodegenCtx &cg) {
   for (auto &[sym_id, fn] : cg.fn_map) {
     const Symbol &sym = cg.sema.syms.symbols[sym_id];
+    if (sym.is_extern) continue; // extern: no body to emit
     const LoadedModule &lm = cg.modules[sym.module_idx];
     const BodySema &bsema = cg.sema.body_semas.at(sym_id);
     FuncEmitter emitter(cg, *fn, sym, lm.ir, lm.mod, bsema);
     emitter.emit();
   }
+}
+
+// ── Object file emission
+// ──────────────────────────────────────────────────────────
+// Compiles mod to a native object file at obj_path.
+// Call this on CodegenResult::context / CodegenResult::module after
+// run_codegen() succeeds (and only when not in --dump-ir mode).
+//
+// LLVM API surface used:
+//   llvm::InitializeNativeTarget()            — registers native arch backend
+//   llvm::InitializeNativeTargetAsmPrinter()  — registers asm printer
+//   llvm::sys::getDefaultTargetTriple()       — host triple string
+//   llvm::TargetRegistry::lookupTarget(triple, err) → const llvm::Target *
+//   target->createTargetMachine(triple, cpu, features, opts,
+//                                reloc, cmodel, level) → llvm::TargetMachine *
+//   TM->createDataLayout()                    — must be set on module
+//   llvm::raw_fd_ostream(path, ec, OF_None)  — output file
+//   llvm::legacy::PassManager                 — pass pipeline
+//   TM->addPassesToEmitFile(pm, dest, nullptr,
+//                            llvm::CodeGenFileType::ObjectFile)
+//   pm.run(mod)                               — execute
+//
+inline Result<void> emit_object(llvm::LLVMContext & /*ctx*/, llvm::Module &mod,
+                                const std::string &obj_path) {
+  // TODO: implement
+  //
+  // 1. llvm::InitializeNativeTarget() +
+  // llvm::InitializeNativeTargetAsmPrinter()
+  // 2. triple = llvm::sys::getDefaultTargetTriple();
+  // mod.setTargetTriple(triple)
+  // 3. llvm::TargetRegistry::lookupTarget(triple, err) → const llvm::Target *
+  // 4. target->createTargetMachine(triple, cpu, features, TargetOptions{},
+  //      reloc, cmodel, CodeGenOptLevel::Default) → llvm::TargetMachine *
+  // 5. mod.setDataLayout(TM->createDataLayout())
+  // 6. llvm::raw_fd_ostream dest(obj_path, ec, llvm::sys::fs::OF_None)
+  // 7. llvm::legacy::PassManager pm
+  //    TM->addPassesToEmitFile(pm, dest, nullptr, CodeGenFileType::ObjectFile)
+  //    pm.run(mod); dest.flush()
+  // 8. delete TM; return {}
+
+  llvm::InitializeNativeTarget();
+  llvm::InitializeNativeTargetAsmPrinter();
+
+  llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+  mod.setTargetTriple(triple);
+
+  std::string err;
+  const llvm::Target *target = llvm::TargetRegistry::lookupTarget(triple, err);
+  if (err != "")
+    return std::unexpected{Error{0, 0, "could not lookup target: " + err}};
+
+  std::unique_ptr<llvm::TargetMachine> TM(target->createTargetMachine(
+      triple, llvm::sys::getHostCPUName(), "", {}, llvm::Reloc::PIC_,
+      llvm::CodeModel::Small, llvm::CodeGenOptLevel::None));
+
+  mod.setDataLayout(TM->createDataLayout());
+
+  std::error_code ec;
+  llvm::raw_fd_ostream dest(obj_path, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    return std::unexpected{
+        Error{0, 0, "could not write object file: " + ec.message()}};
+  }
+
+  llvm::legacy::PassManager pm;
+  if (TM->addPassesToEmitFile(pm, dest, nullptr,
+                              llvm::CodeGenFileType::ObjectFile)) {
+    return std::unexpected{Error{0, 0, "cannot emit object file for target"}};
+  }
+
+  pm.run(mod);
+  dest.flush();
+
+  return {};
 }
 
 inline Result<CodegenResult>
@@ -160,8 +302,12 @@ run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
   if (llvm::verifyModule(*cg.module, &es))
     return std::unexpected{Error{{0, 0}, "LLVM verification failed: " + err}};
 
+  // Serialise IR text (only used by --dump-ir; always populated for now).
   std::string ir_str;
   llvm::raw_string_ostream os(ir_str);
   cg.module->print(os, nullptr);
-  return CodegenResult{ir_str};
+
+  // Transfer ownership of context+module to the result so the caller can
+  // use them for object-file emission without the context dying here.
+  return CodegenResult{ir_str, std::move(cg.ctx_owned), std::move(cg.module)};
 }

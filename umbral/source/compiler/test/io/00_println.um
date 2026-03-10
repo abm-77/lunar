@@ -1,17 +1,17 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
 
-
-import sys.io.fmt as fmt;
-
-
+import sys.io.fmt => fmt;
 
 const main := fn () -> i32 {
   const name := "umbral";
+  fmt::println("hello {}", []fmt::Arg{ fmt::arg_bytes(name) });
   const x : i64 = 100;
   const y : u32 = 8;
-
-  fmt::println("hello {}", { fmt::arg_bytes(name) });
-  fmt::println("x={}, y={}", { fmt::arg(x), fmt::arg(y) });
-  fmt::println("ok={{}}", {  });
-
+  fmt::println("x={}, y={}", []fmt::Arg{ fmt::arg_i64(x), fmt::arg_u32(y) });
+  fmt::println("ok={{}}", []fmt::Arg{});
   return 0;
 }
+
+# CHECK: hello umbral
+# CHECK: x=100, y=8
+# CHECK: ok={}

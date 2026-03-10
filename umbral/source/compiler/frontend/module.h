@@ -33,6 +33,7 @@ struct Decl {
   u32 generics_start = 0;
   u32 generics_count = 0;
   bool is_pub = false;
+  bool is_extern = false;
   DeclKind kind{};
   Span span{};
 };
@@ -45,7 +46,7 @@ struct ImplDecl {
 };
 
 struct Module {
-  std::vector<u32> sym_list; // for module paths etc. stores SymId
+  std::vector<SymId> sym_list; // for module paths etc. stores SymId
   std::vector<FuncParam> params;
   std::vector<ImportDecl> imports;
   std::vector<Decl> decls;

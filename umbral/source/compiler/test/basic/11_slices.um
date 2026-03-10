@@ -1,0 +1,16 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+extern const rt_fmt_print_line: fn([]u8, []i32) -> void;
+
+const make_slice := fn() -> []i32 {
+  return []i32{ 1, 2, 3 };
+}
+
+const main := fn() -> void {
+  const s := make_slice();
+  var p := s.ptr;
+  var n := s.len;
+}
+
+# CHECK: define { ptr, i64 } @
+# CHECK: define void @main

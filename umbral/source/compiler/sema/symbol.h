@@ -19,6 +19,7 @@ struct Symbol {
   SymbolKind kind{};
   SymId name{};
   bool is_pub = false;
+  bool is_extern = false;
   Span span{};
   u32 module_idx = 0; // which LoadedModule this symbol belongs to
 
@@ -55,17 +56,14 @@ struct SymbolTable {
   std::vector<std::unordered_map<SymId, SymbolId>> module_namespaces;
 
   SymbolTable() {
-    symbols.push_back({});          // index 0 reserved (kInvalidSymbol)
+    symbols.push_back({});           // index 0 reserved (kInvalidSymbol)
     module_namespaces.push_back({}); // module 0 namespace
   }
 
-  // Allocate a namespace slot for an additional module (call once per module > 0).
+  // Allocate a namespace slot for an additional module (call once per module >
+  // 0).
   void add_module_namespace() { module_namespaces.push_back({}); }
 
-  // Single-module add (backward compat — goes into module 0).
-  SymbolId add(Symbol s) { return add(0, s); }
-
-  // Multi-module add.
   SymbolId add(u32 mod_idx, Symbol s) {
     SymbolId id = static_cast<SymbolId>(symbols.size());
     if (mod_idx < static_cast<u32>(module_namespaces.size()))
@@ -74,10 +72,6 @@ struct SymbolTable {
     return id;
   }
 
-  // Single-module lookup (backward compat — searches module 0).
-  SymbolId lookup(SymId name) const { return lookup(0, name); }
-
-  // Per-module lookup.
   SymbolId lookup(u32 mod_idx, SymId name) const {
     if (mod_idx < static_cast<u32>(module_namespaces.size())) {
       auto it = module_namespaces[mod_idx].find(name);
@@ -89,7 +83,8 @@ struct SymbolTable {
   // Like lookup(mod_idx, name) but only returns if the symbol is pub.
   SymbolId lookup_pub(u32 mod_idx, SymId name) const {
     SymbolId sid = lookup(mod_idx, name);
-    return (sid != kInvalidSymbol && symbols[sid].is_pub) ? sid : kInvalidSymbol;
+    return (sid != kInvalidSymbol && symbols[sid].is_pub) ? sid
+                                                          : kInvalidSymbol;
   }
 
   Symbol &get(SymbolId id) { return symbols[id]; }

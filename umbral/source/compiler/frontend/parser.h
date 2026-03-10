@@ -12,7 +12,8 @@
 
 class Parser {
 public:
-  Parser(const TokenStream &ts) : t(ts) {}
+  Parser(const TokenStream &ts, const IntrinsicTable &intrinsics)
+      : t(ts), intrinsics(intrinsics) {}
   std::optional<Error> error() const { return err; }
 
   BodyIR body_ir;
@@ -25,6 +26,7 @@ public:
 
 private:
   const TokenStream &t;
+  const IntrinsicTable &intrinsics;
   u32 i = 0;
   std::optional<Error> err;
 
@@ -195,10 +197,17 @@ private:
       return type_ast.make(TypeKind::Named, start, name);
     }
 
-    // named type: Ident [< TypeArg, ... >]
+    // named type: Ident [:: Ident] [< TypeArg, ... >]
     SymId name = expect_ident("expected type name");
-    while (match(TokenKind::ColonColon))
+    if (match(TokenKind::ColonColon)) {
+      // module::Type qualified reference
+      SymId mod_prefix = name;
       name = expect_ident("expected type segment");
+      while (match(TokenKind::ColonColon))
+        name = expect_ident("expected type segment");
+      Span endsp = {start.start, t.end[i - 1]};
+      return type_ast.make(TypeKind::QualNamed, endsp, name, mod_prefix);
+    }
     // optional generic type arguments: List<i32, 5>
     u32 targs_start = 0, targs_count = 0;
     if (match(TokenKind::Less)) {
@@ -265,6 +274,25 @@ private:
 
   NodeId parse_primary() {
     auto s = sp();
+
+    // @intrinsic(expr, type) — @as / @bitcast
+    if (match(TokenKind::At)) {
+      if (!at(TokenKind::Ident)) { set_error(sp(), "expected intrinsic name after '@'"); return 0; }
+      SymId name = static_cast<SymId>(t.payload[i]);
+      auto kind = intrinsics.lookup(name);
+      if (!kind) { set_error(sp(), "unknown intrinsic"); return 0; }
+      ++i; // consume name
+      expect(TokenKind::LParen, "expected '(' after intrinsic");
+      NodeId val = parse_expr();
+      expect(TokenKind::Comma, "expected ','");
+      TypeId ty = parse_type();
+      expect(TokenKind::RParen, "expected ')'");
+      switch (*kind) {
+      case IntrinsicKind::As:      return body_ir.nodes.make(NodeKind::CastAs,  s, val, ty);
+      case IntrinsicKind::Bitcast: return body_ir.nodes.make(NodeKind::Bitcast, s, val, ty);
+      default: set_error(s, "unhandled intrinsic"); return 0;
+      }
+    }
 
     // fn ( <params> ) -> <ret> <block>   — FnLit (named params + body)
     // fn ( <types> ) -> <ret>            — FnType (anonymous type expression)
@@ -544,9 +572,13 @@ private:
       }
       auto [vs, vc] = body_ir.nodes.push_list(values.data(),
                                               static_cast<u32>(values.size()));
+      Span endsp = {s.start, t.end[i - 1]};
+      if (explicit_count == static_cast<u32>(-1)) {
+        // []T{ ... } — slice literal
+        return body_ir.nodes.make(NodeKind::SliceLit, endsp, elem_type, vs, vc);
+      }
       u32 idx = static_cast<u32>(body_ir.array_lits.size());
       body_ir.array_lits.push_back({explicit_count, elem_type, vs, vc});
-      Span endsp = {s.start, t.end[i - 1]};
       return body_ir.nodes.make(NodeKind::ArrayLit, endsp, idx);
     }
 
@@ -841,7 +873,7 @@ private:
         match(TokenKind::Semicolon); // optional
         Span mend = {ms.start, t.end[i - 1]};
         impl_block.methods.push_back(
-            {mname, mty, minit, 0, 0, is_pub_method, mkind, mend});
+            {mname, mty, minit, 0, 0, is_pub_method, false, mkind, mend});
       }
       expect(TokenKind::RBrace, "expected '}'");
       match(TokenKind::Semicolon); // optional trailing ';'
@@ -851,12 +883,14 @@ private:
     }
 
     bool is_pub = match(TokenKind::KwPub);
+    bool is_extern = match(TokenKind::KwExtern);
 
-    // import <path> [as <ident>] ;
+    // import <path> [=> <ident>] ;
     if (match(TokenKind::KwImport)) {
       auto [ls, cnt] = parse_module_path();
       SymId alias = 0;
-      if (match(TokenKind::KwAs)) alias = expect_ident("expected alias name");
+      if (match(TokenKind::FatArrow))
+        alias = expect_ident("expected alias name after '=>'");
       expect(TokenKind::Semicolon, "expected ';'");
       Span endsp = {s.start, t.end[i - 1]};
       mod.imports.push_back({ls, cnt, alias, endsp});
@@ -882,7 +916,11 @@ private:
     }
     TypeId ty = 0;
     NodeId init = 0;
-    if (match(TokenKind::ColonEqual)) {
+    if (is_extern) {
+      // extern declarations require an explicit type annotation and no body.
+      expect(TokenKind::Colon, "expected ':' after extern declaration name");
+      ty = parse_type();
+    } else if (match(TokenKind::ColonEqual)) {
       init = parse_expr();
     } else {
       if (match(TokenKind::Colon)) ty = parse_type();
@@ -891,6 +929,6 @@ private:
     match(TokenKind::Semicolon); // optional at module level
     Span endsp = {s.start, t.end[i - 1]};
     mod.decls.push_back(
-        {name, ty, init, generics_start, generics_count, is_pub, kind, endsp});
+        {name, ty, init, generics_start, generics_count, is_pub, is_extern, kind, endsp});
   }
 };

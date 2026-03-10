@@ -60,11 +60,9 @@ inline DriverResult Driver::run(const std::string &src_path,
                                    : std::filesystem::path(opts.root_override);
 
   Interner interner;
-  KeywordTable kws;
-  kws.init(interner);
 
   // Load entry file and all transitive imports (topological order).
-  auto load_r = load_modules(entry, root, interner, kws);
+  auto load_r = load_modules(entry, root, interner);
   if (!load_r) return {false, load_r.error()};
   auto &modules = *load_r;
 
@@ -76,18 +74,42 @@ inline DriverResult Driver::run(const std::string &src_path,
     return {false, format_error(sema_r.error(), entry_src, src_path)};
   }
 
+  // LLVM Codegen
   auto llvm_ir = run_codegen(*sema_r, modules, interner, entry.stem().string());
   if (!llvm_ir) {
     const std::string &entry_src = modules.back().src;
     return {false, format_error(llvm_ir.error(), entry_src, src_path)};
   }
 
+  // Optionally dump LLVM IR
   if (opts.dump_ir) {
     std::fputs(llvm_ir->ir.c_str(), stdout);
     return {true};
   }
 
-  return {true};
+  // Emit native object file
+  auto obj_path = std::filesystem::temp_directory_path() /
+                  ("umbral_" + std::to_string(::getpid()) + ".o");
+  auto obj_r =
+      emit_object(*llvm_ir->context, *llvm_ir->module, obj_path.string());
+  if (!obj_r) return {false, "codegen: " + obj_r.error().msg};
+
+  // Write embedded libruntime.a to a temp file
+  std::filesystem::path rt_path;
+  auto rt_r = write_runtime(rt_path);
+  if (!rt_r.ok) {
+    std::filesystem::remove(obj_path);
+    return rt_r;
+  }
+
+  // Link final executable
+  auto link_r = link(obj_path, rt_path, opts.out_path);
+
+  // Clean up temp files regardless of link success.
+  std::filesystem::remove(obj_path);
+  std::filesystem::remove(rt_path);
+
+  return link_r;
 }
 
 inline DriverResult Driver::write_runtime(std::filesystem::path &out) {
@@ -108,7 +130,7 @@ inline DriverResult Driver::link(const std::filesystem::path &obj,
   cmd += obj.string() + " ";
   cmd += runtime_a.string() + " ";
 #if defined(__linux__)
-  cmd += "-ldl -lpthread -lX11 -lXrandr -lXi -lXxf86vm -lXcursor -lm -lvulkan ";
+  cmd += "-ldl -lpthread -lX11 -lXrandr -lXi -lXcursor -lm -lvulkan ";
 #elif defined(__APPLE__)
   cmd +=
       "-framework Cocoa -framework IOKit -framework CoreFoundation -lvulkan ";

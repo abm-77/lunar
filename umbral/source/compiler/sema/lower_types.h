@@ -21,6 +21,8 @@ struct TypeLowerer {
   const std::vector<const BodyIR *> *dep_irs = nullptr;
   // Fallback BodyIR for the current (or only) module when dep_irs is null.
   const BodyIR *current_ir = nullptr;
+  // Import alias map (alias SymId → module index) for resolving module::Type.
+  const std::unordered_map<SymId, u32> *import_map = nullptr;
 
   TypeLowerer(const TypeAst &ta, const SymbolTable &s, const Interner &i,
               TypeTable &o)
@@ -95,6 +97,44 @@ struct TypeLowerer {
       return out.intern(ct);
     } break;
 
+    case TypeKind::QualNamed: {
+      // module::Type — resolve via import_map
+      SymId type_name = type_ast.a[tid];
+      SymId mod_prefix = type_ast.b[tid];
+      Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
+      if (!import_map) {
+        if (lenient) return out.builtin(CTypeKind::Void);
+        return std::unexpected(Error{sp, "no import map for qualified type"});
+      }
+      auto mit = import_map->find(mod_prefix);
+      if (mit == import_map->end()) {
+        if (lenient) return out.builtin(CTypeKind::Void);
+        return std::unexpected(Error{sp, "unknown module prefix in qualified type"});
+      }
+      u32 dep_mod_idx = mit->second;
+      SymbolId sid = syms.lookup_pub(dep_mod_idx, type_name);
+      if (sid == kInvalidSymbol) {
+        if (lenient) return out.builtin(CTypeKind::Void);
+        return std::unexpected(Error{sp, "unknown type in qualified reference"});
+      }
+      if (syms.get(sid).aliased_sym != 0) sid = syms.get(sid).aliased_sym;
+      CType ct;
+      CTypeKind ct_kind = CTypeKind::Struct;
+      {
+        const Symbol &resolved = syms.get(sid);
+        const BodyIR *ir = nullptr;
+        if (dep_irs && dep_mod_idx < static_cast<u32>(dep_irs->size()))
+          ir = (*dep_irs)[dep_mod_idx];
+        if (!ir) ir = current_ir;
+        if (ir && resolved.type_node != 0 &&
+            ir->nodes.kind[resolved.type_node] == NodeKind::EnumType)
+          ct_kind = CTypeKind::Enum;
+      }
+      ct.kind = ct_kind;
+      ct.symbol = sid;
+      return out.intern(ct);
+    } break;
+
     case TypeKind::Ref: {
       bool is_mut = type_ast.a[tid] != 0;
       auto inner = lower(type_ast.b[tid]);
@@ -110,6 +150,13 @@ struct TypeLowerer {
       u32 count = type_ast.a[tid];
       auto elem = lower(type_ast.b[tid]);
       if (!elem) return elem;
+      if (count == static_cast<u32>(-1)) {
+        // []T — slice type
+        CType ct;
+        ct.kind = CTypeKind::Slice;
+        ct.inner = *elem;
+        return out.intern(ct);
+      }
       CType ct;
       ct.kind = CTypeKind::Array;
       ct.inner = *elem;

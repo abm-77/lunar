@@ -1,0 +1,37 @@
+
+import sys.io.fmt;
+
+const Player := struct {
+  x: i32,
+  y: i32,
+  health: u32,
+  name: []u8,
+};
+
+@gen const dump_player := fn (p: &Player) -> void {
+  @for_fields(Player, field) {
+    fmt::println("{} = {}", field.name, @field(p, field));
+  }
+}
+
+impl Player {
+  @gen const dump := fn (&self) -> void {
+    @for_fields(Player, field) {
+      fmt::println("{} = {}", field.name, @field(self, field));
+    }
+  }  
+}
+
+const main := fn () -> i32 {
+  const player := Player {
+    x = 1,
+    y = 2,
+    health = 50,
+    name = "john",
+  };
+
+  dump_player(player);
+  player.dump();
+
+  return 0;
+}

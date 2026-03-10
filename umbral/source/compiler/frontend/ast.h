@@ -75,15 +75,19 @@ enum class NodeKind : u16 {
   EnumType,   // b = variants_start, c = variants_count (SymIds in list)
   Path,       // b = segments_start, c = segments_count (SymIds in list, e.g.
               // Color::Red)
+  SliceLit,  // a = elem TypeId, b = vals_start (list pool), c = vals_count
+  CastAs,    // a = source NodeId, b = target TypeId  (@as)
+  Bitcast,   // a = source NodeId, b = target TypeId  (@bitcast)
 };
 
 using TypeId = u32;
 enum class TypeKind : u16 {
-  Named, // a = SymId, b = targs_start, c = targs_count
-  Ref,   // a = mutable?, b = inner TypeId
-  Tuple, // b = list_start, c = list_count
-  Fn,    // a = ret TypeId, b = list_start, c = list_count
-  Array, // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId
+  Named,     // a = SymId, b = targs_start, c = targs_count
+  QualNamed, // a = type_name SymId, b = module_prefix SymId (module::Type)
+  Ref,       // a = mutable?, b = inner TypeId
+  Tuple,     // b = list_start, c = list_count
+  Fn,        // a = ret TypeId, b = list_start, c = list_count
+  Array,     // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId
 };
 
 using ExprAst = NodeStore<NodeId, NodeKind, NodeId>;

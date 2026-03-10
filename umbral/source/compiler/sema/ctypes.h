@@ -27,6 +27,7 @@ enum class CTypeKind : u8 {
   Fn,     // list_start = [ret, param0, param1, ...], list_count = params + 1
   Struct, // symbol
   Enum,   // symbol
+  Slice,  // inner = elem CTypeId
 };
 
 struct CType {

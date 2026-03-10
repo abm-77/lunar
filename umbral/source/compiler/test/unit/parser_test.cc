@@ -20,7 +20,9 @@ struct ParseFixture : ::testing::Test {
 
   Parser &parse(std::string_view src) {
     lex_result.emplace(lex_source(src, interner, kws));
-    p.emplace(lex_result->value());
+    IntrinsicTable intrinsics;
+    intrinsics.init(interner);
+    p.emplace(lex_result->value(), intrinsics);
     return *p;
   }
 
@@ -69,7 +71,7 @@ TEST_F(ParseFixture, ImportNoAlias) {
 }
 
 TEST_F(ParseFixture, ImportWithAlias) {
-  auto &p = parse_mod("import std.io as io;");
+  auto &p = parse_mod("import std.io => io;");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.imports.size(), 1u);
   EXPECT_NE(p.mod.imports[0].alias, 0u);
@@ -636,14 +638,15 @@ TEST_F(ParseFixture, ArrayTypeNested) {
 // ============================================================
 
 TEST_F(ParseFixture, ArrayLitInferred) {
-  auto &p = parse_fn("[]i32{1, 2, 3};");
+  // []T{...} now produces SliceLit; use explicit count for ArrayLit
+  auto &p = parse_fn("[3]i32{1, 2, 3};");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   NodeId expr = p.body_ir.nodes.a[stmts[0]];
   EXPECT_EQ(p.body_ir.nodes.kind[expr], NodeKind::ArrayLit);
   u32 idx = p.body_ir.nodes.a[expr];
   auto &al = p.body_ir.array_lits[idx];
-  EXPECT_EQ(al.explicit_count, static_cast<u32>(-1));
+  EXPECT_EQ(al.explicit_count, 3u);
   EXPECT_EQ(al.values_count, 3u);
   EXPECT_EQ(interner.view(p.type_ast.a[al.elem_type]), "i32");
 }
@@ -680,7 +683,7 @@ TEST_F(ParseFixture, ArrayLitCountLessThanValuesIsError) {
 }
 
 TEST_F(ParseFixture, ArrayLitEmpty) {
-  auto &p = parse_fn("[]u8{};");
+  auto &p = parse_fn("[0]u8{};");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   NodeId expr = p.body_ir.nodes.a[stmts[0]];
@@ -690,7 +693,7 @@ TEST_F(ParseFixture, ArrayLitEmpty) {
 }
 
 TEST_F(ParseFixture, ArrayLitTrailingComma) {
-  auto &p = parse_fn("[]i32{1, 2,};");
+  auto &p = parse_fn("[2]i32{1, 2,};");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   NodeId expr = p.body_ir.nodes.a[stmts[0]];
@@ -714,7 +717,7 @@ TEST_F(ParseFixture, ArrayLitVarDecl) {
 }
 
 TEST_F(ParseFixture, ArrayLitElementsAreExprs) {
-  auto &p = parse_fn("[]i32{1 + 2, 3 * 4};");
+  auto &p = parse_fn("[2]i32{1 + 2, 3 * 4};");
   EXPECT_FALSE(p.error().has_value());
   auto stmts = fn_stmts();
   NodeId expr = p.body_ir.nodes.a[stmts[0]];

@@ -9,9 +9,9 @@ string(REGEX REPLACE "([0-9a-fA-F][0-9a-fA-F])" "0x\\1," content "${content}")
 file(WRITE "${OUTPUT}"
 "#include <cstddef>
 extern \"C\" {
-const unsigned char ${SYMBOL}[] = {
+extern const unsigned char ${SYMBOL}[] = {
 ${content}
 };
-const std::size_t ${SYMBOL}_size = ${byte_count}u;
+extern const std::size_t ${SYMBOL}_size = ${byte_count}u;
 }
 ")

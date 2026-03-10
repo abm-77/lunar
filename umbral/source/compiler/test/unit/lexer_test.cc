@@ -404,14 +404,14 @@ TEST_F(LexFixture, StringWithNewlineIsError) {
 // ============================================================
 
 TEST_F(LexFixture, UnexpectedCharIsError) {
-  auto r = lex("@");
+  auto r = lex("$");
   ASSERT_FALSE(r.has_value());
   EXPECT_EQ(r.error().msg, "unexpected character");
 }
 
 TEST_F(LexFixture, ValidTokensBeforeErrorAreEmitted) {
   // With std::unexpected, we only get an error — no partial token stream.
-  auto r = lex("fn @");
+  auto r = lex("fn $");
   ASSERT_FALSE(r.has_value());
   EXPECT_EQ(r.error().msg, "unexpected character");
 }

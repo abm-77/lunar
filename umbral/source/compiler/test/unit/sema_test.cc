@@ -30,7 +30,9 @@ struct SemaFixture : ::testing::Test {
   Parser &parse(std::string_view src) {
     lex_result.emplace(lex_source(src, interner, kws));
     EXPECT_TRUE(lex_result->has_value()) << "lex failed";
-    parser.emplace(lex_result->value());
+    IntrinsicTable intrinsics;
+    intrinsics.init(interner);
+    parser.emplace(lex_result->value(), intrinsics);
     parser->parse_module();
     EXPECT_FALSE(parser->error().has_value())
         << "parse error: " << (parser->error() ? parser->error()->msg : "");
@@ -50,49 +52,59 @@ struct SemaFixture : ::testing::Test {
 
 TEST_F(SemaFixture, CollectFunction) {
   parse("const add := fn (a: i32, b: i32) -> i32 { return a; }");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
-  ASSERT_TRUE(r.has_value());
-  SymbolId sid = r->lookup(interner.intern("add"));
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("add"));
   EXPECT_NE(sid, kInvalidSymbol);
-  EXPECT_EQ(r->get(sid).kind, SymbolKind::Func);
+  EXPECT_EQ(table.get(sid).kind, SymbolKind::Func);
 }
 
 TEST_F(SemaFixture, CollectStructType) {
   parse("const Point: type = struct { x: i32, y: i32 }");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
-  ASSERT_TRUE(r.has_value());
-  SymbolId sid = r->lookup(interner.intern("Point"));
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("Point"));
   EXPECT_NE(sid, kInvalidSymbol);
-  EXPECT_EQ(r->get(sid).kind, SymbolKind::Type);
+  EXPECT_EQ(table.get(sid).kind, SymbolKind::Type);
 }
 
 TEST_F(SemaFixture, CollectEnumType) {
   parse("const Color: type = enum { Red, Green, Blue }");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
+  SymbolTable table;
+  auto r = collect_module_symbols(parser->mod, parser->body_ir,
+                                  parser->type_ast, 0, table, "");
   ASSERT_TRUE(r.has_value());
-  SymbolId sid = r->lookup(interner.intern("Color"));
+  SymbolId sid = table.lookup(0, interner.intern("Color"));
   EXPECT_NE(sid, kInvalidSymbol);
-  EXPECT_EQ(r->get(sid).kind, SymbolKind::Type);
+  EXPECT_EQ(table.get(sid).kind, SymbolKind::Type);
 }
 
 TEST_F(SemaFixture, CollectGlobalVar) {
   parse("var x: i32 = 0");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
-  ASSERT_TRUE(r.has_value());
-  SymbolId sid = r->lookup(interner.intern("x"));
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("x"));
   EXPECT_NE(sid, kInvalidSymbol);
-  EXPECT_EQ(r->get(sid).kind, SymbolKind::GlobalVar);
-  EXPECT_TRUE(r->get(sid).is_mut);
+  EXPECT_EQ(table.get(sid).kind, SymbolKind::GlobalVar);
+  EXPECT_TRUE(table.get(sid).is_mut);
 }
 
 TEST_F(SemaFixture, CollectConstVar) {
   parse("const x: i32 = 0");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
-  ASSERT_TRUE(r.has_value());
-  SymbolId sid = r->lookup(interner.intern("x"));
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("x"));
   EXPECT_NE(sid, kInvalidSymbol);
-  EXPECT_EQ(r->get(sid).kind, SymbolKind::GlobalVar);
-  EXPECT_FALSE(r->get(sid).is_mut);
+  EXPECT_EQ(table.get(sid).kind, SymbolKind::GlobalVar);
+  EXPECT_FALSE(table.get(sid).is_mut);
 }
 
 TEST_F(SemaFixture, CollectDuplicateNameError) {
@@ -100,54 +112,107 @@ TEST_F(SemaFixture, CollectDuplicateNameError) {
   // Manually construct module with two decls using the same interned name
   Module mod = parser->mod;
   mod.decls.push_back(mod.decls[0]); // duplicate
-  auto r = collect_symbols(mod, parser->body_ir, "");
-  EXPECT_FALSE(r.has_value());
+  SymbolTable table;
+  auto err = collect_module_symbols(mod, parser->body_ir, parser->type_ast, 0,
+                                    table, "");
+  EXPECT_TRUE(err.has_value());
 }
 
 TEST_F(SemaFixture, CollectGenericFunctionParams) {
   parse("const id<T: type> := fn (a: T) -> T { return a; }");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
-  ASSERT_TRUE(r.has_value());
-  SymbolId sid = r->lookup(interner.intern("id"));
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("id"));
   ASSERT_NE(sid, kInvalidSymbol);
-  EXPECT_EQ(r->get(sid).generics_count, 1u);
+  EXPECT_EQ(table.get(sid).generics_count, 1u);
 }
 
 TEST_F(SemaFixture, CollectImplMethodHasImplOwner) {
   parse(""
         "const Foo: type = struct { x: i32 }"
         "impl Foo { const get := fn (&self) -> i32 { return self.x; } }");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
-  ASSERT_TRUE(r.has_value());
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
   // Find the impl method
   SymId foo_sym = interner.intern("Foo");
   SymId get_sym = interner.intern("get");
   SymbolId method_id = kInvalidSymbol;
-  for (u32 i = 1; i < static_cast<u32>(r->symbols.size()); ++i) {
-    if (r->symbols[i].name == get_sym) {
+  for (u32 i = 1; i < static_cast<u32>(table.symbols.size()); ++i) {
+    if (table.symbols[i].name == get_sym) {
       method_id = i;
       break;
     }
   }
   ASSERT_NE(method_id, kInvalidSymbol);
-  EXPECT_EQ(r->symbols[method_id].impl_owner, foo_sym);
+  EXPECT_EQ(table.symbols[method_id].impl_owner, foo_sym);
 }
 
 TEST_F(SemaFixture, CollectGenericImplMethodInheritsGenericParams) {
   parse(""
         "const List<T: type> : type = struct { data: T }"
         "impl List<T> { const get := fn (&self) -> T { return self.data; } }");
-  auto r = collect_symbols(parser->mod, parser->body_ir, "");
-  ASSERT_TRUE(r.has_value());
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
   SymId get_sym = interner.intern("get");
-  for (u32 i = 1; i < static_cast<u32>(r->symbols.size()); ++i) {
-    if (r->symbols[i].name == get_sym) {
-      EXPECT_EQ(r->symbols[i].generics_count, 1u)
+  for (u32 i = 1; i < static_cast<u32>(table.symbols.size()); ++i) {
+    if (table.symbols[i].name == get_sym) {
+      EXPECT_EQ(table.symbols[i].generics_count, 1u)
           << "method should inherit T from List";
       return;
     }
   }
   FAIL() << "get method not found";
+}
+
+TEST_F(SemaFixture, CollectExternFunc) {
+  parse("extern const abs: fn(i32) -> i32;");
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("abs"));
+  ASSERT_NE(sid, kInvalidSymbol);
+  const Symbol &sym = table.get(sid);
+  EXPECT_EQ(sym.kind, SymbolKind::Func);
+  EXPECT_TRUE(sym.is_extern);
+  EXPECT_EQ(sym.body, 0u) << "extern func must have no body";
+  EXPECT_NE(sym.sig.ret_type, 0u)
+      << "extern func must have ret_type for call type-checking";
+}
+
+TEST_F(SemaFixture, CollectExternGlobalVar) {
+  parse("extern var errno: i32;");
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("errno"));
+  ASSERT_NE(sid, kInvalidSymbol);
+  const Symbol &sym = table.get(sid);
+  EXPECT_EQ(sym.kind, SymbolKind::GlobalVar);
+  EXPECT_TRUE(sym.is_extern);
+  EXPECT_TRUE(sym.is_mut);
+  EXPECT_NE(sym.annotate_type, 0u);
+}
+
+TEST_F(SemaFixture, CollectExternConst) {
+  parse("extern const EINVAL: i32;");
+  SymbolTable table;
+  auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                    parser->type_ast, 0, table, "");
+  ASSERT_FALSE(err.has_value());
+  SymbolId sid = table.lookup(0, interner.intern("EINVAL"));
+  ASSERT_NE(sid, kInvalidSymbol);
+  const Symbol &sym = table.get(sid);
+  EXPECT_EQ(sym.kind, SymbolKind::GlobalVar);
+  EXPECT_TRUE(sym.is_extern);
+  EXPECT_FALSE(sym.is_mut);
 }
 
 // ============================================================
@@ -161,9 +226,11 @@ struct LowerFixture : SemaFixture {
 
   void setup(std::string_view src) {
     parse(src);
-    auto r = collect_symbols(parser->mod, parser->body_ir, "");
-    ASSERT_TRUE(r.has_value());
-    syms.emplace(std::move(*r));
+    SymbolTable table;
+    auto err = collect_module_symbols(parser->mod, parser->body_ir,
+                                      parser->type_ast, 0, table, "");
+    ASSERT_FALSE(err.has_value());
+    syms.emplace(table);
     types.emplace();
     lowerer.emplace(parser->type_ast, *syms, interner, *types);
   }
@@ -225,7 +292,7 @@ TEST_F(LowerFixture, LowerUserDefinedStruct) {
   auto r = lowerer->lower(tid);
   ASSERT_TRUE(r.has_value());
   EXPECT_EQ(types->types[*r].kind, CTypeKind::Struct);
-  EXPECT_EQ(types->types[*r].symbol, syms->lookup(foo_sym));
+  EXPECT_EQ(types->types[*r].symbol, syms->lookup(0, foo_sym));
 }
 
 TEST_F(LowerFixture, LowerTypeSubstitution) {
@@ -278,7 +345,7 @@ TEST_F(SemaFixture, MethodTableBasic) {
   ASSERT_TRUE(sr.has_value());
   SymId foo_sym = interner.intern("Foo");
   SymId get_sym = interner.intern("get");
-  SymbolId foo_sid = sr->syms.lookup(foo_sym);
+  SymbolId foo_sid = sr->syms.lookup(0, foo_sym);
   ASSERT_NE(foo_sid, kInvalidSymbol);
   SymbolId method = sr->methods.lookup(foo_sid, get_sym);
   EXPECT_NE(method, kInvalidSymbol);
@@ -292,7 +359,7 @@ TEST_F(SemaFixture, MethodTableGenericImpl) {
   ASSERT_TRUE(sr.has_value());
   SymId list_sym = interner.intern("List");
   SymId get_sym = interner.intern("get");
-  SymbolId list_sid = sr->syms.lookup(list_sym);
+  SymbolId list_sid = sr->syms.lookup(0, list_sym);
   ASSERT_NE(list_sid, kInvalidSymbol);
   SymbolId method = sr->methods.lookup(list_sid, get_sym);
   EXPECT_NE(method, kInvalidSymbol)
@@ -307,8 +374,8 @@ TEST_F(SemaFixture, MethodTableMultipleImpls) {
            "impl A { const get := fn (&self) -> i32 { return self.v; } }"
            "impl B { const get := fn (&self) -> i32 { return self.v; } }");
   ASSERT_TRUE(sr.has_value());
-  SymbolId a_sid = sr->syms.lookup(interner.intern("A"));
-  SymbolId b_sid = sr->syms.lookup(interner.intern("B"));
+  SymbolId a_sid = sr->syms.lookup(0, interner.intern("A"));
+  SymbolId b_sid = sr->syms.lookup(0, interner.intern("B"));
   SymId get_sym = interner.intern("get");
   EXPECT_NE(sr->methods.lookup(a_sid, get_sym), kInvalidSymbol);
   EXPECT_NE(sr->methods.lookup(b_sid, get_sym), kInvalidSymbol);
@@ -385,6 +452,26 @@ TEST_F(SemaFixture, SemaGenericSkippedWithoutCall) {
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 
+TEST_F(SemaFixture, SemaExternFuncCallable) {
+  auto sr = sema("extern const abs: fn(i32) -> i32;"
+                 "const f := fn () -> i32 { return abs(-1); }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, SemaExternFuncReturnTypeFlows) {
+  // The return type of the extern call must unify with the declared return
+  // type.
+  auto sr = sema("extern const neg: fn(i32) -> i32;"
+                 "const f := fn () -> i32 { return neg(5); }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, SemaExternGlobalReadable) {
+  auto sr = sema("extern var errno: i32;"
+                 "const f := fn () -> i32 { return errno; }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
 TEST_F(SemaFixture, SemaStaticMethodCall) {
   // Quad::max(q1, q2) — static method via Type::method path
   auto sr = sema(
@@ -433,7 +520,7 @@ struct MultiModFixture : ::testing::Test {
 
   std::expected<std::vector<LoadedModule>, std::string>
   load(const std::string &entry_rel) {
-    return load_modules(root / entry_rel, root, interner, kws);
+    return load_modules(root / entry_rel, root, interner);
   }
 
   Result<SemaResult> sema(const std::string &entry_rel) {
@@ -501,7 +588,7 @@ TEST_F(MultiModFixture, NestedModulePath) {
   write("game/ecs/world.um", ""
                              "pub const Entity: type = struct { id: u32 }");
   write("main.um", ""
-                   "import game.ecs.world as world;"
+                   "import game.ecs.world => world;"
                    "const Entity := world::Entity;"
                    "const f := fn (e: Entity) -> u32 { return e.id; }");
   auto sr = sema("main.um");

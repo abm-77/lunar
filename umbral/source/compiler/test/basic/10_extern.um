@@ -1,0 +1,19 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# extern declarations: functions and globals defined outside the module.
+
+extern const abs: fn(i32) -> i32;
+extern var errno: i32;
+
+const main := fn() -> void {
+  var x := abs(-5);
+  var e := errno;
+}
+
+# Extern global must appear as an external global with the unmangled name.
+# CHECK: @errno = external global i32
+
+# Extern function must appear as a bare declare with the unmangled name.
+# CHECK: declare i32 @abs(i32)
+
+# CHECK: define void @main

@@ -114,6 +114,13 @@ private:
 
     // ── enum → i32 tag ────────────────────────────────────────────────────
     case CTypeKind::Enum: return llvm::Type::getInt32Ty(ctx);
+
+    // ── slice → { ptr, i64 } ──────────────────────────────────────────────
+    case CTypeKind::Slice: {
+      std::vector<llvm::Type *> fields = { llvm::PointerType::getUnqual(ctx),
+                                           llvm::Type::getInt64Ty(ctx) };
+      return llvm::StructType::get(ctx, fields);
+    }
     }
     return nullptr; // unreachable
   }
@@ -141,9 +148,17 @@ private:
       subst[param_name] = concrete;
     }
 
+    // Build dep_irs so the TypeLowerer can distinguish enum vs struct fields
+    // from any module.
+    std::vector<const BodyIR *> dep_irs;
+    dep_irs.reserve(modules.size());
+    for (const auto &m : modules) dep_irs.push_back(&m.ir);
+
     TypeLowerer tl(ta, syms, interner, types);
     tl.type_subst = subst;
     tl.module_idx = sym.module_idx;
+    tl.dep_irs = &dep_irs;
+    tl.current_ir = &ir;
 
     u32 ls = ir.nodes.b[sym.type_node], n = ir.nodes.c[sym.type_node];
     std::vector<llvm::Type *> field_types;

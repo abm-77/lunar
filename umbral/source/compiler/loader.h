@@ -30,7 +30,6 @@ struct LoadedModule {
 struct ModuleLoader {
   const std::filesystem::path &root;
   Interner &interner;
-  const KeywordTable &kws;
 
   // Canonical path → index in `modules` (set after a module is fully loaded).
   std::unordered_map<std::string, u32> visited;
@@ -49,9 +48,8 @@ struct ModuleLoader {
 // root defaults to the directory containing entry_file.
 inline std::expected<std::vector<LoadedModule>, std::string>
 load_modules(const std::filesystem::path &entry_file,
-             const std::filesystem::path &root, Interner &interner,
-             const KeywordTable &kws) {
-  ModuleLoader loader{root, interner, kws};
+             const std::filesystem::path &root, Interner &interner) {
+  ModuleLoader loader{root, interner};
   auto r = loader.load(std::filesystem::canonical(entry_file));
   if (!r) return std::unexpected(std::move(r.error()));
   return std::move(loader.modules);
@@ -59,9 +57,8 @@ load_modules(const std::filesystem::path &entry_file,
 
 // Convenience overload: infer root from entry_file's parent directory.
 inline std::expected<std::vector<LoadedModule>, std::string>
-load_modules(const std::filesystem::path &entry_file, Interner &interner,
-             const KeywordTable &kws) {
-  return load_modules(entry_file, entry_file.parent_path(), interner, kws);
+load_modules(const std::filesystem::path &entry_file, Interner &interner) {
+  return load_modules(entry_file, entry_file.parent_path(), interner);
 }
 
 inline std::expected<u32, std::string>
@@ -83,12 +80,16 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
   std::string src((std::istreambuf_iterator<char>(f)), {});
 
   // Lex.
+  KeywordTable kws;
+  kws.init(interner);
   auto lex_r = lex_source(src, interner, kws);
   if (!lex_r)
     return std::unexpected(format_error(lex_r.error(), src, abs_path.string()));
 
   // Parse.
-  Parser parser(*lex_r);
+  IntrinsicTable intrinsics;
+  intrinsics.init(interner);
+  Parser parser(*lex_r, intrinsics);
   parser.parse_module();
   if (parser.error())
     return std::unexpected(

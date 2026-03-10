@@ -16,16 +16,15 @@ struct SemaResult {
 };
 
 // ── Single-module entry point (used by tests) ─────────────────────────────
-
 inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
                                    const TypeAst &type_ast,
                                    const Interner &interner,
                                    std::string_view src) {
 
   // Phase 1: collect declarations
-  auto syms_r = collect_symbols(mod, ir, src);
-  if (!syms_r) return std::unexpected(syms_r.error());
-  SymbolTable syms = std::move(*syms_r);
+  SymbolTable syms;
+  auto syms_r = collect_module_symbols(mod, ir, type_ast, 0, syms, src);
+  if (!syms_r) return std::unexpected(syms_r.value());
 
   // Phase 2: canonical type table + lowerer
   TypeTable types;
@@ -62,7 +61,6 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
 // modules must be topologically ordered (dependencies before dependents).
 // The vector is taken by reference so LoadedModule TypeAsts stay alive during
 // sema (dep_type_asts holds pointers into them).
-
 inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
                                    const Interner &interner) {
   // Phase 1: allocate per-module namespaces and collect all symbols.
@@ -72,7 +70,8 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
 
   for (u32 i = 0; i < static_cast<u32>(modules.size()); ++i) {
     auto &lm = modules[i];
-    if (auto err = collect_module_symbols(lm.mod, lm.ir, i, syms, lm.src))
+    if (auto err =
+            collect_module_symbols(lm.mod, lm.ir, lm.type_ast, i, syms, lm.src))
       return std::unexpected(*err);
   }
 
@@ -85,6 +84,7 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     auto &lm = modules[i];
     TypeLowerer lowerer(lm.type_ast, syms, interner, types);
     lowerer.module_idx = i;
+    lowerer.import_map = &lm.import_map;
     auto mt_r = build_method_table(lm.mod, i, syms, lowerer);
     if (!mt_r) return std::unexpected(mt_r.error());
     for (auto &[k, v] : mt_r->table) methods.table[k] = v;
@@ -139,6 +139,7 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     TypeLowerer lowerer(lm.type_ast, syms, interner, types);
     lowerer.module_idx = mod_i;
     lowerer.dep_irs = &dep_irs;
+    lowerer.import_map = &lm.import_map;
 
     BodyChecker checker(lm.ir, lm.mod, syms, methods, types, lowerer, interner,
                         lm.src, mono_cache);

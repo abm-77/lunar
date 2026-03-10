@@ -23,7 +23,7 @@ find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 
 # ---- runtime library (GLFW + Vulkan) ----
 add_library(runtime STATIC
-./source/runtime/rt.cc
+./source/runtime/fmt.c
 )
 target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
@@ -72,7 +72,7 @@ target_compile_definitions(uc PRIVATE ${LLVM_DEFINITIONS})
 
 # Map LLVM component libs you use
 llvm_map_components_to_libnames(LLVM_LIBS
-  core support irreader native target
+  core support irreader native nativecodegen target mc passes
 )
 target_link_libraries(uc PRIVATE ${LLVM_LIBS})
 

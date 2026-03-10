@@ -1,0 +1,29 @@
+@gen const SmallArray<T: type, N: u32> := {
+  @assert(N > 0, "N must be greater than 0.");
+  @assert(N < 32, "N must be less  than 32.");
+  struct { data: [N]T }
+}
+
+impl SmallArray<T, N> {
+  const make := fn () ->  SmallArray<T, N> {
+    return SmallArray<T, N> {
+      data = [N]T{},
+    };
+  }
+}
+
+const main := fn () -> i32 {
+   # ok
+  @assert(0 < 1);
+
+  # ok
+  const sarr := SmallArray<i32, 10>::make();
+
+  # bad
+  const sarr := SmallArray<i32, 100>::make();
+
+  # bad
+  @assert(0 > 1);
+
+  return 0;
+}

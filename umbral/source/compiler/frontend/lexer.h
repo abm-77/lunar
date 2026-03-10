@@ -11,6 +11,7 @@
 #include <common/interner.h>
 #include <common/types.h>
 
+#include "intrinsics.inc"
 #include "keywords.inc"
 
 enum class TokenKind : u16 {
@@ -50,12 +51,14 @@ enum class TokenKind : u16 {
   StarEqual,
   SlashEqual,
   Arrow,
+  FatArrow, // =>
   Colon,
   ColonColon,
   ColonEqual,
   Ampersand,
-  PipePipe,   // ||
-  AmpAmp,     // &&
+  PipePipe, // ||
+  AmpAmp,   // &&
+  At,
   Eof,
   Count
 };
@@ -151,7 +154,12 @@ public:
       if (c == '"') {
         auto [ok, sp] = lex_string();
         if (!ok) return std::unexpected(Error{sp, "unterminated string"});
-        out.push(TokenKind::String, sp);
+        // Intern the string content (excluding surrounding quotes) so codegen
+        // can recover the raw bytes via interner.view(payload).
+        std::string_view content =
+            src.substr(sp.start + 1, sp.end - sp.start - 2);
+        SymId sym = interner.intern(content);
+        out.push(TokenKind::String, sp, sym);
         continue;
       }
 
@@ -344,7 +352,9 @@ private:
     case '/':
       return (n == '=') ? two(TokenKind::SlashEqual) : one(TokenKind::Slash);
     case '=':
-      return (n == '=') ? two(TokenKind::EqualEqual) : one(TokenKind::Equal);
+      if (n == '=') return two(TokenKind::EqualEqual);
+      if (n == '>') return two(TokenKind::FatArrow);
+      return one(TokenKind::Equal);
     case '!':
       return (n == '=') ? two(TokenKind::BangEqual) : one(TokenKind::Bang);
     case '<':
@@ -357,10 +367,13 @@ private:
       if (n == '=') return two(TokenKind::ColonEqual);
       return one(TokenKind::Colon);
     case '|':
-      return (n == '|') ? two(TokenKind::PipePipe) : std::optional<std::pair<TokenKind,Span>>{std::nullopt};
+      return (n == '|')
+                 ? two(TokenKind::PipePipe)
+                 : std::optional<std::pair<TokenKind, Span>>{std::nullopt};
     case '&':
       if (n == '&') return two(TokenKind::AmpAmp);
       return one(TokenKind::Ampersand);
+    case '@': return one(TokenKind::At);
     default: return std::nullopt;
     }
   }
@@ -373,3 +386,35 @@ Result<TokenStream> lex_source(std::string_view src, Interner &interner,
 }
 
 #undef UMBRAL_KEYWORDS
+
+enum class IntrinsicKind : u8 {
+#define X(name, text) name,
+  UMBRAL_INTRINSICS(X)
+#undef X
+      Count
+};
+
+static constexpr std::array<std::string_view,
+                            static_cast<size_t>(IntrinsicKind::Count)>
+    INTRINSIC_TEXT = {{
+#define X(name, text) text,
+        UMBRAL_INTRINSICS(X)
+#undef X
+    }};
+
+struct IntrinsicTable {
+  std::array<SymId, static_cast<size_t>(IntrinsicKind::Count)> ids{};
+
+  void init(Interner &I) {
+    for (size_t i = 0; i < static_cast<size_t>(IntrinsicKind::Count); i++)
+      ids[i] = I.intern(INTRINSIC_TEXT[i]);
+  }
+
+  std::optional<IntrinsicKind> lookup(SymId s) const {
+    for (size_t i = 0; i < static_cast<size_t>(IntrinsicKind::Count); i++)
+      if (ids[i] == s) return static_cast<IntrinsicKind>(i);
+    return std::nullopt;
+  }
+};
+
+#undef UMBRAL_INTRINSICS

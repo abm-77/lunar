@@ -1,8 +1,9 @@
+extern const rt_fmt_print_line: fn([]u8, []Arg) -> void;
 
-const ArgTag := enum {
+pub const ArgTag := enum {
   # store in a
-  I8, I16, I32, I64, 
-  U8, U16, U32, U64, 
+  I8, I16, I32, I64,
+  U8, U16, U32, U64,
   Bool,
 
   # store in a (f32 in low 32-bits, f64 in full)
@@ -12,28 +13,56 @@ const ArgTag := enum {
   Bytes,
 }
 
-const Arg := struct {
+pub const Arg := struct {
   tag: ArgTag,
   a: u64,
   b: u64,
 }
 
-const println := fn (fmt: []u8, args: []Arg) {
-
+pub const println := fn (fmt: []u8, args: []Arg) -> void {
+  rt_fmt_print_line(fmt, args);
 }
 
-const arg_u64 := fn (v: u64) -> Arg {
-  return Arg {
-      tag = ArgTag::U64,
-      a = v,
-      b = 0,
-  };
-};
+pub const arg_u64 := fn (v: u64) -> Arg {
+  return Arg { tag = ArgTag::U64, a = v, b = 0 };
+}
 
-const arg_i64 := fn (v: i64) -> Arg {
-  return Arg {
-      tag = ArgTag::I64,
-      a = v,
-      b = 0,
-  };
-};
+pub const arg_i64 := fn (v: i64) -> Arg {
+  return Arg { tag = ArgTag::I64, a = @as(v, u64), b = 0 };
+}
+
+pub const arg_u32 := fn (v: u32) -> Arg {
+  return Arg { tag = ArgTag::U32, a = @as(v, u64), b = 0 };
+}
+
+pub const arg_i32 := fn (v: i32) -> Arg {
+  return Arg { tag = ArgTag::I32, a = @as(v, u64), b = 0 };
+}
+
+pub const arg_u16 := fn (v: u16) -> Arg {
+  return Arg { tag = ArgTag::U16, a = @as(v, u64), b = 0 };
+}
+
+pub const arg_i16 := fn (v: i16) -> Arg {
+  return Arg { tag = ArgTag::I16, a = @as(v, u64), b = 0 };
+}
+
+pub const arg_u8 := fn (v: u8) -> Arg {
+  return Arg { tag = ArgTag::U8, a = @as(v, u64), b = 0 };
+}
+
+pub const arg_i8 := fn (v: i8) -> Arg {
+  return Arg { tag = ArgTag::I8, a = @as(v, u64), b = 0 };
+}
+
+pub const arg_f32 := fn (v: f32) -> Arg {
+  return Arg { tag = ArgTag::F32, a = @as(@bitcast(v, u32), u64), b = 0 };
+}
+
+pub const arg_f64 := fn (v: f64) -> Arg {
+  return Arg { tag = ArgTag::F64, a = @bitcast(v, u64), b = 0 };
+}
+
+pub const arg_bytes := fn(x: []u8) -> Arg {
+  return Arg { tag = ArgTag::Bytes, a = @as(x.ptr, u64), b = @as(x.len, u64) };
+}

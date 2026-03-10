@@ -380,8 +380,26 @@ struct BodyChecker {
       }
       if (init_expr != 0) {
         IType init_t = check_expr(init_expr, sema);
-        if (!unifier.unify(var_type, init_t, types))
-          emit(node_span(n), "type mismatch in declaration");
+        if (!unifier.unify(var_type, init_t, types)) {
+          // Allow numeric literal widening: an integer/float literal gets a
+          // default type (i32/f32) via its TypeVar pre-binding.  When the
+          // annotation requests a different numeric type, rebind the TypeVar
+          // instead of failing (e.g. `const x: i64 = 100;`).
+          auto is_numeric = [&](CTypeKind k) {
+            return k >= CTypeKind::I8 && k <= CTypeKind::F64;
+          };
+          bool widened = false;
+          if (ann_type != 0 && !var_type.is_var && init_t.is_var) {
+            IType ri = unifier.resolve(init_t);
+            if (!ri.is_var && is_numeric(types.types[var_type.concrete].kind) &&
+                is_numeric(types.types[ri.concrete].kind)) {
+              unifier.bindings[init_t.var] = var_type;
+              widened = true;
+            }
+          }
+          if (!widened)
+            emit(node_span(n), "type mismatch in declaration");
+        }
       }
       sema.define(var_name, var_type, nk == NodeKind::VarStmt);
       sema.node_type[n] = var_type;
@@ -447,6 +465,11 @@ struct BodyChecker {
       TypeVarId tv = unifier.fresh();
       result = IType::fresh(tv);
       unifier.bindings[tv] = IType::from(types.builtin(CTypeKind::I32));
+      break;
+    }
+    case NodeKind::StrLit: {
+      CType sc; sc.kind = CTypeKind::Slice; sc.inner = types.builtin(CTypeKind::U8);
+      result = IType::from(types.intern(sc));
       break;
     }
     case NodeKind::BoolLit:
@@ -609,6 +632,16 @@ struct BodyChecker {
           sct_id = types.types[sct_id].inner;
         const CType &sct = types.types[sct_id];
 
+        if (sct.kind == CTypeKind::Slice) {
+          auto fname = interner.view(field_nm);
+          if (fname == "ptr") {
+            CType rc; rc.kind = CTypeKind::Ref; rc.inner = sct.inner;
+            result = IType::from(types.intern(rc));
+          } else if (fname == "len") {
+            result = IType::from(types.builtin(CTypeKind::U64));
+          }
+          break;
+        }
         if (sct.kind == CTypeKind::Struct || sct.kind == CTypeKind::Enum) {
           // 1. Check method table first
           SymbolId msym_id = methods.lookup(sct.symbol, field_nm);
@@ -814,6 +847,25 @@ struct BodyChecker {
       break;
     }
     case NodeKind::FnLit: result = IType::fresh(unifier.fresh()); break;
+    case NodeKind::CastAs:
+    case NodeKind::Bitcast: {
+      check_expr(ir.nodes.a[n], sema);
+      TypeId target_tid = ir.nodes.b[n];
+      auto ct_r = lowerer.lower(target_tid);
+      if (!ct_r) { emit(node_span(n), "unknown type in cast"); break; }
+      result = IType::from(*ct_r);
+      break;
+    }
+    case NodeKind::SliceLit: {
+      TypeId elem_tid = ir.nodes.a[n];
+      auto elem_r = lowerer.lower(elem_tid);
+      if (!elem_r) { emit(node_span(n), "unknown element type in slice literal"); break; }
+      for (u32 k = 0; k < ir.nodes.c[n]; ++k)
+        check_expr(static_cast<NodeId>(ir.nodes.list[ir.nodes.b[n] + k]), sema);
+      CType sc; sc.kind = CTypeKind::Slice; sc.inner = *elem_r;
+      result = IType::from(types.intern(sc));
+      break;
+    }
     default: break;
     }
 

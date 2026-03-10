@@ -11,7 +11,10 @@
 #include "type_lower.h"
 
 struct CodegenCtx {
-  llvm::LLVMContext ctx;
+  // Heap-allocated so ownership can be transferred to CodegenResult after
+  // codegen completes. LLVMContext must outlive the Module — keep both.
+  std::unique_ptr<llvm::LLVMContext> ctx_owned;
+  llvm::LLVMContext &ctx; // reference into *ctx_owned
   std::unique_ptr<llvm::Module> module;
   SemaResult &sema;
   const std::vector<LoadedModule> &modules;
@@ -28,10 +31,12 @@ struct CodegenCtx {
 
   CodegenCtx(SemaResult &sr, const std::vector<LoadedModule> &mods,
              const Interner &intern, std::string_view module_name)
-      : module(std::make_unique<llvm::Module>(
-            llvm::StringRef{module_name.data(), module_name.size()}, ctx)),
+      : ctx_owned(std::make_unique<llvm::LLVMContext>()),
+        ctx(*ctx_owned),
+        module(std::make_unique<llvm::Module>(
+            llvm::StringRef{module_name.data(), module_name.size()}, *ctx_owned)),
         sema(sr), modules(mods), interner(intern),
-        type_lower(ctx, sr.types, sr.syms, mods, interner) {}
+        type_lower(*ctx_owned, sr.types, sr.syms, mods, interner) {}
 
   // Create a syntax-level TypeLowerer configured for the given module.
   // Use this wherever a TypeId (from FuncSig, annotate_type, etc.) needs to
