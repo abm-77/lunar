@@ -28,16 +28,25 @@
     - [ ] @println(fmt: []u8, ...) -> sys.io.fmt::println(fmt: []u8, []sys.io.fmt::Arg)
   - [ ] desugar:
     - [ ] handle obj.method(...) -> Obj::method(&obj) desugar
+- [ ] optimize slab allocator
+  - [ ] implement slab cache
+    - [ ] keep up to MAX_CACHED_SLABS slabs cached (munmap the others)
+    - [ ] use madvise(DONTNEED) to drop physical pages but keep mapping
+  - [ ] run benchmarks
+
+03/11/26
+  - [x] optimize memory allocator
+    - [x] implement slab allocator 
 
 03/10/26
-- [ ] implement memory allocator
-  - [ ] very simple std lib makes tracked allocations
-  - [ ] runtime handles actual allocation and implements very simple GPA
+- [x] implement memory allocator
+  - [x] very simple std lib makes tracked allocations
+  - [x] runtime handles actual allocation and implements very simple GPA
 
-- [ ] handle low-level intrinsics 
-    - [ ] @bitcast
-    - [ ] @as
-    - [ ] @size_of, @align_of, @offset_of
+- [x] handle low-level intrinsics 
+    - [x] @bitcast
+    - [x] @as
+    - [x] @size_of, @align_of, @offset_of
   
 03/09/26
 - [x] emit executable files

@@ -1,6 +1,7 @@
-# RUN: %uc %s --root %S/../../../std -o %t && %t
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
 
 import core.list => list;
+import sys.io.fmt => fmt;
 
 const main := fn() -> void {
   var l := list::List<i32>::create(0);
@@ -20,5 +21,13 @@ const main := fn() -> void {
   const b := l.get(2);   # 99
   const n := l.count();  # 6
 
+  fmt::println("a={}", []fmt::Arg{ fmt::arg_i32(a) });
+  fmt::println("b={}", []fmt::Arg{ fmt::arg_i32(b) });
+  fmt::println("n={}", []fmt::Arg{ fmt::arg_u64(n) });
+
   l.destroy();
 }
+
+# CHECK: a=10
+# CHECK: b=99
+# CHECK: n=6
