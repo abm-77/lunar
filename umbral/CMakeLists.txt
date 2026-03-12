@@ -24,10 +24,12 @@ find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 # ---- runtime library (GLFW + Vulkan) ----
 add_library(runtime STATIC
 ./source/runtime/fmt.c
+./source/runtime/mem.c
 )
 target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
 "${GLFW_INCLUDE_DIR}"
+./source/runtime
 )
 target_link_libraries(runtime PUBLIC
 "${GLFW_LIB}"
@@ -112,6 +114,16 @@ add_executable(sema_tests
 target_include_directories(sema_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(sema_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(sema_tests)
+
+add_executable(runtime_tests
+  ./source/runtime/test/mem_test.cc
+  ./source/runtime/test/mem_test_stubs.c
+  ./source/runtime/mem.c
+)
+target_include_directories(runtime_tests PRIVATE ./source/runtime)
+target_compile_definitions(runtime_tests PRIVATE UM_TESTING=1)
+target_link_libraries(runtime_tests PRIVATE GTest::gtest_main)
+gtest_discover_tests(runtime_tests)
 
 # lit functional tests
 set(FILECHECK "${CMAKE_SOURCE_DIR}/../build/_b_llvm/bin/FileCheck" CACHE PATH "Path to FileCheck binary" FORCE)

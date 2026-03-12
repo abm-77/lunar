@@ -116,10 +116,12 @@ struct BodyChecker {
   u32 module_idx = 0;
   // Alias SymId → index in the loaded-modules vector.
   const std::unordered_map<SymId, u32> *import_map = nullptr;
-  // Per-loaded-module TypeAst pointers for cross-module type lowering.
-  const std::vector<const TypeAst *> *dep_type_asts = nullptr;
-  // Per-loaded-module BodyIR pointers for cross-module struct field lookup.
-  const std::vector<const BodyIR *> *dep_irs = nullptr;
+  // Per-module context vector (unifies the old 5 dep_* parallel arrays).
+  const std::vector<ModuleContext> *module_contexts = nullptr;
+  // Integer literal TypeVars registered for lazy defaulting at end of check().
+  // Stores (TypeVar, NodeId) so we can report an error if the TypeVar resolves
+  // to a non-numeric type (e.g., an integer literal used as a bool condition).
+  std::vector<std::pair<TypeVarId, NodeId>> int_default_vars;
 
   BodyChecker(const BodyIR &ir, const Module &mod, SymbolTable &syms,
               MethodTable &methods, TypeTable &types, TypeLowerer lowerer,
@@ -132,7 +134,7 @@ struct BodyChecker {
   Span node_span(NodeId n) const {
     return {ir.nodes.span_s[n], ir.nodes.span_e[n]};
   }
-  void emit(Span sp, const char *msg) { errors.push_back(Error{sp, msg}); }
+  void emit(Span sp, const char *msg) { errors.push_back(Error{sp, msg, module_idx}); }
 
   // Lower a TypeId using the correct TypeAst for the symbol's module.
   // Falls back to the current module's lowerer when no dep info is available.
@@ -141,13 +143,17 @@ struct BodyChecker {
       auto r = lowerer.lower(tid);
       return r ? std::optional<CTypeId>(*r) : std::nullopt;
     }
-    if (dep_type_asts && sym.module_idx < dep_type_asts->size() &&
-        (*dep_type_asts)[sym.module_idx] != nullptr) {
-      TypeLowerer dep_l(*(*dep_type_asts)[sym.module_idx], syms, interner,
-                        types);
-      dep_l.module_idx = sym.module_idx;
-      auto r = dep_l.lower(tid);
-      return r ? std::optional<CTypeId>(*r) : std::nullopt;
+    if (module_contexts && sym.module_idx < module_contexts->size()) {
+      const ModuleContext &mctx = (*module_contexts)[sym.module_idx];
+      if (mctx.type_ast) {
+        TypeLowerer dep_l(*mctx.type_ast, syms, interner, types);
+        dep_l.module_idx = sym.module_idx;
+        dep_l.module_contexts = module_contexts;
+        dep_l.current_ir = mctx.ir;
+        dep_l.import_map = mctx.import_map;
+        auto r = dep_l.lower(tid);
+        return r ? std::optional<CTypeId>(*r) : std::nullopt;
+      }
     }
     return std::nullopt;
   }
@@ -155,16 +161,28 @@ struct BodyChecker {
   // Return the BodyIR for the given module index (falls back to current ir).
   const BodyIR &body_for(u32 mod_idx) const {
     if (mod_idx == module_idx) return ir;
-    if (dep_irs && mod_idx < dep_irs->size() && (*dep_irs)[mod_idx])
-      return *(*dep_irs)[mod_idx];
+    if (module_contexts && mod_idx < module_contexts->size() &&
+        (*module_contexts)[mod_idx].ir)
+      return *(*module_contexts)[mod_idx].ir;
     return ir;
   }
 
   // ── Monomorphization ──────────────────────────────────────────────────────
 
+  // Bind all still-unresolved integer literal TypeVars to i32.
+  // Call before infer_type_args so that integer literal args resolve naturally.
+  // TypeVars already bound by context (e.g., u64 function param) are unaffected.
+  void flush_int_defaults() {
+    IType i32_t = IType::from(types.builtin(CTypeKind::I32));
+    for (auto &[tv, _] : int_default_vars)
+      if (unifier.resolve(IType::fresh(tv)).is_var)
+        unifier.bindings[tv] = i32_t;
+  }
+
   // Infer concrete type args for a generic from actual argument ITypes.
   // For each type-param T, find the first param typed as Named(T) and read
   // the resolved concrete type of the corresponding argument.
+  // Callers must flush_int_defaults() first so integer literal args are concrete.
   std::vector<CTypeId> infer_type_args(const Symbol &gsym,
                                        const std::vector<IType> &arg_types) {
     std::vector<CTypeId> result;
@@ -197,11 +215,32 @@ struct BodyChecker {
 
     const Symbol &gsym = syms.get(generic_id);
 
+    // Select the module that owns this generic symbol (may differ from current).
+    u32 gsym_mod = gsym.module_idx;
+    bool is_cross = gsym_mod != module_idx && module_contexts != nullptr &&
+                    gsym_mod < module_contexts->size();
+    const ModuleContext *gctx_ptr =
+        is_cross ? &(*module_contexts)[gsym_mod] : nullptr;
+    const Module &g_mod = gctx_ptr ? *gctx_ptr->mod : mod;
+    const BodyIR &g_ir = (gctx_ptr && gctx_ptr->ir) ? *gctx_ptr->ir : ir;
+    std::string_view g_src = gctx_ptr ? gctx_ptr->src : src;
+    const std::unordered_map<SymId, u32> *g_import_map =
+        gctx_ptr ? gctx_ptr->import_map : import_map;
+    TypeLowerer g_lowerer = (gctx_ptr && gctx_ptr->type_ast)
+        ? TypeLowerer(*gctx_ptr->type_ast, syms, interner, types)
+        : lowerer;
+    if (gctx_ptr) {
+      g_lowerer.module_idx = gsym_mod;
+      g_lowerer.module_contexts = module_contexts;
+      g_lowerer.current_ir = gctx_ptr->ir;
+      g_lowerer.import_map = g_import_map;
+    }
+
     // Build substitution: type-param name -> concrete CTypeId
     std::unordered_map<SymId, CTypeId> subst;
     u32 n_type = 0;
     for (u32 k = 0; k < gsym.generics_count; ++k) {
-      const GenericParam &gp = mod.generic_params[gsym.generics_start + k];
+      const GenericParam &gp = g_mod.generic_params[gsym.generics_start + k];
       if (gp.is_type && n_type < type_args.size())
         subst[gp.name] = type_args[n_type++];
     }
@@ -211,11 +250,13 @@ struct BodyChecker {
     mono_sym.generics_start = 0;
     mono_sym.generics_count = 0;
     // Keep impl_owner so name mangling still includes the type name prefix.
+    // Store the substitution for codegen (@size_of/@align_of in mono bodies).
+    mono_sym.mono_type_subst = subst;
 
     // Pre-lower concrete ret/param types using the substitution so codegen can
     // declare the LLVM function type without needing the substitution later.
     {
-      TypeLowerer ml = lowerer;
+      TypeLowerer ml = g_lowerer;
       ml.type_subst = subst;
       ml.lenient = true;
       mono_sym.is_mono_instance = true;
@@ -226,8 +267,19 @@ struct BodyChecker {
       } else {
         mono_sym.mono_concrete_ret = types.builtin(CTypeKind::Void); // = 0
       }
-      for (u32 k = 0; k < gsym.sig.params_count; ++k) {
-        const FuncParam &fp = mod.params[gsym.sig.params_start + k];
+      // Detect &self / &mut self first param: store its type separately so
+      // mono_concrete_params is a 1-to-1 map of explicit call arguments.
+      u32 params_start = 0;
+      if (gsym.sig.params_count > 0) {
+        TypeId fp0_tid = g_mod.params[gsym.sig.params_start].type;
+        if (fp0_tid != 0 && g_lowerer.type_ast.kind[fp0_tid] == TypeKind::Ref) {
+          auto r = ml.lower(fp0_tid);
+          if (r) mono_sym.mono_self_ctype = *r;
+          params_start = 1;
+        }
+      }
+      for (u32 k = params_start; k < gsym.sig.params_count; ++k) {
+        const FuncParam &fp = g_mod.params[gsym.sig.params_start + k];
         CTypeId ctid = 0;
         if (fp.type != 0) {
           auto r = ml.lower(fp.type);
@@ -245,18 +297,16 @@ struct BodyChecker {
     mono_cache[cache_key] = mono_id;
 
     // Type-check the monomorphized body with the substitution applied
-    TypeLowerer sub_lowerer =
-        lowerer; // copy; type_subst already holds our subst
+    TypeLowerer sub_lowerer = g_lowerer;
     sub_lowerer.type_subst = std::move(subst);
     sub_lowerer.lenient =
         true; // allow unknown const-generic names in type position
-    BodyChecker sub(ir, mod, syms, methods, types, std::move(sub_lowerer),
-                    interner, src, mono_cache);
+    BodyChecker sub(g_ir, g_mod, syms, methods, types, std::move(sub_lowerer),
+                    interner, g_src, mono_cache);
     sub.body_semas_out = body_semas_out;
-    sub.module_idx = module_idx;
-    sub.import_map = import_map;
-    sub.dep_type_asts = dep_type_asts;
-    sub.dep_irs = dep_irs;
+    sub.module_idx = gsym_mod;
+    sub.import_map = g_import_map;
+    sub.module_contexts = module_contexts;
 
     // Expose const generic params (e.g., N: i32) as i32-typed locals so the
     // body can reference them in expression position (e.g., i < N).
@@ -299,6 +349,40 @@ struct BodyChecker {
             CType ct;
             ct.kind = CTypeKind::Struct;
             ct.symbol = owner_sid;
+            // For mono instances, populate the owner struct's type args so
+            // that field access on `self` (e.g. self.alloc : Alloc<T>) can
+            // resolve T to its concrete type.
+            if (!fn_sym.mono_type_subst.empty()) {
+              const Symbol &owner_sym = syms.get(owner_sid);
+              if (owner_sym.generics_count > 0) {
+                u32 owner_mod_idx = owner_sym.module_idx;
+                const Module *owner_mod_ptr =
+                    (owner_mod_idx == module_idx)
+                        ? &mod
+                        : (module_contexts && owner_mod_idx < module_contexts->size()
+                               ? (*module_contexts)[owner_mod_idx].mod
+                               : nullptr);
+                if (owner_mod_ptr) {
+                  std::vector<CTypeId> targs;
+                  for (u32 j = 0; j < owner_sym.generics_count; ++j) {
+                    const GenericParam &gp =
+                        owner_mod_ptr->generic_params[owner_sym.generics_start + j];
+                    if (gp.is_type) {
+                      auto it = fn_sym.mono_type_subst.find(gp.name);
+                      targs.push_back(it != fn_sym.mono_type_subst.end()
+                                          ? it->second
+                                          : types.builtin(CTypeKind::Void));
+                    }
+                  }
+                  if (!targs.empty()) {
+                    auto [ls, cnt] =
+                        types.push_list(targs.data(), (u32)targs.size());
+                    ct.list_start = ls;
+                    ct.list_count = cnt;
+                  }
+                }
+              }
+            }
             lowerer.type_subst[self_sym] = types.intern(ct);
           }
         }
@@ -341,11 +425,31 @@ struct BodyChecker {
     sema.pop_scope();
     if (!errors.empty()) return std::unexpected(errors.front());
 
+    // Default any integer literal TypeVars that were never bound through
+    // unification context to i32.  Vars bound to a typed context (e.g., u64
+    // parameter) are already bound and skipped.  Vars that resolved to a
+    // non-numeric type (e.g., bool — integer used as if-condition) are errors.
+    {
+      auto is_numeric = [&](CTypeKind k) {
+        return k >= CTypeKind::I8 && k <= CTypeKind::F64;
+      };
+      IType i32_t = IType::from(types.builtin(CTypeKind::I32));
+      for (auto &[tv, node] : int_default_vars) {
+        IType resolved = unifier.resolve(IType::fresh(tv));
+        if (resolved.is_var) {
+          unifier.bindings[tv] = i32_t;
+        } else if (!is_numeric(types.types[resolved.concrete].kind)) {
+          emit(node_span(node), "integer literal used in non-numeric context");
+        }
+      }
+    }
+
+    if (!errors.empty()) return std::unexpected(errors.front());
+
     // Resolve all node_type entries to their concrete form before codegen reads
-    // them.  During checking, nodes like IntLit are assigned a fresh type
-    // variable that is immediately constrained (e.g. to i32); the variable
-    // itself is stored, not the concrete type.  Resolving here ensures codegen
-    // always sees a concrete CTypeId.
+    // them.  During checking, integer literal TypeVars have been bound through
+    // unification or defaulted above; resolving here ensures codegen always
+    // sees a concrete CTypeId.
     for (auto &t : sema.node_type) t = unifier.resolve(t);
 
     return sema;
@@ -380,26 +484,8 @@ struct BodyChecker {
       }
       if (init_expr != 0) {
         IType init_t = check_expr(init_expr, sema);
-        if (!unifier.unify(var_type, init_t, types)) {
-          // Allow numeric literal widening: an integer/float literal gets a
-          // default type (i32/f32) via its TypeVar pre-binding.  When the
-          // annotation requests a different numeric type, rebind the TypeVar
-          // instead of failing (e.g. `const x: i64 = 100;`).
-          auto is_numeric = [&](CTypeKind k) {
-            return k >= CTypeKind::I8 && k <= CTypeKind::F64;
-          };
-          bool widened = false;
-          if (ann_type != 0 && !var_type.is_var && init_t.is_var) {
-            IType ri = unifier.resolve(init_t);
-            if (!ri.is_var && is_numeric(types.types[var_type.concrete].kind) &&
-                is_numeric(types.types[ri.concrete].kind)) {
-              unifier.bindings[init_t.var] = var_type;
-              widened = true;
-            }
-          }
-          if (!widened)
-            emit(node_span(n), "type mismatch in declaration");
-        }
+        if (!unifier.unify(var_type, init_t, types))
+          emit(node_span(n), "type mismatch in declaration");
       }
       sema.define(var_name, var_type, nk == NodeKind::VarStmt);
       sema.node_type[n] = var_type;
@@ -463,8 +549,8 @@ struct BodyChecker {
     switch (nk) {
     case NodeKind::IntLit: {
       TypeVarId tv = unifier.fresh();
+      int_default_vars.push_back({tv, n}); // default to i32 at end of check() if unresolved
       result = IType::fresh(tv);
-      unifier.bindings[tv] = IType::from(types.builtin(CTypeKind::I32));
       break;
     }
     case NodeKind::StrLit: {
@@ -572,40 +658,82 @@ struct BodyChecker {
             TypeId path_tid = static_cast<TypeId>(ir.nodes.a[callee_n]);
             if (path_tid != 0) {
               auto ct_r = lowerer.lower(path_tid);
-              if (ct_r) {
+              // If lowering returned a non-Void type, extract type args from the
+              // CType's list.  If it returned Void (lenient fallback when the type
+              // isn't in the current module's namespace, e.g. mod::Alloc<T>), fall
+              // through to the direct TypeAst extraction below.
+              if (ct_r && *ct_r != 0) {
                 const CType &pct = types.types[*ct_r];
                 for (u32 k = 0; k < pct.list_count; ++k)
                   type_args.push_back(types.list[pct.list_start + k]);
+              } else if (lowerer.type_ast.kind[path_tid] == TypeKind::Named) {
+                // Type not resolvable locally (e.g., mod::Alloc<i32>::create
+                // where Alloc lives in dep module) — lower type args directly.
+                u32 tls = lowerer.type_ast.b[path_tid];
+                u32 tcnt = lowerer.type_ast.c[path_tid];
+                for (u32 k = 0; k < tcnt; ++k) {
+                  auto a = lowerer.lower(lowerer.type_ast.list[tls + k]);
+                  if (a) type_args.push_back(*a);
+                }
               }
             }
           }
 
           // Fall back to inference from argument types (for generic free
-          // functions)
-          if (type_args.empty()) type_args = infer_type_args(sym, arg_types);
+          // functions). Flush integer literal defaults first so that e.g.
+          // `id(1)` has a concrete i32 arg for T inference.
+          if (type_args.empty()) {
+            flush_int_defaults();
+            type_args = infer_type_args(sym, arg_types);
+          }
 
           resolved = monomorphize(callee_sym, type_args);
           sema.node_symbol[callee_n] = resolved;
 
-          // Lower the generic ret_type using the type args substitution,
-          // since the outer lowerer has no binding for T/U/... type params.
-          if (sym.sig.ret_type != 0) {
-            TypeLowerer ml = lowerer;
-            u32 n_type = 0;
-            for (u32 k = 0; k < sym.generics_count; ++k) {
-              const GenericParam &gp =
-                  mod.generic_params[sym.generics_start + k];
-              if (gp.is_type && n_type < type_args.size())
-                ml.type_subst[gp.name] = type_args[n_type++];
-            }
-            auto r = ml.lower(sym.sig.ret_type);
-            if (r) result = IType::from(*r);
+          // Use the pre-lowered return type from the mono instance (computed
+          // with the correct dep-module TypeLowerer + substitution).
+          const Symbol &msym = syms.get(resolved);
+          if (msym.mono_concrete_ret != 0)
+            result = IType::from(msym.mono_concrete_ret);
+
+          // Unify explicit arg types against concrete param types so integer
+          // literal TypeVars bind to the expected width (e.g., u64 vs i32).
+          // mono_concrete_params excludes self, so this is a direct 1-to-1 map.
+          for (u32 k = 0; k < args_count; ++k) {
+            if (k >= (u32)msym.mono_concrete_params.size()) break;
+            CTypeId expected = msym.mono_concrete_params[k];
+            if (expected == 0) continue;
+            unifier.unify(arg_types[k], IType::from(expected), types);
           }
         } else {
           const Symbol &rsym = syms.get(resolved);
           if (rsym.kind == SymbolKind::Func && rsym.sig.ret_type != 0) {
             auto ct = lower_for_sym(rsym, rsym.sig.ret_type);
             if (ct) result = IType::from(*ct);
+          }
+          // Unify arg types against param types so integer literal TypeVars bind
+          // to the expected width (e.g., u64 instead of i32).
+          if (rsym.kind == SymbolKind::Func && rsym.sig.params_count > 0) {
+            u32 rsym_mod = rsym.module_idx;
+            const Module *pm = (rsym_mod == module_idx) ? &mod
+                : (module_contexts && rsym_mod < module_contexts->size()
+                       ? (*module_contexts)[rsym_mod].mod
+                       : nullptr);
+            if (pm) {
+              // Field callees are instance method calls: skip the implicit self.
+              // Path callees are static method or free function calls: no skip.
+              u32 rsym_skip =
+                  (ir.nodes.kind[callee_n] == NodeKind::Field) ? 1u : 0u;
+              for (u32 k = 0; k < args_count &&
+                   (k + rsym_skip) < rsym.sig.params_count; ++k) {
+                TypeId pt =
+                    pm->params[rsym.sig.params_start + k + rsym_skip].type;
+                if (pt == 0) continue;
+                auto ct = lower_for_sym(rsym, pt);
+                if (!ct) continue;
+                unifier.unify(arg_types[k], IType::from(*ct), types);
+              }
+            }
           }
         }
       } else {
@@ -670,25 +798,38 @@ struct BodyChecker {
                     static_cast<TypeId>(tsym_ir.nodes.list[fs + k * 2 + 1]);
                 if (fname == field_nm) {
                   // Build a lowerer for the struct's module (ftype is in its
-                  // TypeAst). TypeLowerer has reference members so it can't be
-                  // assigned; use optional + emplace to conditionally construct
-                  // a dep lowerer.
+                  // TypeAst). Use optional + emplace to conditionally construct
+                  // a dep lowerer without assignment (TypeLowerer has refs).
+                  u32 tsym_mod = tsym.module_idx;
                   std::optional<TypeLowerer> dep_fl;
-                  if (tsym.module_idx != module_idx && dep_type_asts &&
-                      tsym.module_idx < dep_type_asts->size() &&
-                      (*dep_type_asts)[tsym.module_idx] != nullptr) {
-                    dep_fl.emplace(*(*dep_type_asts)[tsym.module_idx], syms,
-                                   interner, types);
-                    dep_fl->module_idx = tsym.module_idx;
+                  if (tsym_mod != module_idx && module_contexts &&
+                      tsym_mod < module_contexts->size()) {
+                    const ModuleContext &mctx = (*module_contexts)[tsym_mod];
+                    if (mctx.type_ast) {
+                      dep_fl.emplace(*mctx.type_ast, syms, interner, types);
+                      dep_fl->module_idx = tsym_mod;
+                      dep_fl->module_contexts = module_contexts;
+                      dep_fl->current_ir = mctx.ir;
+                      dep_fl->import_map = mctx.import_map;
+                    }
                   }
                   TypeLowerer &fl = dep_fl ? *dep_fl : lowerer;
                   if (sct.list_count > 0) {
-                    for (u32 j = 0;
-                         j < tsym.generics_count && j < sct.list_count; ++j) {
-                      const GenericParam &gp =
-                          mod.generic_params[tsym.generics_start + j];
-                      if (gp.is_type)
-                        fl.type_subst[gp.name] = types.list[sct.list_start + j];
+                    // Use the struct's own module for generic_params lookup.
+                    const Module *tsym_mod_ptr =
+                        (tsym_mod == module_idx)
+                            ? &mod
+                            : (module_contexts && tsym_mod < module_contexts->size()
+                                   ? (*module_contexts)[tsym_mod].mod
+                                   : nullptr);
+                    if (tsym_mod_ptr) {
+                      for (u32 j = 0;
+                           j < tsym.generics_count && j < sct.list_count; ++j) {
+                        const GenericParam &gp =
+                            tsym_mod_ptr->generic_params[tsym.generics_start + j];
+                        if (gp.is_type)
+                          fl.type_subst[gp.name] = types.list[sct.list_start + j];
+                      }
                     }
                   }
                   auto r = fl.lower(ftype);
@@ -705,9 +846,22 @@ struct BodyChecker {
       break;
     }
     case NodeKind::Index: {
-      check_expr(ir.nodes.a[n], sema);
+      IType base_t = check_expr(ir.nodes.a[n], sema);
       check_expr(ir.nodes.b[n], sema);
-      result = IType::fresh(unifier.fresh()); // TODO: peel array type
+      IType base_r = unifier.resolve(base_t);
+      if (!base_r.is_var) {
+        const CType &base_ct = types.types[base_r.concrete];
+        CTypeId actual_ctid = base_ct.kind == CTypeKind::Ref ? base_ct.inner
+                                                              : base_r.concrete;
+        const CType &actual_ct = types.types[actual_ctid];
+        if (actual_ct.kind == CTypeKind::Array ||
+            actual_ct.kind == CTypeKind::Slice)
+          result = IType::from(actual_ct.inner);
+        else
+          result = IType::fresh(unifier.fresh());
+      } else {
+        result = IType::fresh(unifier.fresh());
+      }
       break;
     }
     case NodeKind::AddrOf: {
@@ -822,23 +976,41 @@ struct BodyChecker {
             }
           }
         } else if (import_map) {
-          // module::symbol — cross-module function lookup
+          // module::symbol — cross-module function/type lookup
           auto mit = import_map->find(first_seg);
           if (mit != import_map->end()) {
             u32 dep_mod_idx = mit->second;
             SymbolId dep_sid = syms.lookup_pub(dep_mod_idx, second_seg);
+            if (dep_sid == kInvalidSymbol &&
+                syms.lookup(dep_mod_idx, second_seg) != kInvalidSymbol) {
+              emit(node_span(n), "symbol is not exported from module");
+            }
             if (dep_sid != kInvalidSymbol) {
               sema.node_symbol[n] = dep_sid;
               const Symbol &dep_sym = syms.get(dep_sid);
               if (dep_sym.kind == SymbolKind::Func &&
                   dep_sym.generics_count == 0 && dep_sym.sig.ret_type != 0 &&
-                  dep_type_asts && dep_mod_idx < dep_type_asts->size() &&
-                  (*dep_type_asts)[dep_mod_idx] != nullptr) {
-                TypeLowerer dep_lowerer(*(*dep_type_asts)[dep_mod_idx], syms,
-                                        interner, types);
-                dep_lowerer.module_idx = dep_mod_idx;
-                auto r = dep_lowerer.lower(dep_sym.sig.ret_type);
-                if (r) result = IType::from(*r);
+                  module_contexts && dep_mod_idx < module_contexts->size()) {
+                const ModuleContext &mctx = (*module_contexts)[dep_mod_idx];
+                if (mctx.type_ast) {
+                  TypeLowerer dep_lowerer(*mctx.type_ast, syms, interner, types);
+                  dep_lowerer.module_idx = dep_mod_idx;
+                  dep_lowerer.module_contexts = module_contexts;
+                  dep_lowerer.current_ir = mctx.ir;
+                  dep_lowerer.import_map = mctx.import_map;
+                  auto r = dep_lowerer.lower(dep_sym.sig.ret_type);
+                  if (r) result = IType::from(*r);
+                }
+              } else if (dep_sym.kind == SymbolKind::Type && cnt >= 3) {
+                // module::Type::method — cross-module static method call
+                SymId third_seg =
+                    static_cast<SymId>(ir.nodes.list[ls + 2]);
+                SymbolId method_sid = methods.lookup(dep_sid, third_seg);
+                if (method_sid != kInvalidSymbol) {
+                  sema.node_symbol[n] = method_sid;
+                  // result type resolved later in Call handling via
+                  // monomorphize() with type args from generic_type_id
+                }
               }
             }
           }
@@ -862,6 +1034,23 @@ struct BodyChecker {
       if (!elem_r) { emit(node_span(n), "unknown element type in slice literal"); break; }
       for (u32 k = 0; k < ir.nodes.c[n]; ++k)
         check_expr(static_cast<NodeId>(ir.nodes.list[ir.nodes.b[n] + k]), sema);
+      CType sc; sc.kind = CTypeKind::Slice; sc.inner = *elem_r;
+      result = IType::from(types.intern(sc));
+      break;
+    }
+    case NodeKind::SiteId:
+      result = IType::from(types.builtin(CTypeKind::U32));
+      break;
+    case NodeKind::SizeOf:
+    case NodeKind::AlignOf:
+      // type argument (a = TypeId) — return u64; actual value computed at codegen
+      result = IType::from(types.builtin(CTypeKind::U64));
+      break;
+    case NodeKind::SliceCast: {
+      check_expr(ir.nodes.a[n], sema); // source slice
+      TypeId elem_tid = ir.nodes.b[n];
+      auto elem_r = lowerer.lower(elem_tid);
+      if (!elem_r) { emit(node_span(n), "unknown element type in @slice_cast"); break; }
       CType sc; sc.kind = CTypeKind::Slice; sc.inner = *elem_r;
       result = IType::from(types.intern(sc));
       break;

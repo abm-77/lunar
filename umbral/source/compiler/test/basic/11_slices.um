@@ -13,4 +13,4 @@ const main := fn() -> void {
 }
 
 # CHECK: define { ptr, i64 } @
-# CHECK: define void @main
+# CHECK: define i32 @main

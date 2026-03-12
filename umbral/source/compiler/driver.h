@@ -69,9 +69,12 @@ inline DriverResult Driver::run(const std::string &src_path,
   // Sema over all modules.
   auto sema_r = run_sema(modules, interner);
   if (!sema_r) {
-    // Use the entry module's src for error formatting (last in the vector).
-    const std::string &entry_src = modules.back().src;
-    return {false, format_error(sema_r.error(), entry_src, src_path)};
+    const auto &err = sema_r.error();
+    u32 midx = err.module_idx;
+    bool has_mod = midx != UINT32_MAX && midx < modules.size();
+    const std::string &esrc = has_mod ? modules[midx].src : modules.back().src;
+    std::string epath = has_mod ? modules[midx].abs_path.string() : src_path;
+    return {false, format_error(err, esrc, epath)};
   }
 
   // LLVM Codegen

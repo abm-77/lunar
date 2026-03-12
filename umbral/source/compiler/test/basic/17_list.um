@@ -1,0 +1,24 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t
+
+import core.list => list;
+
+const main := fn() -> void {
+  var l := list::List<i32>::create(0);
+
+  l.push(10);
+  l.push(20);
+  l.push(30);
+  l.push(40);
+  l.push(50);
+
+  # Trigger a grow (started at 0, grew to 4, now pushing 5th triggers another grow)
+  l.push(60);
+
+  l.set(2, 99);
+
+  const a := l.get(0);   # 10
+  const b := l.get(2);   # 99
+  const n := l.count();  # 6
+
+  l.destroy();
+}

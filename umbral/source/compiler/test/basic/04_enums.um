@@ -38,4 +38,4 @@ const main := fn() -> void {
 # CHECK: define i1 @_U_04_enums__is_vertical
 # CHECK: define i1 @_U_04_enums__negate
 # CHECK: define void @_U_04_enums__bump
-# CHECK: define void @main
+# CHECK: define i32 @main

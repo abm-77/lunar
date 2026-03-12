@@ -29,4 +29,4 @@ const main := fn() -> void {
 # CHECK: define i32 @_U_00_literals__div
 # CHECK: define i1 @_U_00_literals__bool_ops
 # CHECK: define i1 @_U_00_literals__cmp
-# CHECK: define void @main
+# CHECK: define i32 @main

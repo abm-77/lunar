@@ -1,4 +1,3 @@
-
 pub const Option<T: type> := struct {
   has_value: bool,
   value: T,
@@ -12,7 +11,7 @@ impl Option<T> {
     };
   }
 
-  pub const nullopt := fn() -> Option<T> {
+  pub const none := fn() -> Option<T> {
     return Option<T> {
         has_value = false,
     };

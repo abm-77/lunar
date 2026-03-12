@@ -1,0 +1,18 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# @slice_cast(expr, T) — pure type-level reinterpret of a slice
+
+extern get_bytes() -> []u8;
+
+const main := fn() -> void {
+  const raw    := get_bytes();
+  const as_i32 := @slice_cast(raw, i32);
+}
+
+# @slice_cast must preserve the {ptr, len} struct unchanged — no ptr cast, no division.
+# Both raw and as_i32 have the same aggregate type {ptr, i64}.
+# CHECK: call { ptr, i64 } @get_bytes()
+# CHECK: extractvalue { ptr, i64 }
+# CHECK: extractvalue { ptr, i64 }
+# CHECK: insertvalue { ptr, i64 } undef
+# CHECK: insertvalue { ptr, i64 }

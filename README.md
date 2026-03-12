@@ -62,7 +62,7 @@ All declarations (functions, types, globals) are unified `const`/`var` bindings.
 ### Module Items
 
 ```
-module_item := ['pub'] 'import' path ['as' ident] ';'
+module_item := ['pub'] 'import' path ['=>' ident] ';'
              | ['pub'] ('const' | 'var') ident ['<' generic_params '>']
                    (':=' expr | [':' type] ['=' expr]) [';']
              | 'impl' ident ['<' ident (',' ident)* '>'] '{' impl_method* '}'
@@ -75,7 +75,7 @@ impl_method   := ['pub'] ('const' | 'var') ident ':=' expr [';']
 ```
 # import with optional alias
 import std.io;
-import std.math as math;
+import std.math => math;
 
 # named struct type
 const Point := struct {
@@ -330,7 +330,7 @@ const v  := *ptr;     # dereference
 
 ```
 import game.ecs.world;         # alias = last segment: world
-import game.ecs.world as w;    # explicit alias
+import game.ecs.world => w;    # explicit alias
 
 const e := world::spawn(1);    # call exported function
 ```

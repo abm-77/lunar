@@ -33,4 +33,4 @@ const main := fn() -> void {
 # CHECK: define i32 @_U_09_fn_pointers__mul
 # CHECK: define i32 @_U_09_fn_pointers__apply
 # CHECK: define i32 @_U_09_fn_pointers__apply_twice
-# CHECK: define void @main
+# CHECK: define i32 @main

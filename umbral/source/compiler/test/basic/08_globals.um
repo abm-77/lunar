@@ -42,4 +42,4 @@ const main := fn() -> void {
 # CHECK: define void @_U_08_globals__increment
 # CHECK: define void @_U_08_globals__reset
 # CHECK: define i32 @_U_08_globals__get_counter
-# CHECK: define void @main
+# CHECK: define i32 @main

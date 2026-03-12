@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_map>
+
 #include <common/interner.h>
 #include <common/types.h>
 #include <compiler/frontend/ast.h>
@@ -40,8 +42,12 @@ struct Symbol {
   // For monomorphized instances: pre-lowered concrete CTypeIds (= u32) for the
   // function signature (avoids re-lowering with the substitution at codegen).
   bool is_mono_instance = false;
-  u32 mono_concrete_ret = 0; // valid only when is_mono_instance
-  std::vector<u32> mono_concrete_params;
+  u32 mono_concrete_ret = 0;    // valid only when is_mono_instance
+  u32 mono_self_ctype = 0;      // non-zero if this is a mono instance method (CTypeId)
+  std::vector<u32> mono_concrete_params; // explicit params only (excludes self)
+  // Type-param substitution used when monomorphizing (SymId → CTypeId).
+  // Populated by BodyChecker::monomorphize; used by codegen for @size_of/@align_of.
+  std::unordered_map<SymId, u32> mono_type_subst;
 
   // GlobalVar
   TypeId annotate_type = 0; // syntax level (0 if inferred)

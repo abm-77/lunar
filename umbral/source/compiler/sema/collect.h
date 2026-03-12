@@ -45,7 +45,9 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
 
       case NodeKind::StructType:
       case NodeKind::EnumType:
-      case NodeKind::FnType: {
+      case NodeKind::FnType:
+      case NodeKind::Ident: {
+        // Ident covers simple type aliases: const AllocHandle := u64
         s.kind = SymbolKind::Type;
         s.type_node = d.init;
       } break;

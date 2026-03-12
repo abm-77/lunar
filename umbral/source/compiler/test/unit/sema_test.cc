@@ -77,7 +77,7 @@ TEST_F(SemaFixture, CollectEnumType) {
   SymbolTable table;
   auto r = collect_module_symbols(parser->mod, parser->body_ir,
                                   parser->type_ast, 0, table, "");
-  ASSERT_TRUE(r.has_value());
+  ASSERT_FALSE(r.has_value());
   SymbolId sid = table.lookup(0, interner.intern("Color"));
   EXPECT_NE(sid, kInvalidSymbol);
   EXPECT_EQ(table.get(sid).kind, SymbolKind::Type);
@@ -626,4 +626,55 @@ TEST_F(MultiModFixture, TransitiveDependency) {
   EXPECT_EQ((*lr)[2].rel_path, "main");
   auto sr = sema("main.um");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+// ============================================================
+// Integer literal widening
+// ============================================================
+
+TEST_F(SemaFixture, IntLiteralWidensToU64Param) {
+  // Passing an integer literal to a u64 parameter should work — the literal
+  // starts as a fresh TypeVar defaulting to i32 and should be rebound to u64.
+  auto sr = sema(
+      "const f := fn (x: u64) -> u64 { return x; }"
+      "const g := fn () -> u64 { return f(42); }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, IntLiteralWidensInAssign) {
+  // Assigning an integer literal to a u64 variable after declaration.
+  auto sr = sema(
+      "const f := fn () -> void {"
+      "  var x: u64 = 0;"
+      "  x = 99;"
+      "}");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+// ============================================================
+// Non-exported symbol errors
+// ============================================================
+
+TEST_F(MultiModFixture, NonExportedFunctionError) {
+  write("math.um", "const hidden := fn () -> i32 { return 42; }");
+  write("main.um",
+        "import math;"
+        "const f := fn () -> i32 { return math::hidden(); }");
+  auto sr = sema("main.um");
+  EXPECT_FALSE(sr.has_value());
+  if (!sr.has_value())
+    EXPECT_NE(sr.error().msg.find("not exported"), std::string::npos)
+        << "error was: " << sr.error().msg;
+}
+
+TEST_F(MultiModFixture, NonExportedTypeError) {
+  write("types.um", "const Hidden: type = struct { x: i32 }");
+  write("main.um",
+        "import types;"
+        "const f := fn (h: types::Hidden) -> i32 { return h.x; }");
+  auto sr = sema("main.um");
+  EXPECT_FALSE(sr.has_value());
+  if (!sr.has_value())
+    EXPECT_NE(sr.error().msg.find("not exported"), std::string::npos)
+        << "error was: " << sr.error().msg;
 }

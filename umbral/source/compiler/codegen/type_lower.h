@@ -148,17 +148,19 @@ private:
       subst[param_name] = concrete;
     }
 
-    // Build dep_irs so the TypeLowerer can distinguish enum vs struct fields
-    // from any module.
-    std::vector<const BodyIR *> dep_irs;
-    dep_irs.reserve(modules.size());
-    for (const auto &m : modules) dep_irs.push_back(&m.ir);
+    // Build module_contexts so the TypeLowerer can distinguish enum vs struct
+    // fields from any module.
+    std::vector<ModuleContext> local_ctx;
+    local_ctx.reserve(modules.size());
+    for (const auto &m : modules)
+      local_ctx.push_back({&m.type_ast, &m.ir, &m.mod, m.src, &m.import_map});
 
     TypeLowerer tl(ta, syms, interner, types);
     tl.type_subst = subst;
     tl.module_idx = sym.module_idx;
-    tl.dep_irs = &dep_irs;
+    tl.module_contexts = &local_ctx;
     tl.current_ir = &ir;
+    tl.import_map = &modules[sym.module_idx].import_map;
 
     u32 ls = ir.nodes.b[sym.type_node], n = ir.nodes.c[sym.type_node];
     std::vector<llvm::Type *> field_types;

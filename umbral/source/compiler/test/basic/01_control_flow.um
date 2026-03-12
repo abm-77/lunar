@@ -53,4 +53,4 @@ const main := fn() -> void {
 # CHECK: define i32 @_U_01_control_flow__sign
 # CHECK: define i32 @_U_01_control_flow__sum_range
 # CHECK: define i32 @_U_01_control_flow__count_down
-# CHECK: define void @main
+# CHECK: define i32 @main

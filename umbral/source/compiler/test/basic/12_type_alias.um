@@ -1,0 +1,25 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Builtin type alias: const Name := builtin_type
+const Handle := u64;
+const Score  := i32;
+
+const make_handle := fn(v: Handle) -> Handle {
+  return v;
+}
+
+const add_scores := fn(a: Score, b: Score) -> Score {
+  return a + b;
+}
+
+const main := fn() -> void {
+  var h: Handle = 0;
+  var s: Score  = 0;
+  h = make_handle(h);
+  s = add_scores(s, s);
+}
+
+# Handle resolves to i64, Score to i32.
+# CHECK: define i64 @{{.*}}make_handle{{.*}}(i64 %v)
+# CHECK: define i32 @{{.*}}add_scores{{.*}}(i32 %a, i32 %b)
+# CHECK: define i32 @main

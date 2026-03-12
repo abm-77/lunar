@@ -31,7 +31,7 @@ const main := fn() -> void {
 }
 
 # CHECK: %Vec2
-# CHECK: define void @main
+# CHECK: define i32 @main
 # CHECK: @_U_03_structs__Vec2__dot
 # CHECK: @_U_03_structs__Vec2__scale
 # CHECK: @_U_03_structs__Vec2__add

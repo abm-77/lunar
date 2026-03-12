@@ -1,0 +1,52 @@
+import sys.mem => mem;
+
+pub const List<T: type> := struct {
+  alloc: mem::Alloc<T>,
+  len: u64,
+};
+
+impl List<T> {
+  const create(cap: u64) -> List<T> {
+    const alloc := mem::Alloc<T>::create(cap, 0);
+    return List<T>{ alloc = alloc, len = 0 };
+  }
+
+  const destroy(&mut self) {
+    self.alloc.destroy();
+    self.len = 0;
+  }
+
+  const push(&mut self, val: T) {
+    if (self.len == self.alloc.len) {
+      var new_cap : u64 = self.alloc.len * 2;
+      if (new_cap < 4) {
+        new_cap = 4;
+      }
+      var new_alloc := mem::Alloc<T>::create(new_cap, 0);
+      const old_s := self.alloc.slice();
+      const new_s := new_alloc.slice_mut();
+      for (var i: u64 = 0; i < self.len; i += 1) {
+        new_s[i] = old_s[i];
+      }
+      self.alloc.destroy();
+      self.alloc = new_alloc;
+    }
+    const s := self.alloc.slice_mut();
+    s[self.len] = val;
+    self.len = self.len + 1;
+  }
+
+  const get(&self, idx: u64) -> T {
+    const s := self.alloc.slice();
+    return s[idx];
+  }
+
+  const set(&mut self, idx: u64, val: T) {
+    const s := self.alloc.slice_mut();
+    s[idx] = val;
+  }
+
+  const count(&self) -> u64 {
+    return self.len;
+  }
+}

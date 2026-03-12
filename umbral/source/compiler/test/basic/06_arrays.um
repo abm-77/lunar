@@ -30,4 +30,4 @@ const main := fn() -> void {
 
 # CHECK: define i32 @_U_06_arrays__sum_arr
 # CHECK: define void @_U_06_arrays__fill
-# CHECK: define void @main
+# CHECK: define i32 @main

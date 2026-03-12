@@ -24,13 +24,16 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
   // Phase 1: collect declarations
   SymbolTable syms;
   auto syms_r = collect_module_symbols(mod, ir, type_ast, 0, syms, src);
-  if (!syms_r) return std::unexpected(syms_r.value());
+  if (syms_r) return std::unexpected(*syms_r);
 
   // Phase 2: canonical type table + lowerer
   TypeTable types;
+  std::vector<ModuleContext> single_ctx;
+  single_ctx.push_back({&type_ast, &ir, &mod, src, nullptr});
   TypeLowerer lowerer(type_ast, syms, interner, types);
-  std::vector<const BodyIR *> single_irs{&ir};
-  lowerer.dep_irs = &single_irs;
+  lowerer.module_idx = 0;
+  lowerer.module_contexts = &single_ctx;
+  lowerer.current_ir = &ir;
 
   // Phase 3: method table
   auto methods_r = build_method_table(mod, /*module_idx=*/0, syms, lowerer);
@@ -113,16 +116,12 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     if (actual != kInvalidSymbol) sym.aliased_sym = actual;
   }
 
-  // Phase 4b: collect per-module TypeAst and BodyIR pointers for cross-module
-  // type resolution and struct field access.
-  std::vector<const TypeAst *> dep_type_asts;
-  std::vector<const BodyIR *> dep_irs;
-  dep_type_asts.reserve(modules.size());
-  dep_irs.reserve(modules.size());
-  for (auto &lm : modules) {
-    dep_type_asts.push_back(&lm.type_ast);
-    dep_irs.push_back(&lm.ir);
-  }
+  // Phase 4b: build a unified per-module context vector replacing the old five
+  // parallel dep_* arrays. All five pieces of per-module data travel together.
+  std::vector<ModuleContext> module_contexts;
+  module_contexts.reserve(modules.size());
+  for (auto &lm : modules)
+    module_contexts.push_back({&lm.type_ast, &lm.ir, &lm.mod, lm.src, &lm.import_map});
 
   // Phase 5: type-check each non-generic function body.
   // Each symbol carries module_idx; use it to select the right module data.
@@ -138,15 +137,15 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     auto &lm = modules[mod_i];
     TypeLowerer lowerer(lm.type_ast, syms, interner, types);
     lowerer.module_idx = mod_i;
-    lowerer.dep_irs = &dep_irs;
+    lowerer.module_contexts = &module_contexts;
+    lowerer.current_ir = &lm.ir;
     lowerer.import_map = &lm.import_map;
 
     BodyChecker checker(lm.ir, lm.mod, syms, methods, types, lowerer, interner,
                         lm.src, mono_cache);
     checker.module_idx = mod_i;
     checker.import_map = &lm.import_map;
-    checker.dep_type_asts = &dep_type_asts;
-    checker.dep_irs = &dep_irs;
+    checker.module_contexts = &module_contexts;
     checker.body_semas_out = &body_semas;
 
     auto body_r = checker.check(sym);

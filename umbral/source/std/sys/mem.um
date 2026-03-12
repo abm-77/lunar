@@ -1,0 +1,37 @@
+pub const AllocHandle := u64;
+
+pub const Alloc<T: type> := struct {
+  handle: AllocHandle,
+  len: u64,
+};
+
+extern rt_alloc(size: u64, align: u64, tag: u32, site: u32) -> AllocHandle;
+extern rt_free(handle: AllocHandle, site: u32) -> void;
+extern rt_slice_from_alloc(handle: AllocHandle, elem_size: u64, elem_align: u64, requested_len: u64, site_id: u32, mut_flag: u32) -> []u8;
+
+impl Alloc<T> {
+  const create(len: u64, tag: u32, site_id : u32 = @site_id()) -> Alloc<T> {
+    const sz := @size_of(T) * len;
+    const al := @align_of(T);
+    const s := 0;
+    const h := rt_alloc(sz, al, tag, site_id);
+    return Alloc<T>{ handle = h, len = len };
+  }
+
+  const destroy(&mut self, site_id : u32 = @site_id()) {
+    const s := 0;
+    rt_free(self.handle, site_id);
+    self.handle = 0;
+    self.len = 0;
+  }
+
+  const slice(&self, site_id : u32 = @site_id())-> []T {
+    const raw := rt_slice_from_alloc(self.handle, @size_of(T), @align_of(T), self.len, site_id, 0);
+    return @slice_cast(raw, T);
+  }
+
+  const slice_mut(&mut self, site_id : u32 = @site_id())-> []T {
+    const raw := rt_slice_from_alloc(self.handle, @size_of(T), @align_of(T), self.len, site_id, 1);
+    return @slice_cast(raw, T);
+  }
+}

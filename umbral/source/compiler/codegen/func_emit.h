@@ -59,9 +59,17 @@ struct FuncEmitter {
     for (u32 i = 0; i < sym.sig.params_count; ++i) {
       const FuncParam &fp = mod.params[sym.sig.params_start + i];
       llvm::Type *ty = nullptr;
-      if (sym.is_mono_instance && i < sym.mono_concrete_params.size()) {
-        ty = cg.type_lower.lower(sym.mono_concrete_params[i]);
-      } else {
+      if (sym.is_mono_instance) {
+        // mono_concrete_params excludes self; mono_self_ctype holds it separately.
+        if (i == 0 && sym.mono_self_ctype != 0) {
+          ty = cg.type_lower.lower(sym.mono_self_ctype);
+        } else {
+          u32 pi = i - (sym.mono_self_ctype != 0 ? 1u : 0u);
+          if (pi < sym.mono_concrete_params.size())
+            ty = cg.type_lower.lower(sym.mono_concrete_params[pi]);
+        }
+      }
+      if (!ty) {
         auto pt_r = tl.lower(fp.type);
         assert(pt_r && "could not lower param type");
         ty = cg.type_lower.lower(*pt_r);
@@ -76,15 +84,16 @@ struct FuncEmitter {
     pop_scope();
 
     if (!has_terminator()) {
-      CTypeId ret_ctid =
-          sym.is_mono_instance ? sym.mono_concrete_ret : [&]() -> CTypeId {
-            auto ret_r = tl.lower(sym.sig.ret_type);
-            assert(ret_r && "could not lower return type for function");
-            return *ret_r;
-          }();
-      if (cg.type_lower.types.types[ret_ctid].kind == CTypeKind::Void)
+      llvm::Type *llvm_ret = fn.getReturnType();
+      if (llvm_ret->isVoidTy()) {
         builder.CreateRetVoid();
-      else builder.CreateUnreachable();
+      } else if (llvm_ret->isIntegerTy(32) &&
+                 cg.interner.view(sym.name) == "main") {
+        // main() was promoted from void → i32; return 0 as exit code.
+        builder.CreateRet(llvm::ConstantInt::get(llvm_ret, 0));
+      } else {
+        builder.CreateUnreachable();
+      }
     }
   }
 
@@ -294,6 +303,10 @@ struct FuncEmitter {
     case NodeKind::CastAs:   return emit_cast_as(n);
     case NodeKind::Bitcast:  return emit_bitcast(n);
     case NodeKind::SliceLit: return emit_slice_lit(n);
+    case NodeKind::SiteId:   return emit_site_id(n);
+    case NodeKind::SizeOf:   return emit_size_of(n);
+    case NodeKind::AlignOf:  return emit_align_of(n);
+    case NodeKind::SliceCast: return emit_slice_cast(n);
     default: assert(false && "unhandled expression kind"); return nullptr;
     }
   }
@@ -509,6 +522,23 @@ struct FuncEmitter {
       args.push_back(emit_expr(arg_nid));
     }
 
+    // Default argument injection: if fewer args were provided than params, fill
+    // in the remaining args from the callee's FuncParam::default_init nodes.
+    if (ft != nullptr && args.size() < ft->getNumParams() &&
+        callee_sym_id != kInvalidSymbol) {
+      const Symbol &callee_sym = cg.sema.syms.symbols[callee_sym_id];
+      const Module &callee_mod_data = cg.modules[callee_sym.module_idx].mod;
+      const BodyIR &callee_ir = cg.modules[callee_sym.module_idx].ir;
+      u32 ps = callee_sym.sig.params_start;
+      for (u32 ai = static_cast<u32>(args.size());
+           ai < ft->getNumParams(); ++ai) {
+        const FuncParam &fp = callee_mod_data.params[ps + ai];
+        assert(fp.default_init != 0 && "missing argument with no default");
+        args.push_back(emit_default(fp.default_init, callee_ir, callee_sym,
+                                    ft->getParamType(ai)));
+      }
+    }
+
     return builder.CreateCall(ft, callee_val, args);
   }
 
@@ -671,6 +701,114 @@ struct FuncEmitter {
     return s;
   }
 
+  llvm::Value *emit_site_id(NodeId n) {
+    const LoadedModule &lm = cg.modules[sym.module_idx];
+    u32 byte_off = ir.nodes.span_s[n];
+    u32 site_idx = cg.alloc_site(lm.src, byte_off, lm.rel_path);
+    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()),
+                                  site_idx);
+  }
+
+  // Helper: create a TypeLowerer for the current function body with all
+  // substitutions applied (self + mono type params).
+  TypeLowerer make_body_tl() const {
+    TypeLowerer tl = cg.make_type_lowerer(sym.module_idx);
+    inject_self_subst(sym, tl, cg);
+    inject_mono_subst(sym, tl);
+    return tl;
+  }
+
+  llvm::Value *emit_size_of(NodeId n) {
+    TypeId tid = ir.nodes.a[n];
+    TypeLowerer tl = make_body_tl();
+    auto ctid = tl.lower(tid);
+    assert(ctid && "size_of: could not lower type");
+    llvm::Type *ty = cg.type_lower.lower(*ctid);
+    assert(ty && "size_of: lower returned null LLVM type (Void?)");
+    auto &dl = cg.module->getDataLayout();
+    assert(!dl.isDefault() && "size_of: DataLayout not set on module");
+    u64 sz = dl.getTypeAllocSize(ty);
+    return llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()), sz);
+  }
+
+  llvm::Value *emit_align_of(NodeId n) {
+    TypeId tid = ir.nodes.a[n];
+    TypeLowerer tl = make_body_tl();
+    auto ctid = tl.lower(tid);
+    assert(ctid && "align_of: could not lower type");
+    llvm::Type *ty = cg.type_lower.lower(*ctid);
+    auto &dl = cg.module->getDataLayout();
+    u64 align = dl.getABITypeAlign(ty).value();
+    return llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
+                                  align);
+  }
+
+  llvm::Value *emit_slice_cast(NodeId n) {
+    // Pure type-level reinterpret: same {ptr, len} values, different element type.
+    llvm::Value *src = emit_expr(ir.nodes.a[n]);
+    llvm::Value *ptr = builder.CreateExtractValue(src, 0);
+    llvm::Value *len = builder.CreateExtractValue(src, 1);
+    CTypeId dst_ctid = bsema.node_type[n].concrete;
+    llvm::Type *dst_ty = cg.type_lower.lower(dst_ctid);
+    llvm::Value *s = llvm::UndefValue::get(dst_ty);
+    s = builder.CreateInsertValue(s, ptr, 0);
+    s = builder.CreateInsertValue(s, len, 1);
+    return s;
+  }
+
+  // Emit a default-parameter expression from the callee's BodyIR.
+  // Emit a default-parameter constant expression from the callee's BodyIR.
+  // expected_ty: the LLVM type of the corresponding parameter (for IntLit).
+  llvm::Value *emit_default(NodeId n, const BodyIR &src_ir,
+                            const Symbol &csym,
+                            llvm::Type *expected_ty = nullptr) {
+    switch (src_ir.nodes.kind[n]) {
+    case NodeKind::SiteId: {
+      const LoadedModule &lm = cg.modules[csym.module_idx];
+      u32 site_idx =
+          cg.alloc_site(lm.src, src_ir.nodes.span_s[n], lm.rel_path);
+      return llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()),
+                                    site_idx);
+    }
+    case NodeKind::SizeOf: {
+      TypeId tid = src_ir.nodes.a[n];
+      TypeLowerer tl = cg.make_type_lowerer(csym.module_idx);
+      inject_self_subst(csym, tl, cg);
+      inject_mono_subst(csym, tl);
+      auto ctid = tl.lower(tid);
+      assert(ctid && "size_of default: could not lower type");
+      llvm::Type *ty = cg.type_lower.lower(*ctid);
+      u64 sz = cg.module->getDataLayout().getTypeAllocSize(ty);
+      return llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
+                                    sz);
+    }
+    case NodeKind::AlignOf: {
+      TypeId tid = src_ir.nodes.a[n];
+      TypeLowerer tl = cg.make_type_lowerer(csym.module_idx);
+      inject_self_subst(csym, tl, cg);
+      inject_mono_subst(csym, tl);
+      auto ctid = tl.lower(tid);
+      assert(ctid && "align_of default: could not lower type");
+      llvm::Type *ty = cg.type_lower.lower(*ctid);
+      u64 align = cg.module->getDataLayout().getABITypeAlign(ty).value();
+      return llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
+                                    align);
+    }
+    case NodeKind::IntLit: {
+      llvm::Type *ty = expected_ty ? expected_ty
+                                   : llvm::Type::getInt64Ty(fn.getContext());
+      return llvm::ConstantInt::get(ty, src_ir.nodes.a[n]);
+    }
+    case NodeKind::BoolLit: {
+      return llvm::ConstantInt::getBool(fn.getContext(),
+                                        src_ir.nodes.a[n] != 0);
+    }
+    default:
+      assert(false && "unsupported default expression kind");
+      return nullptr;
+    }
+  }
+
   llvm::Value *emit_path(NodeId n) {
     // Path nodes: either a sema-resolved function/method, or an enum variant
     // (sema leaves node_symbol == 0 for enum variants).
@@ -774,20 +912,38 @@ struct FuncEmitter {
     CTypeId base_ctid = bsema.node_type[base_nid].concrete;
     const CType &base_ct = cg.sema.types.types[base_ctid];
 
+    // Peel Ref to get the array or slice type.
+    CTypeId actual_ctid =
+        base_ct.kind == CTypeKind::Ref ? base_ct.inner : base_ctid;
+    const CType &actual_ct = cg.sema.types.types[actual_ctid];
+
+    llvm::Value *idx = emit_expr(ir.nodes.b[n]);
+    llvm::Type *elem_ty = cg.type_lower.lower(actual_ct.inner);
+
+    if (actual_ct.kind == CTypeKind::Slice) {
+      // Dynamic slice {ptr, i64}: extract the data ptr then GEP(elem, idx).
+      llvm::Value *slice_ptr = emit_place(base_nid);
+      if (base_ct.kind == CTypeKind::Ref)
+        slice_ptr = emit_expr(base_nid); // already a pointer to the slice
+      llvm::Type *slice_ty = cg.type_lower.lower(actual_ctid);
+      llvm::Value *data_ptr_ptr =
+          builder.CreateStructGEP(slice_ty, slice_ptr, 0);
+      llvm::Value *data_ptr = builder.CreateLoad(
+          llvm::PointerType::getUnqual(fn.getContext()), data_ptr_ptr);
+      return builder.CreateGEP(elem_ty, data_ptr, idx);
+    }
+
+    // Fixed-size array [N x T]: GEP with {0, idx}.
     llvm::Value *arr_ptr;
     CTypeId arr_ctid;
     if (base_ct.kind == CTypeKind::Ref) {
-      // Reference to array: load the pointer value (don't take address-of).
       arr_ptr = emit_expr(base_nid);
       arr_ctid = base_ct.inner;
     } else {
       arr_ptr = emit_place(base_nid);
       arr_ctid = base_ctid;
     }
-
-    // GEP needs the aggregate type [N x T], not the element type.
     llvm::Type *arr_ty = cg.type_lower.lower(arr_ctid);
-    llvm::Value *idx = emit_expr(ir.nodes.b[n]);
     return builder.CreateGEP(arr_ty, arr_ptr, {builder.getInt32(0), idx});
   }
 

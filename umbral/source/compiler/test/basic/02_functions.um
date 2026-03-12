@@ -31,4 +31,4 @@ const main := fn() -> void {
 # CHECK: define i32 @_U_02_functions__add
 # CHECK: define i32 @_U_02_functions__max
 # CHECK: define i32 @_U_02_functions__sum_to
-# CHECK: define void @main
+# CHECK: define i32 @main

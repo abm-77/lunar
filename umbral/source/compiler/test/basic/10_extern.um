@@ -16,4 +16,4 @@ const main := fn() -> void {
 # Extern function must appear as a bare declare with the unmangled name.
 # CHECK: declare i32 @abs(i32)
 
-# CHECK: define void @main
+# CHECK: define i32 @main

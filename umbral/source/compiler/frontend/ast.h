@@ -78,12 +78,17 @@ enum class NodeKind : u16 {
   SliceLit,  // a = elem TypeId, b = vals_start (list pool), c = vals_count
   CastAs,    // a = source NodeId, b = target TypeId  (@as)
   Bitcast,   // a = source NodeId, b = target TypeId  (@bitcast)
+  SiteId,    // no args — compile-time call-site u32
+  SizeOf,    // a = TypeId — sizeof(T) as u64
+  AlignOf,   // a = TypeId — alignof(T) as u64
+  SliceCast, // a = source NodeId ([]u8), b = elem TypeId → []T
 };
 
 using TypeId = u32;
 enum class TypeKind : u16 {
   Named,     // a = SymId, b = targs_start, c = targs_count
-  QualNamed, // a = type_name SymId, b = module_prefix SymId (module::Type)
+  QualNamed, // a = type_name SymId, b = list_start, c = targs_count
+             // list[b] = mod_prefix SymId; list[b+1..b+1+c] = type arg TypeIds
   Ref,       // a = mutable?, b = inner TypeId
   Tuple,     // b = list_start, c = list_count
   Fn,        // a = ret TypeId, b = list_start, c = list_count

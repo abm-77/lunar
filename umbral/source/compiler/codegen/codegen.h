@@ -165,7 +165,11 @@ inline void declare_functions(CodegenCtx &cg) {
     if (sym.is_mono_instance) {
       llvm::Type *ret = cg.type_lower.lower(sym.mono_concrete_ret);
       ret_type = ret ? ret : llvm::Type::getVoidTy(cg.ctx);
-      param_types.reserve(sym.mono_concrete_params.size());
+      param_types.reserve(sym.mono_concrete_params.size() +
+                          (sym.mono_self_ctype != 0 ? 1u : 0u));
+      // Prepend self type (a pointer) when this is a mono instance method.
+      if (sym.mono_self_ctype != 0)
+        param_types.push_back(cg.type_lower.lower(sym.mono_self_ctype));
       for (CTypeId ctid : sym.mono_concrete_params)
         param_types.push_back(cg.type_lower.lower(ctid));
     } else {
@@ -188,6 +192,11 @@ inline void declare_functions(CodegenCtx &cg) {
         param_types.push_back(cg.type_lower.lower(*pt_r));
       }
     }
+
+    // `main` must be declared as `i32 main()` per the C ABI — the Umbral
+    // source writes `-> void` but the OS expects an exit code in rax.
+    if (cg.interner.view(sym.name) == "main" && ret_type->isVoidTy())
+      ret_type = llvm::Type::getInt32Ty(cg.ctx);
 
     auto *ft =
         llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
@@ -289,13 +298,76 @@ inline Result<void> emit_object(llvm::LLVMContext & /*ctx*/, llvm::Module &mod,
   return {};
 }
 
+inline void emit_site_table(CodegenCtx &cg) {
+  auto &ctx = cg.ctx;
+  u32 n = static_cast<u32>(cg.sites.size());
+
+  // { ptr, i32, i32 }
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(ctx);
+  llvm::StructType *site_ty = llvm::StructType::get(
+      ctx, {ptr_ty, llvm::Type::getInt32Ty(ctx), llvm::Type::getInt32Ty(ctx)});
+
+  std::vector<llvm::Constant *> entries;
+  entries.reserve(n);
+  for (auto &se : cg.sites) {
+    auto *file_str =
+        llvm::ConstantDataArray::getString(ctx, se.file, /*AddNull=*/true);
+    auto *gv = new llvm::GlobalVariable(*cg.module, file_str->getType(), true,
+                                        llvm::GlobalValue::PrivateLinkage,
+                                        file_str, ".site_file");
+    llvm::Constant *zero32 =
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+    std::array<llvm::Constant *, 2> gep_idx = {zero32, zero32};
+    llvm::Constant *file_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
+        file_str->getType(), gv, gep_idx);
+    entries.push_back(llvm::ConstantStruct::get(
+        site_ty,
+        {file_ptr,
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), se.line),
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), se.col)}));
+  }
+
+  llvm::ArrayType *arr_ty = llvm::ArrayType::get(site_ty, n);
+  llvm::Constant *arr_init = n > 0
+                                 ? llvm::ConstantArray::get(arr_ty, entries)
+                                 : llvm::ConstantAggregateZero::get(arr_ty);
+  new llvm::GlobalVariable(*cg.module, arr_ty, true,
+                           llvm::GlobalValue::ExternalLinkage, arr_init,
+                           "__um_sites");
+  new llvm::GlobalVariable(
+      *cg.module, llvm::Type::getInt32Ty(ctx), true,
+      llvm::GlobalValue::ExternalLinkage,
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), n),
+      "__um_sites_count");
+}
+
+
 inline Result<CodegenResult>
 run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
             const Interner &interner, std::string_view module_name = "umbral") {
   CodegenCtx cg(sema, modules, interner, module_name);
   declare_globals(cg);
   declare_functions(cg);
+
+  // Set DataLayout so @size_of/@align_of can use it during body emission.
+  {
+    llvm::InitializeNativeTarget();
+    llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+    cg.module->setTargetTriple(triple);
+    std::string err2;
+    const llvm::Target *tgt =
+        llvm::TargetRegistry::lookupTarget(triple, err2);
+    if (tgt) {
+      std::unique_ptr<llvm::TargetMachine> tm(tgt->createTargetMachine(
+          triple, llvm::sys::getHostCPUName(), "", {},
+          llvm::Reloc::PIC_, llvm::CodeModel::Small,
+          llvm::CodeGenOptLevel::None));
+      cg.module->setDataLayout(tm->createDataLayout());
+    }
+  }
+
   emit_function_bodies(cg);
+  emit_site_table(cg);
 
   std::string err;
   llvm::raw_string_ostream es(err);

@@ -1,0 +1,32 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Default parameters, method shorthand, and extern shorthand.
+
+extern abs(x: i32) -> i32;
+
+const Counter := struct {
+  value: i32,
+};
+
+impl Counter {
+  const new(start: i32 = 0) -> Counter {
+    return Counter{ value = start };
+  }
+  const get(&self) -> i32 {
+    return self.value;
+  }
+}
+
+const main := fn() -> void {
+  const c0 := Counter::new();
+  const c1 := Counter::new(10);
+  const v  := c0.get();
+}
+
+# Extern shorthand: bare declare with unmangled name.
+# CHECK: declare i32 @abs(i32)
+
+# main() calls new() twice: once with default-injected 0, once with explicit 10.
+# CHECK: define i32 @main
+# CHECK: call {{.*}}Counter{{.*}}new{{.*}}(i32 0)
+# CHECK: call {{.*}}Counter{{.*}}new{{.*}}(i32 10)

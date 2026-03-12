@@ -1,0 +1,14 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# @size_of(T) and @align_of(T) — compile-time constants
+const main := fn() -> void {
+  const sz_i32   := @size_of(i32);
+  const sz_i64   := @size_of(i64);
+  const al_i32   := @align_of(i32);
+  const al_i64   := @align_of(i64);
+}
+
+# CHECK: store i64 4, ptr %sz_i32
+# CHECK: store i64 8, ptr %sz_i64
+# CHECK: store i64 4, ptr %al_i32
+# CHECK: store i64 8, ptr %al_i64

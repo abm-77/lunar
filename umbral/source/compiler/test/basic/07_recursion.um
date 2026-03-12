@@ -33,4 +33,4 @@ const main := fn() -> void {
 # CHECK: define i32 @_U_07_recursion__fib
 # CHECK: define i32 @_U_07_recursion__factorial
 # CHECK: define i32 @_U_07_recursion__count_steps
-# CHECK: define void @main
+# CHECK: define i32 @main

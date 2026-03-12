@@ -21,6 +21,7 @@ struct ImportDecl {
 struct FuncParam {
   SymId name{};
   TypeId type{};
+  NodeId default_init = 0; // 0 = no default; else NodeId in the owning module's BodyIR
   Span span{};
 };
 
