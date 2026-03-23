@@ -7,6 +7,7 @@
 #include "method_table.h"
 #include "symbol.h"
 #include <compiler/loader.h>
+#include <compiler/meta/mono.h>
 
 struct SemaResult {
   SymbolTable syms;
@@ -41,19 +42,45 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
   MethodTable methods = std::move(*methods_r);
 
   // phase 4: type-check non-generic function bodies.
-  MonoCache mono_cache;
+  MonoEngine mono_engine{syms, types, interner};
+  mono_engine.module_contexts = &single_ctx;
   u32 n_original_syms = static_cast<u32>(syms.symbols.size());
   std::unordered_map<SymbolId, BodySema> body_semas;
   for (u32 i = 1; i < n_original_syms; ++i) {
     const Symbol &sym = syms.symbols[i];
     if (sym.kind != SymbolKind::Func || sym.body == 0) continue;
     if (sym.generics_count > 0) continue;
-    BodyChecker checker(ir, mod, syms, methods, types, lowerer, interner, src,
-                        mono_cache);
+    BodyChecker checker(ir, mod, syms, methods, types, lowerer, interner, src);
+    checker.mono_engine = &mono_engine;
     checker.body_semas_out = &body_semas;
     auto body_r = checker.check(sym);
     if (!body_r) return std::unexpected(body_r.error());
     body_semas[i] = std::move(*body_r);
+  }
+
+  // drain mono work queue — new instantiations may enqueue more pending entries.
+  while (!mono_engine.pending.empty()) {
+    auto batch = std::move(mono_engine.pending);
+    mono_engine.pending.clear();
+    for (const PendingMono &pm : batch) {
+      const Symbol &msym = syms.symbols[pm.mono_id];
+      TypeLowerer ml(type_ast, syms, interner, types);
+      ml.type_subst = msym.mono_type_subst;
+      ml.lenient = true;
+      ml.module_idx = pm.generic_mod_idx;
+      ml.module_contexts = &single_ctx;
+      ml.current_ir = &ir;
+
+      BodyChecker sub(ir, mod, syms, methods, types, std::move(ml), interner, src);
+      sub.mono_engine = &mono_engine;
+      sub.body_semas_out = &body_semas;
+      sub.const_generic_scope_start = pm.const_generic_scope_start;
+      sub.const_generic_scope_count = pm.const_generic_scope_count;
+
+      auto body_r = sub.check(msym);
+      if (!body_r) return std::unexpected(body_r.error());
+      body_semas[pm.mono_id] = std::move(*body_r);
+    }
   }
 
   return SemaResult{std::move(syms), std::move(types), std::move(methods),
@@ -125,7 +152,8 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
 
   // phase 5: type-check each non-generic function body.
   // each symbol carries module_idx; use it to select the right module data.
-  MonoCache mono_cache;
+  MonoEngine mono_engine{syms, types, interner};
+  mono_engine.module_contexts = &module_contexts;
   u32 n_original_syms = static_cast<u32>(syms.symbols.size());
   std::unordered_map<SymbolId, BodySema> body_semas;
   for (u32 i = 1; i < n_original_syms; ++i) {
@@ -142,7 +170,8 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     lowerer.import_map = &lm.import_map;
 
     BodyChecker checker(lm.ir, lm.mod, syms, methods, types, lowerer, interner,
-                        lm.src, mono_cache);
+                        lm.src);
+    checker.mono_engine = &mono_engine;
     checker.module_idx = mod_i;
     checker.import_map = &lm.import_map;
     checker.module_contexts = &module_contexts;
@@ -151,6 +180,38 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     auto body_r = checker.check(sym);
     if (!body_r) return std::unexpected(body_r.error());
     body_semas[i] = std::move(*body_r);
+  }
+
+  // drain mono work queue — new instantiations may enqueue more pending entries.
+  while (!mono_engine.pending.empty()) {
+    auto batch = std::move(mono_engine.pending);
+    mono_engine.pending.clear();
+    for (const PendingMono &pm : batch) {
+      const Symbol &msym = syms.symbols[pm.mono_id];
+      u32 mod_i = pm.generic_mod_idx;
+      auto &lm = modules[mod_i];
+      TypeLowerer ml(lm.type_ast, syms, interner, types);
+      ml.type_subst = msym.mono_type_subst;
+      ml.lenient = true;
+      ml.module_idx = mod_i;
+      ml.module_contexts = &module_contexts;
+      ml.current_ir = &lm.ir;
+      ml.import_map = &lm.import_map;
+
+      BodyChecker sub(lm.ir, lm.mod, syms, methods, types, std::move(ml),
+                      interner, lm.src);
+      sub.mono_engine = &mono_engine;
+      sub.module_idx = mod_i;
+      sub.import_map = &lm.import_map;
+      sub.module_contexts = &module_contexts;
+      sub.body_semas_out = &body_semas;
+      sub.const_generic_scope_start = pm.const_generic_scope_start;
+      sub.const_generic_scope_count = pm.const_generic_scope_count;
+
+      auto body_r = sub.check(msym);
+      if (!body_r) return std::unexpected(body_r.error());
+      body_semas[pm.mono_id] = std::move(*body_r);
+    }
   }
 
   return SemaResult{std::move(syms), std::move(types), std::move(methods),

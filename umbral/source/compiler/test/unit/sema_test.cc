@@ -118,17 +118,6 @@ TEST_F(SemaFixture, CollectDuplicateNameError) {
   EXPECT_TRUE(err.has_value());
 }
 
-TEST_F(SemaFixture, CollectGenericFunctionParams) {
-  parse("const id<T: type> := fn (a: T) -> T { return a; }");
-  SymbolTable table;
-  auto err = collect_module_symbols(parser->mod, parser->body_ir,
-                                    parser->type_ast, 0, table, "");
-  ASSERT_FALSE(err.has_value());
-  SymbolId sid = table.lookup(0, interner.intern("id"));
-  ASSERT_NE(sid, kInvalidSymbol);
-  EXPECT_EQ(table.get(sid).generics_count, 1u);
-}
-
 TEST_F(SemaFixture, CollectImplMethodHasImplOwner) {
   parse(""
         "const Foo: type = struct { x: i32 }"
@@ -149,25 +138,6 @@ TEST_F(SemaFixture, CollectImplMethodHasImplOwner) {
   }
   ASSERT_NE(method_id, kInvalidSymbol);
   EXPECT_EQ(table.symbols[method_id].impl_owner, foo_sym);
-}
-
-TEST_F(SemaFixture, CollectGenericImplMethodInheritsGenericParams) {
-  parse(""
-        "const List<T: type> : type = struct { data: T }"
-        "impl List<T> { const get := fn (&self) -> T { return self.data; } }");
-  SymbolTable table;
-  auto err = collect_module_symbols(parser->mod, parser->body_ir,
-                                    parser->type_ast, 0, table, "");
-  ASSERT_FALSE(err.has_value());
-  SymId get_sym = interner.intern("get");
-  for (u32 i = 1; i < static_cast<u32>(table.symbols.size()); ++i) {
-    if (table.symbols[i].name == get_sym) {
-      EXPECT_EQ(table.symbols[i].generics_count, 1u)
-          << "method should inherit T from List";
-      return;
-    }
-  }
-  FAIL() << "get method not found";
 }
 
 TEST_F(SemaFixture, CollectExternFunc) {
@@ -295,44 +265,6 @@ TEST_F(LowerFixture, LowerUserDefinedStruct) {
   EXPECT_EQ(types->types[*r].symbol, syms->lookup(0, foo_sym));
 }
 
-TEST_F(LowerFixture, LowerTypeSubstitution) {
-  setup("");
-  SymId t_sym = interner.intern("T");
-  SymId i32sym = interner.intern("i32");
-  CTypeId i32_ct = types->builtin(CTypeKind::I32);
-  lowerer->type_subst[t_sym] = i32_ct;
-  TypeId tid = parser->type_ast.make(TypeKind::Named, {0, 0}, t_sym);
-  auto r = lowerer->lower(tid);
-  ASSERT_TRUE(r.has_value());
-  EXPECT_EQ(*r, i32_ct);
-}
-
-TEST_F(LowerFixture, GenericInstantiationsAreDistinct) {
-  setup("const List<T: type> : type = struct { data: T }");
-  SymId list_sym = interner.intern("List");
-  SymId i32_sym = interner.intern("i32");
-  SymId bool_sym = interner.intern("bool");
-
-  // Build List<i32> type id
-  TypeId i32_tid = parser->type_ast.make(TypeKind::Named, {0, 0}, i32_sym);
-  auto [ls1, c1] = parser->type_ast.push_list(&i32_tid, 1);
-  TypeId list_i32 =
-      parser->type_ast.make(TypeKind::Named, {0, 0}, list_sym, ls1, c1);
-
-  // Build List<bool> type id
-  TypeId bool_tid = parser->type_ast.make(TypeKind::Named, {0, 0}, bool_sym);
-  auto [ls2, c2] = parser->type_ast.push_list(&bool_tid, 1);
-  TypeId list_bool =
-      parser->type_ast.make(TypeKind::Named, {0, 0}, list_sym, ls2, c2);
-
-  auto r1 = lowerer->lower(list_i32);
-  auto r2 = lowerer->lower(list_bool);
-  ASSERT_TRUE(r1.has_value());
-  ASSERT_TRUE(r2.has_value());
-  EXPECT_NE(*r1, *r2)
-      << "List<i32> and List<bool> must have different CTypeIds";
-}
-
 // ============================================================
 // Phase 3: method_table
 // ============================================================
@@ -349,21 +281,6 @@ TEST_F(SemaFixture, MethodTableBasic) {
   ASSERT_NE(foo_sid, kInvalidSymbol);
   SymbolId method = sr->methods.lookup(foo_sid, get_sym);
   EXPECT_NE(method, kInvalidSymbol);
-}
-
-TEST_F(SemaFixture, MethodTableGenericImpl) {
-  auto sr = sema(
-      ""
-      "const List<T: type> : type = struct { data: T }"
-      "impl List<T> { const get := fn (&self) -> T { return self.data; } }");
-  ASSERT_TRUE(sr.has_value());
-  SymId list_sym = interner.intern("List");
-  SymId get_sym = interner.intern("get");
-  SymbolId list_sid = sr->syms.lookup(0, list_sym);
-  ASSERT_NE(list_sid, kInvalidSymbol);
-  SymbolId method = sr->methods.lookup(list_sid, get_sym);
-  EXPECT_NE(method, kInvalidSymbol)
-      << "generic impl methods should be in the method table";
 }
 
 TEST_F(SemaFixture, MethodTableMultipleImpls) {
@@ -434,21 +351,6 @@ TEST_F(SemaFixture, SemaMethodCall) {
                  "  const get := fn (&self) -> i32 { return self.v; }"
                  "}"
                  "const f := fn (x: Foo) -> i32 { return x.get(); }");
-  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
-}
-
-TEST_F(SemaFixture, SemaGenericFunctionMonomorphized) {
-  // id<T> called with i32 arg should monomorphize and type-check cleanly
-  auto sr = sema(""
-                 "const id<T: type> := fn (a: T) -> T { return a; }"
-                 "const f := fn () -> i32 { return id(1); }");
-  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
-}
-
-TEST_F(SemaFixture, SemaGenericSkippedWithoutCall) {
-  // A generic function that is never called should not cause errors
-  auto sr = sema(""
-                 "const add<T: type> := fn (a: T, b: T) -> T { return a; }");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 

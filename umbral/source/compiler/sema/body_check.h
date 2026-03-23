@@ -1,6 +1,5 @@
 #pragma once
 
-#include <map>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -10,87 +9,13 @@
 #include <compiler/frontend/ast.h>
 #include <compiler/frontend/lexer.h>
 #include <compiler/frontend/module.h>
+#include <compiler/meta/mono.h>
 
 #include "ctypes.h"
+#include "itype.h"
 #include "lower_types.h"
 #include "method_table.h"
 #include "symbol.h"
-
-using TypeVarId = u32;
-
-struct IType {
-  bool is_var = false;
-  union {
-    CTypeId concrete;
-    TypeVarId var;
-  };
-
-  static IType from(CTypeId id) {
-    IType t;
-    t.is_var = false;
-    t.concrete = id;
-    return t;
-  }
-  static IType fresh(TypeVarId id) {
-    IType t;
-    t.is_var = true;
-    t.var = id;
-    return t;
-  }
-};
-
-struct Unifier {
-  std::vector<std::optional<IType>> bindings;
-
-  TypeVarId fresh() {
-    TypeVarId id = static_cast<TypeVarId>(bindings.size());
-    bindings.push_back(std::nullopt);
-    return id;
-  }
-
-  IType resolve(IType t) const {
-    while (t.is_var && bindings[t.var].has_value()) t = *bindings[t.var];
-    return t;
-  }
-
-  bool unify(IType a, IType b, const TypeTable &types) {
-    a = resolve(a);
-    b = resolve(b);
-    if (!a.is_var && !b.is_var) return a.concrete == b.concrete;
-    if (a.is_var) bindings[a.var] = b;
-    else bindings[b.var] = a;
-    return true;
-  }
-};
-
-struct BodySema {
-  std::vector<IType> node_type;
-  std::vector<SymbolId> node_symbol;
-
-  struct Local {
-    IType type;
-    bool is_mut;
-  };
-  std::vector<std::unordered_map<SymId, Local>> scopes;
-
-  void push_scope() { scopes.push_back({}); }
-  void pop_scope() { scopes.pop_back(); }
-
-  void define(SymId name, IType type, bool is_mut) {
-    scopes.back()[name] = {type, is_mut};
-  }
-
-  std::optional<Local> lookup(SymId name) const {
-    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-      auto f = it->find(name);
-      if (f != it->end()) return f->second;
-    }
-    return std::nullopt;
-  }
-};
-
-// cache of monomorphized instances: (generic SymbolId, type args) -> mono SymbolId
-using MonoCache = std::map<std::pair<SymbolId, std::vector<CTypeId>>, SymbolId>;
 
 struct BodyChecker {
   const BodyIR &ir;
@@ -103,10 +28,9 @@ struct BodyChecker {
   std::string_view src;
   Unifier unifier;
   std::vector<Error> errors;
-  MonoCache &mono_cache; // shared across all BodyCheckers for one compilation
-  // when set, monomorphize() stores body semas for mono instances here.
+  MonoEngine *mono_engine = nullptr; // set after construction by the orchestrator
   std::unordered_map<SymbolId, BodySema> *body_semas_out = nullptr;
-  // set by monomorphize() to inject const generic params into expression scope
+  // injected by the sema drain loop for const generic params (e.g., N: i32)
   u32 const_generic_scope_start = 0;
   u32 const_generic_scope_count = 0;
 
@@ -124,11 +48,9 @@ struct BodyChecker {
 
   BodyChecker(const BodyIR &ir, const Module &mod, SymbolTable &syms,
               MethodTable &methods, TypeTable &types, TypeLowerer lowerer,
-              const Interner &interner, std::string_view src,
-              MonoCache &mono_cache)
+              const Interner &interner, std::string_view src)
       : ir(ir), mod(mod), syms(syms), methods(methods), types(types),
-        lowerer(std::move(lowerer)), interner(interner), src(src),
-        mono_cache(mono_cache) {}
+        lowerer(std::move(lowerer)), interner(interner), src(src) {}
 
   Span node_span(NodeId n) const {
     return {ir.nodes.span_s[n], ir.nodes.span_e[n]};
@@ -176,162 +98,6 @@ struct BodyChecker {
         (*module_contexts)[mod_idx].ir)
       return *(*module_contexts)[mod_idx].ir;
     return ir;
-  }
-
-  // monomorphization
-
-  // bind all still-unresolved integer literal TypeVars to i32.
-  // call before infer_type_args so that integer literal args resolve naturally.
-  // TypeVars already bound by context (e.g., u64 function param) are left alone.
-  void flush_int_defaults() {
-    IType i32_t = IType::from(types.builtin(CTypeKind::I32));
-    for (auto &[tv, _] : int_default_vars)
-      if (unifier.resolve(IType::fresh(tv)).is_var)
-        unifier.bindings[tv] = i32_t;
-  }
-
-  // infer concrete type args for a generic from actual argument ITypes.
-  // for each type-param T, find the first param typed as Named(T) and read
-  // the resolved concrete type of the corresponding argument.
-  // callers must flush_int_defaults() first so integer literal args are concrete.
-  std::vector<CTypeId> infer_type_args(const Symbol &gsym,
-                                       const std::vector<IType> &arg_types) {
-    std::vector<CTypeId> result;
-    for (u32 k = 0; k < gsym.generics_count; ++k) {
-      const GenericParam &gp = mod.generic_params[gsym.generics_start + k];
-      if (!gp.is_type) {
-        result.push_back(0);
-        continue;
-      }
-      CTypeId inferred = 0;
-      for (u32 p = 0; p < gsym.sig.params_count && !inferred; ++p) {
-        const FuncParam &fp = mod.params[gsym.sig.params_start + p];
-        if (lowerer.type_ast.kind[fp.type] == TypeKind::Named &&
-            lowerer.type_ast.a[fp.type] == gp.name && p < arg_types.size()) {
-          IType at = unifier.resolve(arg_types[p]);
-          if (!at.is_var) inferred = at.concrete;
-        }
-      }
-      result.push_back(inferred);
-    }
-    return result;
-  }
-
-  // create (or look up) a monomorphized instance of a generic function.
-  SymbolId monomorphize(SymbolId generic_id,
-                        const std::vector<CTypeId> &type_args) {
-    auto cache_key = std::make_pair(generic_id, type_args);
-    auto cit = mono_cache.find(cache_key);
-    if (cit != mono_cache.end()) return cit->second;
-
-    const Symbol &gsym = syms.get(generic_id);
-
-    // select the module that owns this generic symbol (may differ from current).
-    u32 gsym_mod = gsym.module_idx;
-    bool is_cross = gsym_mod != module_idx && module_contexts != nullptr &&
-                    gsym_mod < module_contexts->size();
-    const ModuleContext *gctx_ptr =
-        is_cross ? &(*module_contexts)[gsym_mod] : nullptr;
-    const Module &g_mod = gctx_ptr ? *gctx_ptr->mod : mod;
-    const BodyIR &g_ir = (gctx_ptr && gctx_ptr->ir) ? *gctx_ptr->ir : ir;
-    std::string_view g_src = gctx_ptr ? gctx_ptr->src : src;
-    const std::unordered_map<SymId, u32> *g_import_map =
-        gctx_ptr ? gctx_ptr->import_map : import_map;
-    TypeLowerer g_lowerer = (gctx_ptr && gctx_ptr->type_ast)
-        ? TypeLowerer(*gctx_ptr->type_ast, syms, interner, types)
-        : lowerer;
-    if (gctx_ptr) {
-      g_lowerer.module_idx = gsym_mod;
-      g_lowerer.module_contexts = module_contexts;
-      g_lowerer.current_ir = gctx_ptr->ir;
-      g_lowerer.import_map = g_import_map;
-    }
-
-    // build substitution: type-param name -> concrete CTypeId
-    std::unordered_map<SymId, CTypeId> subst;
-    u32 n_type = 0;
-    for (u32 k = 0; k < gsym.generics_count; ++k) {
-      const GenericParam &gp = g_mod.generic_params[gsym.generics_start + k];
-      if (gp.is_type && n_type < type_args.size())
-        subst[gp.name] = type_args[n_type++];
-    }
-
-    // clone symbol without generic params
-    Symbol mono_sym = gsym;
-    mono_sym.generics_start = 0;
-    mono_sym.generics_count = 0;
-    // keep impl_owner so name mangling still includes the type name prefix.
-    // store the substitution for codegen (@size_of/@align_of in mono bodies).
-    mono_sym.mono_type_subst = subst;
-
-    // pre-lower concrete ret/param types using the substitution so codegen can
-    // declare the LLVM function type without needing the substitution later.
-    {
-      TypeLowerer ml = g_lowerer;
-      ml.type_subst = subst;
-      ml.lenient = true;
-      mono_sym.is_mono_instance = true;
-      if (gsym.sig.ret_type != 0) {
-        auto r = ml.lower(gsym.sig.ret_type);
-        if (r) mono_sym.mono_concrete_ret = *r;
-        // else stays 0 = Void_ctid (lowering failed; codegen will use void)
-      } else {
-        mono_sym.mono_concrete_ret = types.builtin(CTypeKind::Void); // = 0
-      }
-      // detect &self / &mut self first param: store its type separately so
-      // mono_concrete_params is a 1-to-1 map of explicit call arguments.
-      u32 params_start = 0;
-      if (gsym.sig.params_count > 0) {
-        TypeId fp0_tid = g_mod.params[gsym.sig.params_start].type;
-        if (fp0_tid != 0 && g_lowerer.type_ast.kind[fp0_tid] == TypeKind::Ref) {
-          auto r = ml.lower(fp0_tid);
-          if (r) mono_sym.mono_self_ctype = *r;
-          params_start = 1;
-        }
-      }
-      for (u32 k = params_start; k < gsym.sig.params_count; ++k) {
-        const FuncParam &fp = g_mod.params[gsym.sig.params_start + k];
-        CTypeId ctid = 0;
-        if (fp.type != 0) {
-          auto r = ml.lower(fp.type);
-          if (r) ctid = *r;
-        }
-        mono_sym.mono_concrete_params.push_back(ctid);
-      }
-    }
-
-    // append to symbol table (not to by_name; only reachable via mono_cache)
-    SymbolId mono_id = static_cast<SymbolId>(syms.symbols.size());
-    syms.symbols.push_back(mono_sym);
-
-    // register in cache before body-check (handles mutual recursion)
-    mono_cache[cache_key] = mono_id;
-
-    // type-check the monomorphized body with the substitution applied
-    TypeLowerer sub_lowerer = g_lowerer;
-    sub_lowerer.type_subst = std::move(subst);
-    sub_lowerer.lenient =
-        true; // allow unknown const-generic names in type position
-    BodyChecker sub(g_ir, g_mod, syms, methods, types, std::move(sub_lowerer),
-                    interner, g_src, mono_cache);
-    sub.body_semas_out = body_semas_out;
-    sub.module_idx = gsym_mod;
-    sub.import_map = g_import_map;
-    sub.module_contexts = module_contexts;
-
-    // expose const generic params (e.g., N: i32) as i32-typed locals so the
-    // body can reference them in expression position (e.g., i < N).
-    sub.const_generic_scope_start = static_cast<u32>(gsym.generics_start);
-    sub.const_generic_scope_count = static_cast<u32>(gsym.generics_count);
-
-    const Symbol &msym = syms.symbols[mono_id];
-    auto body_r = sub.check(msym);
-    if (!body_r)
-      for (auto &e : sub.errors) errors.push_back(e);
-    else if (body_semas_out)
-      (*body_semas_out)[mono_id] = std::move(*body_r);
-
-    return mono_id;
   }
 
   // core checking
@@ -720,11 +486,11 @@ struct BodyChecker {
           // functions). flush integer literal defaults first so that e.g.
           // `id(1)` has a concrete i32 arg for T inference.
           if (type_args.empty()) {
-            flush_int_defaults();
-            type_args = infer_type_args(sym, arg_types);
+            flush_int_defaults(unifier, types, int_default_vars);
+            type_args = infer_type_args(sym, mod, lowerer, unifier, arg_types);
           }
 
-          resolved = monomorphize(callee_sym, type_args);
+          resolved = mono_engine->request(callee_sym, type_args);
           sema.node_symbol[callee_n] = resolved;
 
           // use the pre-lowered return type from the mono instance (computed
@@ -1102,7 +868,7 @@ struct BodyChecker {
                 if (method_sid != kInvalidSymbol) {
                   sema.node_symbol[n] = method_sid;
                   // result type resolved later in Call handling via
-                  // monomorphize() with type args from generic_type_id
+                  // mono_engine->request() with type args from generic_type_id
                 }
               }
             }
