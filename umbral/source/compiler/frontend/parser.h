@@ -223,13 +223,14 @@ private:
     // array type: '[' [count | ident] ']' elem_type
     if (match(TokenKind::LBracket)) {
       u32 count = static_cast<u32>(-1);
+      SymId count_ident = 0;
       if (!at(TokenKind::RBracket)) {
         if (at(TokenKind::Int)) {
           count = t.payload[i];
           ++i;
         } else if (at(TokenKind::Ident)) {
-          // const generic parameter (e.g., [N]T) — value unknown until
-          // instantiation
+          // const generic parameter (e.g., [N]T) — store SymId in c field
+          count_ident = static_cast<SymId>(t.payload[i]);
           ++i;
         } else {
           set_error(sp(), "expected integer count or identifier in array type");
@@ -239,13 +240,12 @@ private:
       expect(TokenKind::RBracket, "expected ']'");
       TypeId elem = parse_type();
       Span endsp = {start.start, type_ast.span_e[elem]};
-      return type_ast.make(TypeKind::Array, endsp, count, elem);
+      return type_ast.make(TypeKind::Array, endsp, count, elem, count_ident);
     }
 
     // integer literal as const-generic argument (e.g., Array<i32, 10>)
-    // represent as Named type with SymId=0; TypeLowerer will return Void for it.
     if (match(TokenKind::Int)) {
-      return type_ast.make(TypeKind::Named, start, 0);
+      return type_ast.make(TypeKind::ConstInt, start, t.payload[i - 1]);
     }
 
     // 'type' keyword used as a metatype annotation (e.g. const Foo: type = ...)
@@ -389,6 +389,21 @@ private:
         expect(TokenKind::RParen, "expected ')'");
         return body_ir.nodes.make(NodeKind::IterCreate, s, val);
       }
+      case IntrinsicKind::MetaFields: {
+        expect(TokenKind::LParen, "expected '('");
+        SymId type_name = expect_ident("expected struct type name");
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::FieldsOf, s, type_name);
+      }
+      case IntrinsicKind::MetaField: {
+        expect(TokenKind::LParen, "expected '('");
+        NodeId obj = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        SymId field_var = expect_ident("expected field variable name");
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::MetaField, s, obj, field_var);
+      }
+      // MetaGen, MetaElseIf, MetaAssert: handled as statements, not expressions
       default: set_error(s, "unhandled intrinsic"); return 0;
       }
     }
@@ -704,8 +719,104 @@ private:
       return body_ir.nodes.make(NodeKind::ArrayLit, endsp, idx);
     }
 
+    // MetaBlock: { @stmt... } — used for @gen type bodies at module level.
+    // detected by '{'  followed by '@' as the first content token.
+    if (at(TokenKind::LBrace) && k(1) == TokenKind::At) {
+      auto bs = sp();
+      ++i; // consume '{'
+      std::vector<u32> stmts;
+      while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err)
+        stmts.push_back(parse_meta_type_stmt());
+      expect(TokenKind::RBrace, "expected '}'");
+      auto [ls, cnt] = body_ir.nodes.push_list(stmts.data(), stmts.size());
+      Span endsp = {bs.start, t.end[i - 1]};
+      return body_ir.nodes.make(NodeKind::MetaBlock, endsp, 0, ls, cnt);
+    }
+
     set_error(s, "expected expression");
     return body_ir.nodes.make(NodeKind::Ident, s, 0);
+  }
+
+  // parse @if(cond) { expr } [@else { expr }] — in type-body context.
+  // then/else branches are single expressions (e.g. StructType), not full blocks.
+  NodeId parse_meta_type_if(Span s) {
+    expect(TokenKind::LParen, "expected '('");
+    NodeId cond = parse_expr();
+    expect(TokenKind::RParen, "expected ')'");
+    // parse then-branch as a single expression wrapped in { }
+    expect(TokenKind::LBrace, "expected '{'");
+    NodeId then_n = parse_expr();
+    match(TokenKind::Semicolon);
+    expect(TokenKind::RBrace, "expected '}'");
+    NodeId else_n = 0;
+    if (at(TokenKind::At) && k(1) == TokenKind::KwElse) {
+      i += 2; // consume '@' 'else'
+      expect(TokenKind::LBrace, "expected '{'");
+      else_n = parse_expr();
+      match(TokenKind::Semicolon);
+      expect(TokenKind::RBrace, "expected '}'");
+    } else if (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+      SymId iname = static_cast<SymId>(t.payload[i + 1]);
+      auto ikind = intrinsics.lookup(iname);
+      if (ikind && *ikind == IntrinsicKind::MetaElseIf) {
+        auto es = sp();
+        i += 2; // consume '@' 'else_if'
+        else_n = parse_meta_type_if(es);
+      }
+    }
+    Span endsp = {s.start, t.end[i - 1]};
+    return body_ir.nodes.make(NodeKind::MetaIf, endsp, cond, then_n, else_n);
+  }
+
+  // parse one statement inside a @gen type body (MetaBlock content).
+  NodeId parse_meta_type_stmt() {
+    auto s = sp();
+    if (!at(TokenKind::At)) return parse_expr(); // bare expression (e.g. struct { ... })
+    if (k(1) == TokenKind::KwIf) {
+      i += 2; // consume '@' 'if'
+      return parse_meta_type_if(s);
+    }
+    if (k(1) == TokenKind::Ident) {
+      SymId iname = static_cast<SymId>(t.payload[i + 1]);
+      auto ikind = intrinsics.lookup(iname);
+      if (ikind && *ikind == IntrinsicKind::MetaAssert) {
+        i += 2; // consume '@' 'assert'
+        expect(TokenKind::LParen, "expected '('");
+        NodeId cond = parse_expr();
+        NodeId msg_n = 0;
+        if (match(TokenKind::Comma)) msg_n = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        match(TokenKind::Semicolon);
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::MetaAssert, endsp, cond, msg_n);
+      }
+    }
+    // unrecognised — try as expression anyway
+    return parse_expr();
+  }
+
+  // parse @if(cond) { block } [@else_if(cond) { block }]* [@else { block }] — function body.
+  // called after '@' and 'if'/'else_if' have been consumed.
+  NodeId parse_meta_if_stmt(Span s) {
+    expect(TokenKind::LParen, "expected '('");
+    NodeId cond = parse_expr();
+    expect(TokenKind::RParen, "expected ')'");
+    NodeId then_n = parse_block();
+    NodeId else_n = 0;
+    if (at(TokenKind::At) && k(1) == TokenKind::KwElse) {
+      i += 2; // consume '@' 'else'
+      else_n = parse_block();
+    } else if (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+      SymId iname = static_cast<SymId>(t.payload[i + 1]);
+      auto ikind = intrinsics.lookup(iname);
+      if (ikind && *ikind == IntrinsicKind::MetaElseIf) {
+        auto es = sp();
+        i += 2; // consume '@' 'else_if'
+        else_n = parse_meta_if_stmt(es);
+      }
+    }
+    Span endsp = {s.start, t.end[i - 1]};
+    return body_ir.nodes.make(NodeKind::MetaIf, endsp, cond, then_n, else_n);
   }
 
   NodeId parse_place() {
@@ -935,6 +1046,29 @@ private:
 
     if (match(TokenKind::LBrace)) return parse_block();
 
+    // @if(cond) { block } [@else_if(cond) { block }]* [@else { block }]
+    if (at(TokenKind::At) && k(1) == TokenKind::KwIf) {
+      i += 2; // consume '@' 'if'
+      return parse_meta_if_stmt(s);
+    }
+
+    // @assert(cond [, msg]) ;
+    if (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+      SymId iname = static_cast<SymId>(t.payload[i + 1]);
+      auto ikind = intrinsics.lookup(iname);
+      if (ikind && *ikind == IntrinsicKind::MetaAssert) {
+        i += 2; // consume '@' 'assert'
+        expect(TokenKind::LParen, "expected '('");
+        NodeId cond = parse_expr();
+        NodeId msg_n = 0;
+        if (match(TokenKind::Comma)) msg_n = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        match(TokenKind::Semicolon);
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::MetaAssert, endsp, cond, msg_n);
+      }
+    }
+
     // <expr> [<assign-op> <expr>] ';'  ->  AssignStmt or ExprStmt
     NodeId lhs = parse_expr();
     if (is_assign(k())) {
@@ -985,6 +1119,16 @@ private:
       impl_block.generic_params = std::move(impl_generics);
       while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
         auto ms = sp();
+        // optional @gen annotation before pub/const/var
+        bool is_gen_method = false;
+        if (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+          SymId iname = static_cast<SymId>(t.payload[i + 1]);
+          auto ikind = intrinsics.lookup(iname);
+          if (ikind && *ikind == IntrinsicKind::MetaGen) {
+            is_gen_method = true;
+            i += 2; // consume '@gen'
+          }
+        }
         bool is_pub_method = match(TokenKind::KwPub);
         DeclKind mkind;
         if (match(TokenKind::KwConst)) mkind = DeclKind::Const;
@@ -1016,7 +1160,7 @@ private:
         match(TokenKind::Semicolon); // optional
         Span mend = {ms.start, t.end[i - 1]};
         impl_block.methods.push_back(
-            {mname, mty, minit, 0, 0, is_pub_method, false, mkind, mend});
+            {mname, mty, minit, 0, 0, is_pub_method, false, is_gen_method, mkind, mend});
       }
       expect(TokenKind::RBrace, "expected '}'");
       match(TokenKind::Semicolon); // optional trailing ';'
@@ -1025,6 +1169,16 @@ private:
       return;
     }
 
+    // optional @gen annotation before pub/extern/const/var
+    bool is_gen = false;
+    if (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+      SymId iname = static_cast<SymId>(t.payload[i + 1]);
+      auto ikind = intrinsics.lookup(iname);
+      if (ikind && *ikind == IntrinsicKind::MetaGen) {
+        is_gen = true;
+        i += 2; // consume '@gen'
+      }
+    }
     bool is_pub = match(TokenKind::KwPub);
     bool is_extern = match(TokenKind::KwExtern);
 
@@ -1049,7 +1203,7 @@ private:
       TypeId fn_type = type_ast.make(TypeKind::Fn, endsp, ret, ls, cnt);
       match(TokenKind::Semicolon);
       mod.decls.push_back(
-          {ename, fn_type, 0, 0, 0, is_pub, true, DeclKind::Const, endsp});
+          {ename, fn_type, 0, 0, 0, is_pub, true, false, DeclKind::Const, endsp});
       return;
     }
 
@@ -1097,7 +1251,7 @@ private:
       init = body_ir.nodes.make(NodeKind::FnLit, endsp, idx);
       match(TokenKind::Semicolon);
       mod.decls.push_back({name, ty, init, generics_start, generics_count,
-                           is_pub, false, kind, endsp});
+                           is_pub, false, is_gen, kind, endsp});
       return;
     }
     if (is_extern) {
@@ -1113,6 +1267,6 @@ private:
     match(TokenKind::Semicolon); // optional at module level
     Span endsp = {s.start, t.end[i - 1]};
     mod.decls.push_back(
-        {name, ty, init, generics_start, generics_count, is_pub, is_extern, kind, endsp});
+        {name, ty, init, generics_start, generics_count, is_pub, is_extern, is_gen, kind, endsp});
   }
 };

@@ -1,74 +1,34 @@
-import sys.core.mem => mem;
+# RUN: %uc %s
 
-@gen const List<T: type, N: u32> :=  {
+@gen const Array<T: type, N: u32> := {
   @if(N <= 8) {
-    struct {
-      # stack allocated
-      data: [8]T,
-      len: u32,
-      cap: u32,
-    }
+    struct { data: [8]T, len: u32 }
   }
   @else {
-    struct {
-      data: []T,
-      len u32,
-      cap: u32,
-    }
+    struct { data: [16]T, len: u32 }
   }
 }
 
-impl List<T, N> {
-  @gen const make := fn () -> List<T, N> {
-    @if(n <= 8) {
-      return List<T, N> {
-        data = [8]T{},
-        len = 0,
-        cap = 8,
-      }
+impl Array<T, N> {
+  @gen const make := fn () -> Array<T, N> {
+    @if(N <= 8) {
+      return Array<T, N> { data = [8]T{}, len = 0 };
     }
     @else {
-      return List<T, N> {
-        data = @as(mem::alloc(T, N), []T),
-        len = 0,
-        cap = N,
-      }
+      return Array<T, N> { data = [16]T{}, len = 0 };
     }
   }
 
   @gen const push := fn (&mut self, x: T) -> void {
-    @if(n <= 8) {
-      self.data[self.len] = x;
-      self.len++;
-    }
-    @else {
-      self.grow_and_push(x)
-    }
-  }
-
-  @gen const grow_and_push := fn(&mut self, x: T) -> void {
-    @if(N <= 8) {
-        return;
-    }
-    @else {
-      if (self.len == self.cap) {
-        const new_cap := N * 2;
-        const new_data :=  @as(mem::realloc(self.data, T, new_cap), []T);
-        self.data = new_data;
-        self.data[self.len] = x;
-        self.len += 1;
-        self.cap = new_cap
-      }
-      else {
-        self.data[self.len] = x;
-        self.len += 1;
-      }
-    }
+    self.data[self.len] = x;
+    self.len += 1;
   }
 }
 
 const main := fn () -> i32 {
-  var small_list := List<i32, 10>::make();
-  var big_list := List<i32, 100>::make();
+  var small := Array<i32, 4>::make();
+  var large := Array<i32, 10>::make();
+  small.push(1);
+  large.push(2);
   return 0;
 }

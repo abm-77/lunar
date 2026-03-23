@@ -1,0 +1,6 @@
+# RUN: not %uc %s
+
+const main := fn () -> i32 {
+  @assert(0 > 1);
+  return 0;
+}

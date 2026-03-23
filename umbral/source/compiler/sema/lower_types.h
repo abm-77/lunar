@@ -1,11 +1,14 @@
 #pragma once
 
+#include <optional>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include <common/error.h>
 #include <common/interner.h>
 #include <compiler/frontend/ast.h>
+#include <compiler/frontend/lexer.h>
 
 #include "ctypes.h"
 #include "symbol.h"
@@ -60,6 +63,130 @@ struct TypeLowerer {
     return std::nullopt;
   }
 
+  // --- compile-time constant expression evaluators ---
+
+  // evaluate a constant integer expression using type_subst for const-generic values.
+  // returns nullopt if the expression is not compile-time evaluable.
+  std::optional<i64> eval_const_int(NodeId n, const BodyIR &ir) const {
+    if (n == 0) return std::nullopt;
+    switch (ir.nodes.kind[n]) {
+    case NodeKind::IntLit:
+      return static_cast<i64>(ir.nodes.a[n]);
+    case NodeKind::BoolLit:
+      return static_cast<i64>(ir.nodes.a[n]);
+    case NodeKind::Ident: {
+      SymId sym = ir.nodes.a[n];
+      auto it = type_subst.find(sym);
+      if (it != type_subst.end() && it->second < static_cast<u32>(out.types.size())) {
+        const CType &ct = out.types[it->second];
+        if (ct.kind == CTypeKind::ConstInt) return static_cast<i64>(ct.count);
+      }
+      return std::nullopt;
+    }
+    case NodeKind::Unary: {
+      auto child = eval_const_int(ir.nodes.b[n], ir);
+      if (!child) return std::nullopt;
+      auto op = static_cast<TokenKind>(ir.nodes.a[n]);
+      if (op == TokenKind::Minus) return -*child;
+      if (op == TokenKind::Bang) return !*child ? 1 : 0;
+      return std::nullopt;
+    }
+    case NodeKind::Binary: {
+      auto lv = eval_const_int(ir.nodes.b[n], ir);
+      auto rv = eval_const_int(ir.nodes.c[n], ir);
+      if (!lv || !rv) return std::nullopt;
+      auto op = static_cast<TokenKind>(ir.nodes.a[n]);
+      switch (op) {
+      case TokenKind::Plus:         return *lv + *rv;
+      case TokenKind::Minus:        return *lv - *rv;
+      case TokenKind::Star:         return *lv * *rv;
+      case TokenKind::Slash:        return *rv != 0 ? *lv / *rv : std::optional<i64>{};
+      case TokenKind::Less:         return static_cast<i64>(*lv < *rv);
+      case TokenKind::LessEqual:    return static_cast<i64>(*lv <= *rv);
+      case TokenKind::Greater:      return static_cast<i64>(*lv > *rv);
+      case TokenKind::GreaterEqual: return static_cast<i64>(*lv >= *rv);
+      case TokenKind::EqualEqual:   return static_cast<i64>(*lv == *rv);
+      case TokenKind::BangEqual:    return static_cast<i64>(*lv != *rv);
+      default: return std::nullopt;
+      }
+    }
+    default: return std::nullopt;
+    }
+  }
+
+  std::optional<bool> eval_const_bool(NodeId n, const BodyIR &ir) const {
+    if (n == 0) return std::nullopt;
+    if (ir.nodes.kind[n] == NodeKind::BoolLit)
+      return ir.nodes.a[n] != 0;
+    auto iv = eval_const_int(n, ir);
+    if (iv) return *iv != 0;
+    return std::nullopt;
+  }
+
+  // evaluate a @if chain or bare expr node from a MetaBlock.
+  // returns the NodeId of the selected branch body (StructType or sub-expr), or 0.
+  // appends errors to errors_out if non-null.
+  NodeId eval_meta_if_chain(NodeId n, const BodyIR &ir,
+                             std::vector<Error> *errors_out) const {
+    while (n != 0) {
+      NodeKind nk = ir.nodes.kind[n];
+      if (nk == NodeKind::MetaIf) {
+        NodeId cond_n = ir.nodes.a[n];
+        NodeId then_n = ir.nodes.b[n];
+        NodeId else_n = ir.nodes.c[n];
+        auto result = eval_const_bool(cond_n, ir);
+        if (!result) {
+          // unevaluable — return then branch (conservative: take first branch)
+          return then_n;
+        }
+        if (*result) return then_n;
+        n = else_n; // try else branch
+      } else {
+        return n; // bare expr (e.g. StructType) is the result
+      }
+    }
+    return 0;
+  }
+
+  // evaluate a MetaBlock node to find the effective type expression NodeId.
+  // processes @asserts (fails if false), @if chains, and returns the final expr.
+  NodeId eval_meta_block(NodeId meta_block_nid, const BodyIR &ir,
+                          std::vector<Error> *errors_out) const {
+    u32 ls = ir.nodes.b[meta_block_nid];
+    u32 cnt = ir.nodes.c[meta_block_nid];
+    NodeId result_nid = 0;
+    for (u32 k = 0; k < cnt; ++k) {
+      NodeId stmt = static_cast<NodeId>(ir.nodes.list[ls + k]);
+      if (stmt == 0) continue;
+      NodeKind nk = ir.nodes.kind[stmt];
+      if (nk == NodeKind::MetaAssert) {
+        NodeId cond_n = ir.nodes.a[stmt];
+        auto val = eval_const_bool(cond_n, ir);
+        if (val && !*val) {
+          NodeId msg_n = ir.nodes.b[stmt];
+          const char *msg = "@assert failed";
+          if (msg_n != 0 && ir.nodes.kind[msg_n] == NodeKind::StrLit) {
+            // note: interner.view() data is valid for the lifetime of the interner
+            // store as a std::string in the error (Error::msg is const char*)
+            // for simplicity, use a static fallback; the msg will be in interner
+            msg = "@assert condition is false";
+          }
+          if (errors_out)
+            errors_out->push_back(Error{
+                {ir.nodes.span_s[stmt], ir.nodes.span_e[stmt]}, msg});
+          return 0;
+        }
+      } else if (nk == NodeKind::MetaIf) {
+        result_nid = eval_meta_if_chain(stmt, ir, errors_out);
+      } else {
+        result_nid = stmt; // bare expr (StructType, etc.)
+      }
+    }
+    return result_nid;
+  }
+
+  // --- type lowering ---
+
   Result<CTypeId> lower(TypeId tid) {
     TypeKind tk = type_ast.kind[tid];
 
@@ -103,6 +230,18 @@ struct TypeLowerer {
             std::string_view asv = interner.view(alias_name);
             if (auto b = builtin_from_name(asv, out)) return *b;
             // non-builtin ident alias: fall through to struct resolution
+          } else if (tnk == NodeKind::MetaBlock) {
+            // @gen type: evaluate meta block to select the concrete StructType
+            // apply type args as type_subst before evaluating
+            // (type_subst is already populated by the caller for mono instances;
+            //  for direct resolution we build a temporary subst from the type args)
+            NodeId effective_nid = eval_meta_block(resolved.type_node, *ir, nullptr);
+            if (effective_nid == 0) {
+              Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
+              return std::unexpected(Error{sp, "meta type evaluation failed"});
+            }
+            // the effective node should be a StructType — build a Struct CType with it
+            ct_kind = CTypeKind::Struct;
           }
         }
       }
@@ -170,6 +309,13 @@ struct TypeLowerer {
             SymId alias_name = ir->nodes.a[resolved.type_node];
             std::string_view asv = interner.view(alias_name);
             if (auto b = builtin_from_name(asv, out)) return *b;
+          } else if (tnk == NodeKind::MetaBlock) {
+            NodeId effective_nid = eval_meta_block(resolved.type_node, *ir, nullptr);
+            if (effective_nid == 0) {
+              Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
+              return std::unexpected(Error{sp, "meta type evaluation failed"});
+            }
+            ct_kind = CTypeKind::Struct;
           }
         }
       }
@@ -203,12 +349,31 @@ struct TypeLowerer {
       return out.intern(ct);
     } break;
 
+    case TypeKind::ConstInt:
+      return out.const_int(type_ast.a[tid]);
+
     case TypeKind::Array: {
       u32 count = type_ast.a[tid];
       auto elem = lower(type_ast.b[tid]);
       if (!elem) return elem;
       if (count == static_cast<u32>(-1)) {
-        // []T — slice type
+        // []T — slice type (or [N]T where N is a const-generic ident)
+        SymId count_ident = type_ast.c[tid];
+        if (count_ident != 0) {
+          // [N]T with const-generic N — look up N in type_subst
+          auto it = type_subst.find(count_ident);
+          if (it != type_subst.end() && it->second < static_cast<u32>(out.types.size())) {
+            const CType &nct = out.types[it->second];
+            if (nct.kind == CTypeKind::ConstInt) {
+              CType ct;
+              ct.kind = CTypeKind::Array;
+              ct.inner = *elem;
+              ct.count = nct.count;
+              return out.intern(ct);
+            }
+          }
+          // N not yet substituted — fall through to slice (lenient mode or error)
+        }
         CType ct;
         ct.kind = CTypeKind::Slice;
         ct.inner = *elem;

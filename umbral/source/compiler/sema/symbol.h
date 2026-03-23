@@ -48,6 +48,9 @@ struct Symbol {
   // type-param substitution used when monomorphizing (SymId → CTypeId).
   // populated by BodyChecker::monomorphize; used by codegen for @size_of/@align_of.
   std::unordered_map<SymId, u32> mono_type_subst;
+  // const-generic concrete values for mono instances (e.g. N=10).
+  // populated alongside mono_type_subst; used by @if condition evaluation in codegen.
+  std::unordered_map<SymId, u32> mono_const_values;
 
   // global var
   TypeId annotate_type = 0; // syntax level (0 if inferred)

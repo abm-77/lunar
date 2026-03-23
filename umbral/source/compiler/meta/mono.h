@@ -47,6 +47,9 @@ inline std::vector<CTypeId> infer_type_args(
   for (u32 k = 0; k < gsym.generics_count; ++k) {
     const GenericParam &gp = g_mod.generic_params[gsym.generics_start + k];
     if (!gp.is_type) {
+      // const-generic: cannot infer from arg types; push 0 as placeholder.
+      // explicit type args (e.g., SmallArray<i32, 10>::make()) are handled by
+      // extracting them from the struct/path CType list before reaching here.
       result.push_back(0);
       continue;
     }
@@ -104,13 +107,21 @@ private:
     g_lowerer.current_ir = gctx.ir;
     g_lowerer.import_map = g_import_map;
 
-    // build substitution: type-param name -> concrete CTypeId
+    // build substitution: type-param name -> concrete CTypeId.
+    // also includes const-generic params (e.g. N) as ConstInt CTypeIds so
+    // TypeLowerer::eval_const_int can resolve [N]T and @if(N < 32) conditions.
     std::unordered_map<SymId, CTypeId> subst;
-    u32 n_type = 0;
-    for (u32 k = 0; k < gsym.generics_count; ++k) {
+    std::unordered_map<SymId, u32> const_values;
+    for (u32 k = 0; k < gsym.generics_count && k < type_args.size(); ++k) {
       const GenericParam &gp = g_mod.generic_params[gsym.generics_start + k];
-      if (gp.is_type && n_type < type_args.size())
-        subst[gp.name] = type_args[n_type++];
+      CTypeId ctid = type_args[k];
+      subst[gp.name] = ctid;
+      if (!gp.is_type) {
+        // const-generic: extract integer value for mono_const_values
+        if (ctid < static_cast<u32>(types.types.size()) &&
+            types.types[ctid].kind == CTypeKind::ConstInt)
+          const_values[gp.name] = types.types[ctid].count;
+      }
     }
 
     // clone symbol without generic params
@@ -120,6 +131,7 @@ private:
     // keep impl_owner so name mangling still includes the type name prefix.
     // store the substitution for codegen (@size_of/@align_of in mono bodies).
     mono_sym.mono_type_subst = subst;
+    mono_sym.mono_const_values = const_values;
 
     // pre-lower concrete ret/param types using the substitution so codegen can
     // declare the LLVM function type without needing the substitution later.

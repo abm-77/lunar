@@ -43,12 +43,14 @@ struct CTypeLowerer {
 
   // returns the u32 index of a named field within its LLVM struct layout.
   // field order matches the order fields appear in the StructType node.
-  u32 field_index(SymbolId struct_sym, SymId field_name) {
+  u32 field_index(SymbolId struct_sym, SymId field_name,
+                  CTypeId struct_ctid = 0) {
     Symbol sym = syms.get(struct_sym);
     const BodyIR &ir = modules[sym.module_idx].ir;
-    assert(ir.nodes.kind[sym.type_node] == NodeKind::StructType &&
+    NodeId type_node = resolve_struct_type_node(sym, ir, struct_ctid);
+    assert(ir.nodes.kind[type_node] == NodeKind::StructType &&
            "attempting to find field of non-struct type");
-    u32 ls = ir.nodes.b[sym.type_node], n = ir.nodes.c[sym.type_node];
+    u32 ls = ir.nodes.b[type_node], n = ir.nodes.c[type_node];
     for (u32 i = 0; i < n; ++i) { // list holds [SymId, TypeId] pairs
       SymId id = ir.nodes.list[ls + (i * 2)]; // even offset = SymId (name)
       if (id == field_name) return i;
@@ -57,6 +59,39 @@ struct CTypeLowerer {
   }
 
 private:
+  // resolve sym.type_node to effective StructType NodeId.
+  // for @gen types (MetaBlock), evaluates the block using type args from struct_ctid.
+  NodeId resolve_struct_type_node(const Symbol &sym, const BodyIR &ir,
+                                  CTypeId struct_ctid) {
+    NodeId type_node = sym.type_node;
+    if (ir.nodes.kind[type_node] != NodeKind::MetaBlock) return type_node;
+
+    const CType &sct = types.types[struct_ctid]; // may be Void if struct_ctid==0
+    const Module &mod = modules[sym.module_idx].mod;
+    const TypeAst &ta = modules[sym.module_idx].type_ast;
+
+    std::unordered_map<SymId, CTypeId> subst;
+    for (u32 i = 0; i < sym.generics_count && i < sct.list_count; ++i) {
+      SymId pname = mod.generic_params[sym.generics_start + i].name;
+      subst[pname] = types.list[sct.list_start + i];
+    }
+
+    std::vector<ModuleContext> local_ctx;
+    local_ctx.reserve(modules.size());
+    for (const auto &m : modules)
+      local_ctx.push_back({&m.type_ast, &m.ir, &m.mod, m.src, &m.import_map});
+
+    TypeLowerer tl(ta, syms, interner, types);
+    tl.type_subst = subst;
+    tl.module_idx = sym.module_idx;
+    tl.module_contexts = &local_ctx;
+    tl.current_ir = &ir;
+    tl.import_map = &modules[sym.module_idx].import_map;
+
+    NodeId evaled = tl.eval_meta_block(type_node, ir, nullptr);
+    return evaled != 0 ? evaled : type_node;
+  }
+
   llvm::Type *lower_impl(CTypeId id) {
     const CType &ct = types.types[id];
     switch (ct.kind) {
@@ -141,9 +176,6 @@ private:
     cache[id] = st;
 
     const BodyIR &ir = modules[sym.module_idx].ir;
-    assert(ir.nodes.kind[sym.type_node] == NodeKind::StructType &&
-           "attempting struct lowering for lower non-struct type");
-
     const Module &mod = modules[sym.module_idx].mod;
     const TypeAst &ta = modules[sym.module_idx].type_ast;
 
@@ -169,7 +201,16 @@ private:
     tl.current_ir = &ir;
     tl.import_map = &modules[sym.module_idx].import_map;
 
-    u32 ls = ir.nodes.b[sym.type_node], n = ir.nodes.c[sym.type_node];
+    // resolve the effective StructType NodeId (@gen types have a MetaBlock type_node)
+    NodeId stype_nid = sym.type_node;
+    if (ir.nodes.kind[stype_nid] == NodeKind::MetaBlock) {
+      stype_nid = tl.eval_meta_block(stype_nid, ir, nullptr);
+      assert(stype_nid != 0 && "failed to evaluate @gen type body");
+    }
+    assert(ir.nodes.kind[stype_nid] == NodeKind::StructType &&
+           "attempting struct lowering for non-struct type");
+
+    u32 ls = ir.nodes.b[stype_nid], n = ir.nodes.c[stype_nid];
     std::vector<llvm::Type *> field_types;
     field_types.reserve(n);
     for (u32 i = 0; i < n; ++i) {

@@ -46,8 +46,10 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       case NodeKind::StructType:
       case NodeKind::EnumType:
       case NodeKind::FnType:
-      case NodeKind::Ident: {
+      case NodeKind::Ident:
+      case NodeKind::MetaBlock: {
         // ident node covers simple type aliases: const AllocHandle := u64
+        // MetaBlock: @gen type with @if/@assert — evaluated at type-lowering time
         s.kind = SymbolKind::Type;
         s.type_node = d.init;
       } break;

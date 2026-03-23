@@ -35,6 +35,7 @@ struct Decl {
   u32 generics_count = 0;
   bool is_pub = false;
   bool is_extern = false;
+  bool is_gen = false; // @gen annotation — participates in compile-time metaprogramming
   DeclKind kind{};
   Span span{};
 };

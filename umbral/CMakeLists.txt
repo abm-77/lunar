@@ -115,6 +115,13 @@ target_include_directories(sema_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(sema_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(sema_tests)
 
+add_executable(meta_tests
+  ./source/compiler/test/unit/meta_test.cc
+)
+target_include_directories(meta_tests PRIVATE ${COMPILER_DIR})
+target_link_libraries(meta_tests PRIVATE GTest::gtest_main)
+gtest_discover_tests(meta_tests)
+
 add_executable(runtime_tests
   ./source/runtime/test/mem_test.cc
   ./source/runtime/test/mem_test_stubs.c

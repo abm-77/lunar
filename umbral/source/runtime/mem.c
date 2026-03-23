@@ -274,8 +274,7 @@ static block_t block_allocate(uint64_t n, uint64_t align) {
     return (block_t){.ptr = ptr, .owner = s, .class_id = class_id};
   }
 
-  // shouldn't happen: partial slab with no availability. Move it to full and
-  // retry.
+  // UNREACHABLE: partial slab with no availability. move it to full and retry.
   list_remove(&cs->partial, s);
   s->state = SLAB_FULL;
   list_push_front(&cs->full, s);

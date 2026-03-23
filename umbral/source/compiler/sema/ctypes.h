@@ -21,14 +21,16 @@ enum class CTypeKind : u8 {
   U64,
   F32,
   F64,
-  Ref,    // inner, is_mut
-  Array,  // inner=elem, count
-  Tuple,  // list_start, list_count
-  Fn,     // list_start = [ret, param0, param1, ...], list_count = params + 1
-  Struct, // symbol
-  Enum,   // symbol
-  Slice,  // inner = elem CTypeId
-  Iter,   // inner = elem CTypeId  (runtime: { ptr*, i64 len, i64 idx })
+  Ref,      // inner, is_mut
+  Array,    // inner=elem, count
+  Tuple,    // list_start, list_count
+  Fn,       // list_start = [ret, param0, param1, ...], list_count = params + 1
+  Struct,   // symbol
+  Enum,     // symbol
+  Slice,    // inner = elem CTypeId
+  Iter,     // inner = elem CTypeId  (runtime: { ptr*, i64 len, i64 idx })
+  ConstInt, // count = integer value — represents a const-generic value param (e.g. N=10)
+  FieldIter,// symbol = struct SymbolId — compile-time only; no runtime representation
 };
 
 struct CType {
@@ -82,5 +84,21 @@ struct TypeTable {
     u32 start = static_cast<u32>(list.size());
     list.insert(list.end(), items, items + n);
     return {start, n};
+  }
+
+  // intern or retrieve a ConstInt CTypeId for the given value.
+  CTypeId const_int(u32 value) {
+    CType t;
+    t.kind = CTypeKind::ConstInt;
+    t.count = value;
+    return intern(t);
+  }
+
+  // intern or retrieve a FieldIter CTypeId for the given struct SymbolId.
+  CTypeId field_iter(SymbolId struct_sid) {
+    CType t;
+    t.kind = CTypeKind::FieldIter;
+    t.symbol = struct_sid;
+    return intern(t);
   }
 };

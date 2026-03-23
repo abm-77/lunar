@@ -86,6 +86,11 @@ enum class NodeKind : u16 {
   AlignOf,   // a = TypeId — alignof(T) as u64
   SliceCast, // a = source NodeId ([]u8), b = elem TypeId → []T
   IterCreate, // a = source NodeId (Array or Slice expr) → produces Iter<T>
+  MetaIf,     // a = cond NodeId, b = then NodeId (Block or type expr), c = else NodeId (0 or next MetaIf or body)
+  MetaAssert, // a = cond NodeId, b = msg NodeId (StrLit or 0)
+  MetaField,  // a = obj NodeId, b = field_var SymId
+  FieldsOf,   // a = struct_type_name SymId — @fields(TypeName)
+  MetaBlock,  // b = stmts_start, c = stmts_count (list of NodeIds: MetaAsserts/MetaIfs/bare expr)
 };
 
 using TypeId = u32;
@@ -96,7 +101,9 @@ enum class TypeKind : u16 {
   Ref,       // a = mutable?, b = inner TypeId
   Tuple,     // b = list_start, c = list_count
   Fn,        // a = ret TypeId, b = list_start, c = list_count
-  Array,     // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId
+  Array,     // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId,
+             //   c = count_ident SymId (non-zero when count is a const-generic param like [N]T)
+  ConstInt,  // a = integer value — const-generic value type arg (e.g. the 10 in List<i32, 10>)
 };
 
 using ExprAst = NodeStore<NodeId, NodeKind, NodeId>;

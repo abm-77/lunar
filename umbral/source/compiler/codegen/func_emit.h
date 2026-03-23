@@ -30,6 +30,10 @@ struct FuncEmitter {
   // scope stack: each entry maps SymId → alloca slot.
   std::vector<std::unordered_map<SymId, llvm::AllocaInst *>> scopes;
 
+  // compile-time @for_fields state: loop var SymId → (fname, field_idx, field_ctid).
+  // set during ForRange FieldIter unroll; used by emit_field and emit_meta_field.
+  std::unordered_map<SymId, std::tuple<SymId, u32, CTypeId>> active_field;
+
   FuncEmitter(CodegenCtx &cg, llvm::Function &fn, const Symbol &sym,
               const BodyIR &ir, const Module &mod, const BodySema &bsema)
       : cg(cg), fn(fn), sym(sym), ir(ir), mod(mod), bsema(bsema),
@@ -134,6 +138,8 @@ struct FuncEmitter {
     case NodeKind::ForRange: emit_for_range(n); break;
     case NodeKind::Block: emit_block(n); break;
     case NodeKind::ExprStmt: emit_expr(ir.nodes.a[n]); break;
+    case NodeKind::MetaAssert: break; // validated at sema; no runtime code
+    case NodeKind::MetaIf: emit_meta_if(n); break;
     default: assert(false && "unhandled NodeKind");
     }
   }
@@ -234,6 +240,27 @@ struct FuncEmitter {
     builder.SetInsertPoint(merge_bb);
   }
 
+  void emit_meta_if(NodeId n) {
+    // a = cond NodeId, b = then NodeId, c = else NodeId (0 or next MetaIf)
+    NodeId cond_n  = ir.nodes.a[n];
+    NodeId then_n  = ir.nodes.b[n];
+    NodeId else_n  = ir.nodes.c[n];
+    TypeLowerer tl = make_body_tl();
+    auto result = tl.eval_const_bool(cond_n, ir);
+    if (!result || *result) {
+      if (then_n != 0) {
+        if (ir.nodes.kind[then_n] == NodeKind::Block) emit_block(then_n);
+        else emit_stmt(then_n);
+      }
+    }
+    if (!result || !*result) {
+      if (else_n != 0) {
+        if (ir.nodes.kind[else_n] == NodeKind::Block) emit_block(else_n);
+        else emit_stmt(else_n);
+      }
+    }
+  }
+
   void emit_for(NodeId n) {
     // a = index into ir.fors (ForPayload { init, cond, step, body })
     auto &ctx = fn.getContext();
@@ -295,6 +322,7 @@ struct FuncEmitter {
     case NodeKind::SliceCast: return emit_slice_cast(n);
     case NodeKind::AnonStructInit: return emit_anon_struct_init(n);
     case NodeKind::IterCreate: return emit_iter_create(n);
+    case NodeKind::MetaField: return emit_meta_field(n);
     default: assert(false && "unhandled expression kind"); return nullptr;
     }
   }
@@ -525,6 +553,27 @@ struct FuncEmitter {
 
   llvm::Value *emit_field(NodeId n) {
     // a = base NodeId, b = field SymId.
+    NodeId base_nid = ir.nodes.a[n];
+
+    // check if base is a @for_fields loop var: field.name → string literal.
+    if (ir.nodes.kind[base_nid] == NodeKind::Ident) {
+      SymId base_sym = ir.nodes.a[base_nid];
+      auto ait = active_field.find(base_sym);
+      if (ait != active_field.end()) {
+        SymId fname = std::get<0>(ait->second);
+        auto sv = cg.interner.view(fname);
+        llvm::Value *ptr = builder.CreateGlobalString(llvm::StringRef{sv.data(), sv.size()});
+        CTypeId slice_ctid = bsema.node_type[n].concrete;
+        llvm::Type *slice_ty = cg.type_lower.lower(slice_ctid);
+        llvm::Value *s = llvm::UndefValue::get(slice_ty);
+        s = builder.CreateInsertValue(s, ptr, 0);
+        s = builder.CreateInsertValue(
+              s, llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
+                                        sv.size()), 1);
+        return s;
+      }
+    }
+
     auto *field_ptr = emit_field_ptr(n);
     CTypeId field_ctid = bsema.node_type[n].concrete;
     llvm::Type *field_ty = cg.type_lower.lower(field_ctid);
@@ -571,7 +620,7 @@ struct FuncEmitter {
     for (u32 i = 0; i < fields_count; ++i) {
       SymId field_name = ir.nodes.list[fields_start + (i * 2)];
       NodeId val_nid = ir.nodes.list[fields_start + (i * 2) + 1];
-      u32 idx = cg.type_lower.field_index(struct_sym, field_name);
+      u32 idx = cg.type_lower.field_index(struct_sym, field_name, ctid);
       auto *field_ptr = builder.CreateStructGEP(sty, slot, idx);
       llvm::Value *val = coerce_int(emit_expr(val_nid), sty_s->getElementType(idx), val_nid);
       builder.CreateStore(val, field_ptr);
@@ -817,6 +866,59 @@ struct FuncEmitter {
     return it;
   }
 
+  llvm::Value *emit_meta_field(NodeId n) {
+    // a = obj NodeId, b = field_var SymId
+    NodeId obj_nid  = ir.nodes.a[n];
+    SymId field_var = ir.nodes.b[n];
+
+    auto ait = active_field.find(field_var);
+    assert(ait != active_field.end() && "@field used outside @for_fields loop");
+    auto [fname, fidx, fctid] = ait->second;
+
+    CTypeId obj_ctid = bsema.node_type[obj_nid].concrete;
+    llvm::Value *base_ptr;
+    CTypeId struct_ctid;
+
+    if (cg.sema.types.types[obj_ctid].kind == CTypeKind::Ref) {
+      base_ptr = emit_expr(obj_nid);
+      struct_ctid = cg.sema.types.types[obj_ctid].inner;
+    } else {
+      base_ptr = emit_place(obj_nid);
+      struct_ctid = obj_ctid;
+    }
+
+    llvm::Type *struct_ty = cg.type_lower.lower(struct_ctid);
+    auto *field_ptr = builder.CreateStructGEP(struct_ty, base_ptr, fidx);
+    llvm::Type *field_ty = cg.type_lower.lower(fctid);
+    return builder.CreateLoad(field_ty, field_ptr);
+  }
+
+  // compile-time unroll of @for_fields — iterates struct fields and emits body once per field.
+  void emit_for_fields_unroll(SymId var_name, NodeId body_n, SymbolId struct_sym_id) {
+    const Symbol &struct_sym = cg.sema.syms.symbols[struct_sym_id];
+    const BodyIR &struct_ir = cg.modules[struct_sym.module_idx].ir;
+    NodeId stype_nid = struct_sym.type_node;
+    assert(struct_ir.nodes.kind[stype_nid] == NodeKind::StructType &&
+           "@for_fields: expected plain StructType");
+
+    u32 ls = struct_ir.nodes.b[stype_nid];
+    u32 field_count = struct_ir.nodes.c[stype_nid];
+
+    TypeLowerer field_tl = cg.make_type_lowerer(struct_sym.module_idx);
+
+    push_scope();
+    for (u32 fi = 0; fi < field_count; ++fi) {
+      SymId fname = struct_ir.nodes.list[ls + fi * 2];
+      TypeId ftid  = struct_ir.nodes.list[ls + fi * 2 + 1];
+      auto fctid_r = field_tl.lower(ftid);
+      CTypeId fctid = fctid_r ? *fctid_r : 0;
+      active_field[var_name] = std::make_tuple(fname, fi, fctid);
+      emit_block(body_n);
+    }
+    active_field.erase(var_name);
+    pop_scope();
+  }
+
   void emit_for_range(NodeId n) {
     SymId var_name = static_cast<SymId>(ir.nodes.a[n]);
     NodeId iter_n  = ir.nodes.b[n];
@@ -824,7 +926,15 @@ struct FuncEmitter {
     auto &ctx = fn.getContext();
 
     CTypeId iter_ctid = bsema.node_type[iter_n].concrete;
-    CTypeId elem_ctid = cg.sema.types.types[iter_ctid].inner;
+    const CType &ict = cg.sema.types.types[iter_ctid];
+
+    // compile-time @fields unroll — no runtime loop
+    if (ict.kind == CTypeKind::FieldIter) {
+      emit_for_fields_unroll(var_name, body_n, ict.symbol);
+      return;
+    }
+
+    CTypeId elem_ctid = ict.inner;
     llvm::Type *iter_ty = cg.type_lower.lower(iter_ctid); // { ptr*, i64, i64 }
     llvm::Type *elem_ty = cg.type_lower.lower(elem_ctid);
     llvm::Type *i64     = llvm::Type::getInt64Ty(ctx);
@@ -1035,7 +1145,7 @@ struct FuncEmitter {
     }
 
     SymbolId struct_sym = cg.sema.types.types[struct_ctid].symbol;
-    u32 idx = cg.type_lower.field_index(struct_sym, field_name);
+    u32 idx = cg.type_lower.field_index(struct_sym, field_name, struct_ctid);
     llvm::Type *struct_ty = cg.type_lower.lower(struct_ctid);
     return builder.CreateStructGEP(struct_ty, base_ptr, idx);
   }

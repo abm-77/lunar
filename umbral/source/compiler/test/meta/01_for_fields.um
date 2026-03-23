@@ -1,3 +1,4 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
 
 import sys.io.fmt;
 
@@ -8,18 +9,30 @@ const Player := struct {
   name: []u8,
 };
 
-@gen const dump_player := fn (p: &Player) -> void {
-  @for_fields(Player, field) {
-    fmt::println("{} = {}", field.name, @field(p, field));
+# @gen fn: iterates @fields at compile time, printing each field name.
+@gen const dump_field_names := fn (p: &Player) -> void {
+  for (const field := @fields(Player)) {
+    fmt::println("{}", []fmt::Arg{ fmt::arg_bytes(field.name) });
   }
+}
+
+const Vec2 := struct { x: i32, y: i32 };
+
+# @gen fn: uses @field to sum all i32 fields (uniform-type struct).
+@gen const sum_vec2 := fn (v: &Vec2) -> i32 {
+  var total: i32 = 0;
+  for (const field := @fields(Vec2)) {
+    total += @field(v, field);
+  }
+  return total;
 }
 
 impl Player {
   @gen const dump := fn (&self) -> void {
-    @for_fields(Player, field) {
-      fmt::println("{} = {}", field.name, @field(self, field));
+    for (const field := @fields(Player)) {
+      fmt::println("{}", []fmt::Arg{ fmt::arg_bytes(field.name) });
     }
-  }  
+  }
 }
 
 const main := fn () -> i32 {
@@ -30,8 +43,22 @@ const main := fn () -> i32 {
     name = "john",
   };
 
-  dump_player(player);
+  dump_field_names(&player);
   player.dump();
+
+  const v := Vec2 { x = 3, y = 4 };
+  const s := sum_vec2(&v);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(s) });
 
   return 0;
 }
+
+# CHECK: x
+# CHECK: y
+# CHECK: health
+# CHECK: name
+# CHECK: x
+# CHECK: y
+# CHECK: health
+# CHECK: name
+# CHECK: 7

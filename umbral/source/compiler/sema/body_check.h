@@ -45,6 +45,9 @@ struct BodyChecker {
   // stores (TypeVar, NodeId) so we can report an error if the TypeVar resolves
   // to a non-numeric type (e.g., an integer literal used as a bool condition).
   std::vector<std::pair<TypeVarId, NodeId>> int_default_vars;
+  // for-range loop var SymId → struct SymbolId when iterating @fields(T).
+  // set during ForRange check; used by MetaField and Field(field_var, "name").
+  std::unordered_map<SymId, SymbolId> field_iter_struct;
 
   BodyChecker(const BodyIR &ir, const Module &mod, SymbolTable &syms,
               MethodTable &methods, TypeTable &types, TypeLowerer lowerer,
@@ -325,20 +328,53 @@ struct BodyChecker {
       IType iter_t = check_expr(iter_n, sema);
       IType iter_c = unifier.resolve(iter_t);
       CTypeId elem_ctid = 0;
+      bool is_field_iter = false;
       if (!iter_c.is_var) {
         const CType &ict = types.types[iter_c.concrete];
         if (ict.kind == CTypeKind::Iter)
           elem_ctid = ict.inner;
-        else
+        else if (ict.kind == CTypeKind::FieldIter) {
+          // @fields(T) — compile-time-only; record struct for @field lookups.
+          is_field_iter = true;
+          field_iter_struct[var_name] = ict.symbol;
+          elem_ctid = types.builtin(CTypeKind::Void); // placeholder
+        } else {
           emit(node_span(n), "for-range requires Iter<T>; wrap with @iter(...)");
+        }
       } else {
         emit(node_span(n), "for-range: cannot infer iterator element type");
       }
       sema.push_scope();
-      IType elem_t = elem_ctid ? IType::from(elem_ctid) : IType::fresh(unifier.fresh());
-      sema.define(var_name, elem_t, /*is_mut=*/true);
+      IType elem_t = (elem_ctid && !is_field_iter)
+                         ? IType::from(elem_ctid)
+                         : IType::fresh(unifier.fresh());
+      sema.define(var_name, elem_t, /*is_mut=*/false);
       check_block(body_n, sema, ret_type);
       sema.pop_scope();
+      if (is_field_iter) field_iter_struct.erase(var_name);
+      break;
+    }
+    case NodeKind::MetaIf: {
+      NodeId cond_n = ir.nodes.a[n];
+      NodeId then_n = ir.nodes.b[n];
+      NodeId else_n = ir.nodes.c[n];
+      auto result = lowerer.eval_const_bool(cond_n, ir);
+      if (!result || *result)
+        if (then_n != 0) check_block(then_n, sema, ret_type);
+      if (!result || !*result)
+        if (else_n != 0) {
+          if (ir.nodes.kind[else_n] == NodeKind::Block)
+            check_block(else_n, sema, ret_type);
+          else
+            check_stmt(else_n, sema, ret_type); // chained @else_if
+        }
+      break;
+    }
+    case NodeKind::MetaAssert: {
+      NodeId cond_n = ir.nodes.a[n];
+      auto result = lowerer.eval_const_bool(cond_n, ir);
+      if (result && !*result)
+        emit(node_span(n), "@assert condition is false");
       break;
     }
     default: check_expr(n, sema); break;
@@ -560,6 +596,18 @@ struct BodyChecker {
       IType base_t = check_expr(base_n, sema);
       IType base_c = unifier.resolve(base_t);
 
+      // field descriptor from @for_fields: field_var.name → []u8
+      if (ir.nodes.kind[base_n] == NodeKind::Ident) {
+        SymId base_sym = static_cast<SymId>(ir.nodes.a[base_n]);
+        if (field_iter_struct.count(base_sym)) {
+          // only .name is supported on field descriptors
+          CType sc; sc.kind = CTypeKind::Slice; sc.inner = types.builtin(CTypeKind::U8);
+          result = IType::from(types.intern(sc));
+          sema.node_type[n] = result;
+          break;
+        }
+      }
+
       if (!base_c.is_var) {
         // peel Ref so &self.field and self.field both work
         CTypeId sct_id = base_c.concrete;
@@ -619,51 +667,63 @@ struct BodyChecker {
             const Symbol &tsym = syms.get(sct.symbol);
             const BodyIR &tsym_ir = body_for(tsym.module_idx);
             if (tsym.type_node != 0 &&
-                tsym_ir.nodes.kind[tsym.type_node] == NodeKind::StructType) {
-              u32 fs = tsym_ir.nodes.b[tsym.type_node];
-              u32 fc = tsym_ir.nodes.c[tsym.type_node];
+                (tsym_ir.nodes.kind[tsym.type_node] == NodeKind::StructType ||
+                 tsym_ir.nodes.kind[tsym.type_node] == NodeKind::MetaBlock)) {
+              // for MetaBlock (@gen type), evaluate to find the effective StructType
+              NodeId effective_type_node = tsym.type_node;
+              if (tsym_ir.nodes.kind[tsym.type_node] == NodeKind::MetaBlock) {
+                // need a lowerer with type_subst populated to evaluate the block
+                // use a temporary lowerer to avoid polluting the current one
+              }
+              u32 tsym_mod_for_fields = tsym.module_idx;
+              std::optional<TypeLowerer> dep_fl_early;
+              {
+                if (tsym_mod_for_fields != module_idx && module_contexts &&
+                    tsym_mod_for_fields < module_contexts->size()) {
+                  const ModuleContext &mctx = (*module_contexts)[tsym_mod_for_fields];
+                  if (mctx.type_ast) {
+                    dep_fl_early.emplace(*mctx.type_ast, syms, interner, types);
+                    dep_fl_early->module_idx = tsym_mod_for_fields;
+                    dep_fl_early->module_contexts = module_contexts;
+                    dep_fl_early->current_ir = mctx.ir;
+                    dep_fl_early->import_map = mctx.import_map;
+                  }
+                }
+              }
+              TypeLowerer &fl_eval = dep_fl_early ? *dep_fl_early : lowerer;
+              if (sct.list_count > 0) {
+                const Module *tsym_mod_ptr_eval =
+                    (tsym_mod_for_fields == module_idx)
+                        ? &mod
+                        : (module_contexts && tsym_mod_for_fields < module_contexts->size()
+                               ? (*module_contexts)[tsym_mod_for_fields].mod
+                               : nullptr);
+                if (tsym_mod_ptr_eval) {
+                  for (u32 j = 0; j < tsym.generics_count && j < sct.list_count; ++j) {
+                    const GenericParam &gp =
+                        tsym_mod_ptr_eval->generic_params[tsym.generics_start + j];
+                    fl_eval.type_subst[gp.name] = types.list[sct.list_start + j];
+                  }
+                }
+              }
+              if (tsym_ir.nodes.kind[tsym.type_node] == NodeKind::MetaBlock) {
+                NodeId evaled = fl_eval.eval_meta_block(tsym.type_node, tsym_ir, nullptr);
+                if (evaled != 0) effective_type_node = evaled;
+              }
+              if (effective_type_node == 0 ||
+                  tsym_ir.nodes.kind[effective_type_node] != NodeKind::StructType) {
+                break; // can't resolve field
+              }
+              u32 fs = tsym_ir.nodes.b[effective_type_node];
+              u32 fc = tsym_ir.nodes.c[effective_type_node];
               for (u32 k = 0; k < fc; ++k) {
                 SymId fname =
                     static_cast<SymId>(tsym_ir.nodes.list[fs + k * 2]);
                 TypeId ftype =
                     static_cast<TypeId>(tsym_ir.nodes.list[fs + k * 2 + 1]);
                 if (fname == field_nm) {
-                  // build a lowerer for the struct's module (ftype is in its
-                  // TypeAst). use optional + emplace to conditionally construct
-                  // a dep lowerer without assignment (TypeLowerer has refs).
-                  u32 tsym_mod = tsym.module_idx;
-                  std::optional<TypeLowerer> dep_fl;
-                  if (tsym_mod != module_idx && module_contexts &&
-                      tsym_mod < module_contexts->size()) {
-                    const ModuleContext &mctx = (*module_contexts)[tsym_mod];
-                    if (mctx.type_ast) {
-                      dep_fl.emplace(*mctx.type_ast, syms, interner, types);
-                      dep_fl->module_idx = tsym_mod;
-                      dep_fl->module_contexts = module_contexts;
-                      dep_fl->current_ir = mctx.ir;
-                      dep_fl->import_map = mctx.import_map;
-                    }
-                  }
-                  TypeLowerer &fl = dep_fl ? *dep_fl : lowerer;
-                  if (sct.list_count > 0) {
-                    // use the struct's own module for generic_params lookup.
-                    const Module *tsym_mod_ptr =
-                        (tsym_mod == module_idx)
-                            ? &mod
-                            : (module_contexts && tsym_mod < module_contexts->size()
-                                   ? (*module_contexts)[tsym_mod].mod
-                                   : nullptr);
-                    if (tsym_mod_ptr) {
-                      for (u32 j = 0;
-                           j < tsym.generics_count && j < sct.list_count; ++j) {
-                        const GenericParam &gp =
-                            tsym_mod_ptr->generic_params[tsym.generics_start + j];
-                        if (gp.is_type)
-                          fl.type_subst[gp.name] = types.list[sct.list_start + j];
-                      }
-                    }
-                  }
-                  auto r = fl.lower(ftype);
+                  // fl_eval already has the correct module context + type_subst
+                  auto r = fl_eval.lower(ftype);
                   if (r) result = IType::from(*r);
                   break;
                 }
@@ -930,6 +990,26 @@ struct BodyChecker {
       }
       CType it; it.kind = CTypeKind::Iter; it.inner = elem_ctid;
       result = IType::from(types.intern(it));
+      break;
+    }
+    case NodeKind::FieldsOf: {
+      // @fields(TypeName) — returns a FieldIter for the named struct.
+      SymId struct_sym = static_cast<SymId>(ir.nodes.a[n]);
+      SymbolId sid = syms.lookup(module_idx, struct_sym);
+      if (sid == kInvalidSymbol) {
+        emit(node_span(n), "@fields: unknown type");
+        result = IType::fresh(unifier.fresh());
+      } else {
+        result = IType::from(types.field_iter(sid));
+      }
+      break;
+    }
+    case NodeKind::MetaField: {
+      // @field(obj, field_var) — field access where field_var is a compile-time
+      // field descriptor from a @for_fields loop. return a fresh TypeVar since
+      // the actual field type varies per iteration; codegen handles the unroll.
+      check_expr(ir.nodes.a[n], sema);
+      result = IType::fresh(unifier.fresh());
       break;
     }
     default: break;
