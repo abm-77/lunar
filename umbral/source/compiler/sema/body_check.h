@@ -617,7 +617,7 @@ struct BodyChecker {
 
         if (sct.kind == CTypeKind::Slice) {
           auto fname = interner.view(field_nm);
-          if (fname == "ptr") {
+          if (fname == "data") {
             CType rc; rc.kind = CTypeKind::Ref; rc.inner = sct.inner;
             result = IType::from(types.intern(rc));
           } else if (fname == "len") {
@@ -990,6 +990,31 @@ struct BodyChecker {
       }
       CType it; it.kind = CTypeKind::Iter; it.inner = elem_ctid;
       result = IType::from(types.intern(it));
+      break;
+    }
+    case NodeKind::MemCpy:
+    case NodeKind::MemMov: {
+      // @memcpy/@memmov(dest, src, byte_count) → void
+      check_expr(ir.nodes.a[n], sema); // dest
+      check_expr(ir.nodes.b[n], sema); // src
+      check_expr(ir.nodes.c[n], sema); // byte_count
+      result = IType::from(types.builtin(CTypeKind::Void));
+      break;
+    }
+    case NodeKind::MemSet: {
+      // @memset(dest, value_u8, byte_count) → void
+      check_expr(ir.nodes.a[n], sema); // dest
+      check_expr(ir.nodes.b[n], sema); // value (u8)
+      check_expr(ir.nodes.c[n], sema); // byte_count
+      result = IType::from(types.builtin(CTypeKind::Void));
+      break;
+    }
+    case NodeKind::MemCmp: {
+      // @memcmp(a, b, byte_count) → i32
+      check_expr(ir.nodes.a[n], sema); // lhs
+      check_expr(ir.nodes.b[n], sema); // rhs
+      check_expr(ir.nodes.c[n], sema); // byte_count
+      result = IType::from(types.builtin(CTypeKind::I32));
       break;
     }
     case NodeKind::FieldsOf: {

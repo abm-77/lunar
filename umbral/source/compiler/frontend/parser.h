@@ -389,6 +389,41 @@ private:
         expect(TokenKind::RParen, "expected ')'");
         return body_ir.nodes.make(NodeKind::IterCreate, s, val);
       }
+      case IntrinsicKind::MemCpy:
+      case IntrinsicKind::MemMov: {
+        // @memcpy/@memmov(dest, src, byte_count)
+        expect(TokenKind::LParen, "expected '('");
+        NodeId dest = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId src = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId cnt = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        auto nk = *kind == IntrinsicKind::MemCpy ? NodeKind::MemCpy : NodeKind::MemMov;
+        return body_ir.nodes.make(nk, s, dest, src, cnt);
+      }
+      case IntrinsicKind::MemSet: {
+        // @memset(dest, value_u8, byte_count)
+        expect(TokenKind::LParen, "expected '('");
+        NodeId dest = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId val = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId cnt = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::MemSet, s, dest, val, cnt);
+      }
+      case IntrinsicKind::MemCmp: {
+        // @memcmp(a, b, byte_count) -> i32
+        expect(TokenKind::LParen, "expected '('");
+        NodeId lhs = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId rhs = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId cnt = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::MemCmp, s, lhs, rhs, cnt);
+      }
       case IntrinsicKind::MetaFields: {
         expect(TokenKind::LParen, "expected '('");
         SymId type_name = expect_ident("expected struct type name");

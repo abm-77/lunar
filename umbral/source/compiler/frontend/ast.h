@@ -86,6 +86,10 @@ enum class NodeKind : u16 {
   AlignOf,   // a = TypeId — alignof(T) as u64
   SliceCast, // a = source NodeId ([]u8), b = elem TypeId → []T
   IterCreate, // a = source NodeId (Array or Slice expr) → produces Iter<T>
+  MemCpy,    // a = dest NodeId, b = src NodeId, c = byte_count NodeId → void
+  MemMov,    // a = dest NodeId, b = src NodeId, c = byte_count NodeId → void
+  MemSet,    // a = dest NodeId, b = value NodeId (u8), c = byte_count NodeId → void
+  MemCmp,    // a = lhs NodeId, b = rhs NodeId, c = byte_count NodeId → i32
   MetaIf,     // a = cond NodeId, b = then NodeId (Block or type expr), c = else NodeId (0 or next MetaIf or body)
   MetaAssert, // a = cond NodeId, b = msg NodeId (StrLit or 0)
   MetaField,  // a = obj NodeId, b = field_var SymId

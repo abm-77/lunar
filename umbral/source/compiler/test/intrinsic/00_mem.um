@@ -1,0 +1,26 @@
+# RUN: %uc %s -o %t && %t
+
+const main := fn() -> i32 {
+  var src := [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
+  var dst := [8]u8{};
+
+  # copy src into dst
+  @memcpy(&dst, &src, 8);
+
+  # dst and src should be equal
+  const eq := @memcmp(&dst, &src, 8);
+  if (eq != 0) { return 1; }
+
+  # zero dst via memset
+  @memset(&dst, 0, 8);
+  var zero := [8]u8{};
+  const eq2 := @memcmp(&dst, &zero, 8);
+  if (eq2 != 0) { return 2; }
+
+  # memmov: move src over itself with offset (non-overlapping here, just exercises the call)
+  @memmov(&dst, &src, 8);
+  const eq3 := @memcmp(&dst, &src, 8);
+  if (eq3 != 0) { return 3; }
+
+  return 0;
+}

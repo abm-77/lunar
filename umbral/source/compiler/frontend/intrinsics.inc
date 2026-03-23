@@ -6,6 +6,10 @@
   X(AlignOf,   "align_of")   \
   X(SliceCast, "slice_cast") \
   X(Iter,      "iter")       \
+  X(MemCpy,    "memcpy")     \
+  X(MemMov,    "memmov")     \
+  X(MemSet,    "memset")     \
+  X(MemCmp,    "memcmp")     \
   X(MetaGen,    "gen")       \
   X(MetaElseIf, "else_if")   \
   X(MetaFields, "fields")    \

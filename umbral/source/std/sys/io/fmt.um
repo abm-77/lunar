@@ -64,5 +64,5 @@ pub const arg_f64 := fn (v: f64) -> Arg {
 }
 
 pub const arg_bytes := fn(x: []u8) -> Arg {
-  return Arg { tag = ArgTag::Bytes, a = @as(x.ptr, u64), b = @as(x.len, u64) };
+  return Arg { tag = ArgTag::Bytes, a = @as(x.data, u64), b = @as(x.len, u64) };
 }

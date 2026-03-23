@@ -7,7 +7,7 @@ pub const List<T: type> := struct {
 
 impl List<T> {
   const create(cap: u64) -> List<T> {
-    const alloc := mem::Alloc<T>::create(cap, 0);
+    const alloc := mem::Alloc<T>::create(cap);
     return List<T>{ alloc = alloc, len = 0 };
   }
 
@@ -22,12 +22,11 @@ impl List<T> {
       if (new_cap < 4) {
         new_cap = 4;
       }
-      var new_alloc := mem::Alloc<T>::create(new_cap, 0);
+      var new_alloc := mem::Alloc<T>::create(new_cap);
       const old_s := self.alloc.slice();
       const new_s := new_alloc.slice_mut();
-      for (var i: u64 = 0; i < self.len; i += 1) {
-        new_s[i] = old_s[i];
-      }
+      @memcpy(new_s.data, old_s.data, self.len * @size_of(T));
+
       self.alloc.destroy();
       self.alloc = new_alloc;
     }

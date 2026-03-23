@@ -323,6 +323,10 @@ struct FuncEmitter {
     case NodeKind::AnonStructInit: return emit_anon_struct_init(n);
     case NodeKind::IterCreate: return emit_iter_create(n);
     case NodeKind::MetaField: return emit_meta_field(n);
+    case NodeKind::MemCpy:   return emit_memcpy(n);
+    case NodeKind::MemMov:   return emit_memmov(n);
+    case NodeKind::MemSet:   return emit_memset(n);
+    case NodeKind::MemCmp:   return emit_memcmp(n);
     default: assert(false && "unhandled expression kind"); return nullptr;
     }
   }
@@ -810,6 +814,53 @@ struct FuncEmitter {
     return s;
   }
 
+  llvm::Value *emit_memcpy(NodeId n) {
+    // @memcpy(dest, src, byte_count) — no-overlap copy
+    llvm::Value *dest = emit_expr(ir.nodes.a[n]);
+    llvm::Value *src  = emit_expr(ir.nodes.b[n]);
+    llvm::Value *cnt  = emit_expr(ir.nodes.c[n]);
+    builder.CreateMemCpy(dest, llvm::Align(1), src, llvm::Align(1), cnt);
+    return llvm::UndefValue::get(llvm::Type::getVoidTy(fn.getContext()));
+  }
+
+  llvm::Value *emit_memmov(NodeId n) {
+    // @memmov(dest, src, byte_count) — overlap-safe move
+    llvm::Value *dest = emit_expr(ir.nodes.a[n]);
+    llvm::Value *src  = emit_expr(ir.nodes.b[n]);
+    llvm::Value *cnt  = emit_expr(ir.nodes.c[n]);
+    builder.CreateMemMove(dest, llvm::Align(1), src, llvm::Align(1), cnt);
+    return llvm::UndefValue::get(llvm::Type::getVoidTy(fn.getContext()));
+  }
+
+  llvm::Value *emit_memset(NodeId n) {
+    // @memset(dest, value_u8, byte_count) — fill bytes
+    llvm::Value *dest = emit_expr(ir.nodes.a[n]);
+    llvm::Value *val  = emit_expr(ir.nodes.b[n]);
+    llvm::Value *cnt  = emit_expr(ir.nodes.c[n]);
+    // memset value must be i8; truncate if the user passed a wider int
+    llvm::Type *i8 = llvm::Type::getInt8Ty(fn.getContext());
+    if (val->getType() != i8)
+      val = builder.CreateTrunc(val, i8);
+    builder.CreateMemSet(dest, val, cnt, llvm::Align(1));
+    return llvm::UndefValue::get(llvm::Type::getVoidTy(fn.getContext()));
+  }
+
+  llvm::Value *emit_memcmp(NodeId n) {
+    // @memcmp(a, b, byte_count) → i32 (negative / 0 / positive)
+    llvm::Value *lhs = emit_expr(ir.nodes.a[n]);
+    llvm::Value *rhs = emit_expr(ir.nodes.b[n]);
+    llvm::Value *cnt = emit_expr(ir.nodes.c[n]);
+    auto &ctx = fn.getContext();
+    llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type *i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Type *ptr = llvm::PointerType::getUnqual(ctx);
+    if (cnt->getType() != i64)
+      cnt = builder.CreateZExtOrTrunc(cnt, i64);
+    auto *fty = llvm::FunctionType::get(i32, {ptr, ptr, i64}, false);
+    auto callee = cg.module->getOrInsertFunction("memcmp", fty);
+    return builder.CreateCall(fty, callee.getCallee(), {lhs, rhs, cnt});
+  }
+
   llvm::Value *emit_anon_struct_init(NodeId n) {
     CTypeId ctid = bsema.node_type[n].concrete; // Tuple CTypeId
     llvm::Type *tty = cg.type_lower.lower(ctid);
@@ -1115,7 +1166,7 @@ struct FuncEmitter {
 
     if (cg.sema.types.types[struct_ctid].kind == CTypeKind::Slice) {
       auto fname = cg.interner.view(field_name);
-      u32 idx = (fname == "ptr") ? 0u : 1u;
+      u32 idx = (fname == "data") ? 0u : 1u;
       llvm::Type *slice_ty = cg.type_lower.lower(struct_ctid);
       return builder.CreateStructGEP(slice_ty, base_ptr, idx);
     }
