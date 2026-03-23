@@ -518,14 +518,14 @@ struct MultiModFixture : ::testing::Test {
     f << content;
   }
 
-  std::expected<std::vector<LoadedModule>, std::string>
+  Result<std::vector<LoadedModule>>
   load(const std::string &entry_rel) {
     return load_modules(root / entry_rel, root, interner);
   }
 
   Result<SemaResult> sema(const std::string &entry_rel) {
     auto lr = load(entry_rel);
-    if (!lr) return std::unexpected(Error{{}, lr.error().c_str()});
+    if (!lr) return std::unexpected(lr.error());
     return run_sema(*lr, interner);
   }
 };
@@ -533,7 +533,7 @@ struct MultiModFixture : ::testing::Test {
 TEST_F(MultiModFixture, LoadSingleModule) {
   write("main.um", "pub const x: i32 = 0;");
   auto lr = load("main.um");
-  ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error());
+  ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error().msg);
   EXPECT_EQ(lr->size(), 1u);
 }
 
@@ -541,7 +541,7 @@ TEST_F(MultiModFixture, LoadTwoModules) {
   write("math.um", "pub const add := fn (a: i32, b: i32) -> i32 { return a; }");
   write("main.um", "import math;");
   auto lr = load("main.um");
-  ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error());
+  ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error().msg);
   EXPECT_EQ(lr->size(), 2u);
   // math should come first (dependency before dependent)
   EXPECT_EQ(lr->front().rel_path, "math");
@@ -563,7 +563,7 @@ TEST_F(MultiModFixture, CircularImportDetected) {
   write("b.um", "import a;");
   auto lr = load("a.um");
   EXPECT_FALSE(lr.has_value());
-  EXPECT_NE(lr.error().find("circular"), std::string::npos);
+  EXPECT_NE(lr.error().msg.find("circular"), std::string::npos);
 }
 
 TEST_F(MultiModFixture, MissingModuleDetected) {
@@ -618,7 +618,7 @@ TEST_F(MultiModFixture, TransitiveDependency) {
                    "import mid;"
                    "const f := fn () -> i32 { return mid::double(); }");
   auto lr = load("main.um");
-  ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error());
+  ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error().msg);
   ASSERT_EQ(lr->size(), 3u);
   // leaf first, then mid, then main
   EXPECT_EQ((*lr)[0].rel_path, "leaf");

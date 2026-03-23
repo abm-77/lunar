@@ -4,4 +4,5 @@
   X(SiteId,    "site_id")    \
   X(SizeOf,    "size_of")    \
   X(AlignOf,   "align_of")   \
-  X(SliceCast, "slice_cast")
+  X(SliceCast, "slice_cast") \
+  X(Iter,      "iter")

@@ -19,7 +19,7 @@ struct SiteEntry {
 };
 
 struct CodegenCtx {
-  // Heap-allocated so ownership can be transferred to CodegenResult after
+  // heap-allocated so ownership can be transferred to CodegenResult after
   // codegen completes. LLVMContext must outlive the Module — keep both.
   std::unique_ptr<llvm::LLVMContext> ctx_owned;
   llvm::LLVMContext &ctx; // reference into *ctx_owned
@@ -30,16 +30,15 @@ struct CodegenCtx {
 
   // SymbolId → declared llvm::Function* (populated during the declaration pass)
   std::unordered_map<SymbolId, llvm::Function *> fn_map;
-  // SymbolId → declared llvm::GlobalVariable* (populated during the declaration
-  // pass)
+  // SymbolId → declared llvm::GlobalVariable* (populated during the declaration pass)
   std::unordered_map<SymbolId, llvm::GlobalVariable *> global_map;
 
-  // Type lowerer shared across all emitters.
+  // type lowerer shared across all emitters.
   CTypeLowerer type_lower;
 
-  // Accumulated call-site table for @site_id() intrinsic.
+  // accumulated call-site table for @site_id() intrinsic.
   std::vector<SiteEntry> sites;
-  // Per-module context vector for cross-module type lowering in TypeLowerer.
+  // per-module context vector for cross-module type lowering in TypeLowerer.
   std::vector<ModuleContext> module_contexts;
 
   CodegenCtx(SemaResult &sr, const std::vector<LoadedModule> &mods,
@@ -54,8 +53,8 @@ struct CodegenCtx {
       module_contexts.push_back({&lm.type_ast, &lm.ir, &lm.mod, lm.src, &lm.import_map});
   }
 
-  // Allocate a new call-site entry and return its index (= site ID).
-  // Scans src[0..byte_offset] for newlines to compute 1-based line/col.
+  // allocate a new call-site entry and return its index (= site ID).
+  // scans src[0..byte_offset] for newlines to compute 1-based line/col.
   u32 alloc_site(std::string_view src, u32 byte_offset, std::string_view filename) {
     u32 line = 1, col = 1;
     u32 end = byte_offset < static_cast<u32>(src.size())
@@ -70,8 +69,8 @@ struct CodegenCtx {
     return idx;
   }
 
-  // Create a syntax-level TypeLowerer configured for the given module.
-  // Use this wherever a TypeId (from FuncSig, annotate_type, etc.) needs to
+  // create a syntax-level TypeLowerer configured for the given module.
+  // use this wherever a TypeId (from FuncSig, annotate_type, etc.) needs to
   // be resolved to a CTypeId before passing to type_lower.lower().
   TypeLowerer make_type_lowerer(u32 module_idx) {
     TypeLowerer tl(modules[module_idx].type_ast, sema.syms, interner,
@@ -84,13 +83,13 @@ struct CodegenCtx {
   }
 };
 
-// Inject the mono-instance type substitution (T→i32 etc.) into the TypeLowerer.
-// Required for @size_of(T) / @align_of(T) emitted inside mono function bodies.
+// inject the mono-instance type substitution (T→i32 etc.) into the TypeLowerer.
+// required for @size_of(T) / @align_of(T) emitted inside mono function bodies.
 inline void inject_mono_subst(const Symbol &sym, TypeLowerer &tl) {
   for (auto &[k, v] : sym.mono_type_subst) tl.type_subst[k] = v;
 }
 
-// For impl methods, inject "self" → owner struct CTypeId into the TypeLowerer's
+// for impl methods, inject "self" → owner struct CTypeId into the TypeLowerer's
 // type_subst so that &self / &mut self parameters resolve correctly.
 inline void inject_self_subst(const Symbol &sym, TypeLowerer &tl,
                               CodegenCtx &cg) {

@@ -49,9 +49,9 @@ private:
     if (!err) err = Error{s, msg};
   }
 
-  // Parse a generic parameter list: < Name : type|Kind , ... >
-  // Called after consuming the opening '<'.
-  // Returns {start, count} into mod.generic_params.
+  // parse a generic parameter list: < Name : type|Kind , ... >
+  // called after consuming the opening '<'.
+  // returns {start, count} into mod.generic_params.
   std::pair<u32, u32> parse_generic_params() {
     u32 start = static_cast<u32>(mod.generic_params.size());
     do {
@@ -69,10 +69,10 @@ private:
     return {start, count};
   }
 
-  // Parse FnLit parameter list. Opening '(' must ALREADY be consumed.
-  // Handles &self / &mut self receiver (first param only), named params,
-  // and optional default values (= expr). Consumes the closing ')'.
-  // Returns {params_start, params_count} into mod.params.
+  // parse FnLit parameter list. opening '(' must already be consumed.
+  // handles &self / &mut self receiver (first param only), named params,
+  // and optional default values (= expr). consumes the closing ')'.
+  // returns {params_start, params_count} into mod.params.
   std::pair<u32, u32> parse_fn_params() {
     u32 params_start = static_cast<u32>(mod.params.size());
     if (!match(TokenKind::RParen)) {
@@ -119,8 +119,8 @@ private:
     return static_cast<SymId>(t.payload[i - 1]);
   }
 
-  // Peek-scan for generic args '<' ... '>' followed by '{' or '::'.
-  // Returns true (does NOT advance i) if the pattern looks like generic args.
+  // peek-scan for generic args '<' ... '>' followed by '{' or '::'.
+  // returns true (does NOT advance i) if the pattern looks like generic args.
   bool peek_generic_args_for(u32 from) const {
     u32 j = from;
     if (j >= t.kind.size() || t.kind[j] != TokenKind::Less) return false;
@@ -140,6 +140,22 @@ private:
     return after == TokenKind::LBrace || after == TokenKind::ColonColon;
   }
 
+  // true if current position looks like `for (var/const name := expr)` with no semicolons.
+  bool looks_like_for_range() const {
+    if (k(0) != TokenKind::KwVar && k(0) != TokenKind::KwConst) return false;
+    if (k(1) != TokenKind::Ident) return false;
+    if (k(2) != TokenKind::ColonEqual) return false;
+    u32 depth = 1;
+    for (u32 j = i + 3; j < static_cast<u32>(t.kind.size()); ++j) {
+      TokenKind tk = t.kind[j];
+      if (tk == TokenKind::LParen)    ++depth;
+      else if (tk == TokenKind::RParen) { if (--depth == 0) return true; }
+      else if (tk == TokenKind::Semicolon && depth == 1) return false;
+      else if (tk == TokenKind::Eof)    return false;
+    }
+    return false;
+  }
+
   // module path: Ident ('.' Ident)*
   std::pair<u32, u32> parse_module_path() {
     std::vector<u32> segs;
@@ -153,7 +169,7 @@ private:
   }
 
   // type
-  // Type :=  '&' ['mut'] Type
+  // type :=  '&' ['mut'] Type
   //      | '(' Type (',' Type)+ ')' (tuples)
   //      | 'fn' '(' [Type, (',' Type)*] ')' '->' Type (functions)
   //      | Ident ( '::' Ident )* (named path)
@@ -226,8 +242,8 @@ private:
       return type_ast.make(TypeKind::Array, endsp, count, elem);
     }
 
-    // Integer literal as const-generic argument (e.g., Array<i32, 10>)
-    // Represent as Named type with SymId=0; TypeLowerer will return Void for it.
+    // integer literal as const-generic argument (e.g., Array<i32, 10>)
+    // represent as Named type with SymId=0; TypeLowerer will return Void for it.
     if (match(TokenKind::Int)) {
       return type_ast.make(TypeKind::Named, start, 0);
     }
@@ -367,6 +383,12 @@ private:
         expect(TokenKind::RParen, "expected ')'");
         return body_ir.nodes.make(NodeKind::SliceCast, s, val, ty);
       }
+      case IntrinsicKind::Iter: {
+        expect(TokenKind::LParen, "expected '(' after '@iter'");
+        NodeId val = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::IterCreate, s, val);
+      }
       default: set_error(s, "unhandled intrinsic"); return 0;
       }
     }
@@ -376,8 +398,8 @@ private:
     if (match(TokenKind::KwFn)) {
       expect(TokenKind::LParen, "expected '('");
 
-      // Heuristic: ident followed by ':' means named params → FnLit
-      // Also fires for &self / &mut self receiver (first param only)
+      // heuristic: ident followed by ':' means named params → FnLit
+      // also fires for &self / &mut self receiver (first param only)
       bool is_fn_lit =
           (at(TokenKind::Ident) && k(1) == TokenKind::Colon) ||
           (at(TokenKind::Ampersand) && k(1) == TokenKind::KwSelf_) ||
@@ -394,7 +416,7 @@ private:
         Span endsp = {s.start, t.end[i - 1]};
         return body_ir.nodes.make(NodeKind::FnLit, endsp, idx);
       } else {
-        // Collect type params (may be empty)
+        // collect type params (may be empty)
         std::vector<TypeId> param_types;
         if (!match(TokenKind::RParen)) {
           do {
@@ -405,7 +427,7 @@ private:
         expect(TokenKind::Arrow, "expected '->'");
         TypeId ret = parse_type();
 
-        // If followed by a block, it's a FnLit with no named params
+        // if followed by a block, it's a FnLit with no named params
         if (at(TokenKind::LBrace)) {
           NodeId body = parse_block();
           u32 idx = static_cast<u32>(body_ir.fn_lits.size());
@@ -414,7 +436,7 @@ private:
           return body_ir.nodes.make(NodeKind::FnLit, endsp, idx);
         }
 
-        // No body: FnType expression node
+        // no body: FnType expression node
         auto [ls, cnt] =
             body_ir.nodes.push_list(param_types.data(), param_types.size());
         Span endsp = {s.start, type_ast.span_e[ret]};
@@ -425,14 +447,18 @@ private:
     // struct { ... }
     //   StructExpr: field = expr,  ...  (pairs [SymId, NodeId])
     //   StructType: field: Type,   ...  (pairs [SymId, TypeId])
-    // Disambiguation: after the first field name, '=' → StructExpr, ':' → StructType.
+    // disambiguation: after the first field name, '=' → StructExpr, ':' → StructType.
     if (match(TokenKind::KwStruct)) {
       expect(TokenKind::LBrace, "expected '{'");
 
-      // Empty struct: always a StructType
+      // empty struct type, or AnonStructInit if followed by {
       if (match(TokenKind::RBrace)) {
-        Span endsp = {s.start, t.end[i - 1]};
-        return body_ir.nodes.make(NodeKind::StructType, endsp, 0, 0, 0);
+        Span stspan = {s.start, t.end[i - 1]};
+        NodeId stype_nid = body_ir.nodes.make(NodeKind::StructType, stspan, 0, 0, 0);
+        if (!match(TokenKind::LBrace)) return stype_nid;
+        expect(TokenKind::RBrace, "expected '}'");
+        Span aspan = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid, 0, 0);
       }
 
       SymId fname = expect_ident("expected field name");
@@ -468,10 +494,29 @@ private:
         }
         expect(TokenKind::RBrace, "expected '}'");
         u32 field_count = static_cast<u32>(packed.size()) / 2;
-        auto [ls, _] = body_ir.nodes.push_list(packed.data(), packed.size());
-        Span endsp = {s.start, t.end[i - 1]};
-        return body_ir.nodes.make(NodeKind::StructType, endsp, 0, ls,
-                                  field_count);
+        auto [ls, _sf] = body_ir.nodes.push_list(packed.data(), packed.size());
+        Span stspan = {s.start, t.end[i - 1]};
+        NodeId stype_nid = body_ir.nodes.make(NodeKind::StructType, stspan, 0, ls,
+                                              field_count);
+        // struct { ... }{ field = expr } — anonymous struct init
+        if (!match(TokenKind::LBrace)) return stype_nid;
+        std::vector<u32> ipairs;
+        if (!match(TokenKind::RBrace)) {
+          do {
+            SymId iname = expect_ident("expected field name in struct initializer");
+            expect(TokenKind::Equal, "expected '=' in struct initializer");
+            NodeId ival = parse_expr();
+            ipairs.push_back(iname);
+            ipairs.push_back(ival);
+          } while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace));
+          expect(TokenKind::RBrace, "expected '}'");
+        }
+        u32 ifields_count = static_cast<u32>(ipairs.size()) / 2;
+        u32 istart = static_cast<u32>(body_ir.nodes.list.size());
+        body_ir.nodes.list.insert(body_ir.nodes.list.end(), ipairs.begin(), ipairs.end());
+        Span aspan = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid, istart,
+                                  ifields_count);
       }
     }
 
@@ -504,11 +549,11 @@ private:
     if (match(TokenKind::Ident)) {
       SymId sym = static_cast<SymId>(t.payload[i - 1]);
 
-      // Try to parse generic type args: Ident<T, ...> followed by '{' or '::'
+      // try to parse generic type args: Ident<T, ...> followed by '{' or '::'
       TypeId generic_type_id = 0;
       u32 targs_start = 0, targs_count = 0;
       if (peek_generic_args_for(i)) {
-        // Consume '<' and parse type args
+        // consume '<' and parse type args
         ++i; // consume '<'
         std::vector<TypeId> args;
         do {
@@ -528,8 +573,8 @@ private:
         while (match(TokenKind::ColonColon)) {
           SymId seg = expect_ident("expected path segment");
           segs.push_back(seg);
-          // Allow type args mid-path (e.g. mod::Type<T>::method).
-          // When a module prefix is visible (segs has at least 2 elements,
+          // allow type args mid-path (e.g. mod::Type<T>::method).
+          // when a module prefix is visible (segs has at least 2 elements,
           // i.e. segs[size-2] is the module), emit QualNamed so the type-arg
           // extraction in body_check can resolve it via import_map.
           if (peek_generic_args_for(i)) {
@@ -552,7 +597,7 @@ private:
               generic_type_id = type_ast.make(TypeKind::QualNamed, tspan, seg,
                                               qls, static_cast<u32>(mid_args.size()));
             } else {
-              // No module prefix yet (e.g. List<T>::method) — keep Named.
+              // no module prefix yet (e.g. List<T>::method) — keep Named.
               auto [mls, mcnt] = type_ast.push_list(mid_args.data(), mid_args.size());
               generic_type_id = type_ast.make(TypeKind::Named, tspan, seg, mls, mcnt);
             }
@@ -652,8 +697,7 @@ private:
                                               static_cast<u32>(values.size()));
       Span endsp = {s.start, t.end[i - 1]};
       if (explicit_count == static_cast<u32>(-1)) {
-        // []T{ ... } — slice literal
-        return body_ir.nodes.make(NodeKind::SliceLit, endsp, elem_type, vs, vc);
+        explicit_count = vc; // []T{ ... } — infer count from elements
       }
       u32 idx = static_cast<u32>(body_ir.array_lits.size());
       body_ir.array_lits.push_back({explicit_count, elem_type, vs, vc});
@@ -830,6 +874,17 @@ private:
     // for ( [init] ; [cond] ; [step] ) <block>
     if (match(TokenKind::KwFor)) {
       expect(TokenKind::LParen, "expected '(' after 'for'");
+      // for (var/const name := iter-expr) — range-for
+      if (looks_like_for_range()) {
+        ++i; // consume var/const
+        SymId var_name = expect_ident("expected variable name");
+        expect(TokenKind::ColonEqual, "expected ':='");
+        NodeId iter_n = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        NodeId body_n = parse_block();
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::ForRange, endsp, var_name, iter_n, body_n);
+      }
       NodeId init = 0;
       if (at(TokenKind::KwVar) || at(TokenKind::KwConst)) {
         // var/const declaration as for-init; parse_stmt also consumes the ';'
@@ -943,7 +998,7 @@ private:
         TypeId mty = 0;
         NodeId minit = 0;
         if (match(TokenKind::LParen)) {
-          // Shorthand: name(params) [-> ret] { body }
+          // shorthand: name(params) [-> ret] { body }
           auto [ps, pc] = parse_fn_params();
           TypeId ret = 0;
           if (match(TokenKind::Arrow)) ret = parse_type();
@@ -973,7 +1028,7 @@ private:
     bool is_pub = match(TokenKind::KwPub);
     bool is_extern = match(TokenKind::KwExtern);
 
-    // Extern shorthand: extern name(params) -> ret;
+    // extern shorthand: extern name(params) -> ret;
     if (is_extern && at(TokenKind::Ident) && k(1) == TokenKind::LParen) {
       SymId ename = expect_ident("expected function name");
       expect(TokenKind::LParen, "expected '('");
@@ -1029,7 +1084,7 @@ private:
     }
     TypeId ty = 0;
     NodeId init = 0;
-    // Module-level function shorthand: [pub] const/var name[<...>](params) [-> ret] { body }
+    // module-level function shorthand: [pub] const/var name[<...>](params) [-> ret] { body }
     if (!is_extern && at(TokenKind::LParen)) {
       expect(TokenKind::LParen, "expected '('");
       auto [ps, pc] = parse_fn_params();

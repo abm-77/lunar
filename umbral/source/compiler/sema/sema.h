@@ -15,18 +15,18 @@ struct SemaResult {
   std::unordered_map<SymbolId, BodySema> body_semas;
 };
 
-// ── Single-module entry point (used by tests) ─────────────────────────────
+// single-module entry point (used by tests)
 inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
                                    const TypeAst &type_ast,
                                    const Interner &interner,
                                    std::string_view src) {
 
-  // Phase 1: collect declarations
+  // phase 1: collect declarations
   SymbolTable syms;
   auto syms_r = collect_module_symbols(mod, ir, type_ast, 0, syms, src);
   if (syms_r) return std::unexpected(*syms_r);
 
-  // Phase 2: canonical type table + lowerer
+  // phase 2: canonical type table + lowerer
   TypeTable types;
   std::vector<ModuleContext> single_ctx;
   single_ctx.push_back({&type_ast, &ir, &mod, src, nullptr});
@@ -35,12 +35,12 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
   lowerer.module_contexts = &single_ctx;
   lowerer.current_ir = &ir;
 
-  // Phase 3: method table
+  // phase 3: method table
   auto methods_r = build_method_table(mod, /*module_idx=*/0, syms, lowerer);
   if (!methods_r) return std::unexpected(methods_r.error());
   MethodTable methods = std::move(*methods_r);
 
-  // Phase 4: type-check non-generic function bodies.
+  // phase 4: type-check non-generic function bodies.
   MonoCache mono_cache;
   u32 n_original_syms = static_cast<u32>(syms.symbols.size());
   std::unordered_map<SymbolId, BodySema> body_semas;
@@ -60,13 +60,13 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
                     std::move(body_semas)};
 }
 
-// ── Multi-module entry point ───────────────────────────────────────────────
+// multi-module entry point.
 // modules must be topologically ordered (dependencies before dependents).
-// The vector is taken by reference so LoadedModule TypeAsts stay alive during
+// the vector is taken by reference so LoadedModule TypeAsts stay alive during
 // sema (dep_type_asts holds pointers into them).
 inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
                                    const Interner &interner) {
-  // Phase 1: allocate per-module namespaces and collect all symbols.
+  // phase 1: allocate per-module namespaces and collect all symbols.
   SymbolTable syms;
   for (u32 i = 1; i < static_cast<u32>(modules.size()); ++i)
     syms.add_module_namespace();
@@ -78,10 +78,10 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
       return std::unexpected(*err);
   }
 
-  // Phase 2: canonical type table.
+  // phase 2: canonical type table.
   TypeTable types;
 
-  // Phase 3: build method tables for each module and merge into one.
+  // phase 3: build method tables for each module and merge into one.
   MethodTable methods;
   for (u32 i = 0; i < static_cast<u32>(modules.size()); ++i) {
     auto &lm = modules[i];
@@ -93,9 +93,9 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     for (auto &[k, v] : mt_r->table) methods.table[k] = v;
   }
 
-  // Phase 4a: resolve cross-module type aliases (const E := world::E).
-  // After collect, any Type symbol whose type_node is a Path in its module's
-  // BodyIR is a cross-module alias. Resolve it to the actual target SymbolId
+  // phase 4a: resolve cross-module type aliases (const E := world::E).
+  // after collect, any Type symbol whose type_node is a Path in its module's
+  // BodyIR is a cross-module alias. resolve it to the actual target SymbolId
   // and store in aliased_sym so TypeLowerer can follow the indirection.
   for (auto &sym : syms.symbols) {
     if (sym.kind != SymbolKind::Type || sym.type_node == 0 ||
@@ -116,15 +116,15 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     if (actual != kInvalidSymbol) sym.aliased_sym = actual;
   }
 
-  // Phase 4b: build a unified per-module context vector replacing the old five
-  // parallel dep_* arrays. All five pieces of per-module data travel together.
+  // phase 4b: build a unified per-module context vector replacing the old five
+  // parallel dep_* arrays. all five pieces of per-module data travel together.
   std::vector<ModuleContext> module_contexts;
   module_contexts.reserve(modules.size());
   for (auto &lm : modules)
     module_contexts.push_back({&lm.type_ast, &lm.ir, &lm.mod, lm.src, &lm.import_map});
 
-  // Phase 5: type-check each non-generic function body.
-  // Each symbol carries module_idx; use it to select the right module data.
+  // phase 5: type-check each non-generic function body.
+  // each symbol carries module_idx; use it to select the right module data.
   MonoCache mono_cache;
   u32 n_original_syms = static_cast<u32>(syms.symbols.size());
   std::unordered_map<SymbolId, BodySema> body_semas;

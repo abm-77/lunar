@@ -10,7 +10,7 @@ template <class IdT, class KindT, class ListElemT = u32> struct NodeStore {
   std::vector<u32> a, b, c;
   std::vector<ListElemT> list; // L list pool
 
-  // Reserve index 0 as the invalid/null sentinel so that 0 can be used
+  // reserve index 0 as the invalid/null sentinel so that 0 can be used
   // as "no node" / "no type" throughout without colliding with real nodes.
   NodeStore() {
     kind.push_back(KindT{});
@@ -56,8 +56,10 @@ enum class NodeKind : u16 {
   ArrayLit,   // a = index into BodyIR::array_lits
   StructInit, // a = type SymId, b = fields_start, c = fields_count (fields are
               //   pairs [SymId, NodeId] in list pool)
-  StructExpr, // b = fields_start, c = fields_count (fields are
-              //   pairs [SymId, NodeId] in list pool)
+  StructExpr,     // b = fields_start, c = fields_count (fields are
+                  //   pairs [SymId, NodeId] in list pool)
+  AnonStructInit, // a = StructType NodeId, b = init_fields_start, c = init_fields_count
+                  //   init fields: [SymId, NodeId] pairs in list pool
   Block,      // b = stmt_start, c = stmt_count
   ConstStmt,  // a = SymId, b = TypeId or 0, c = init ExprId (or 0 if none)
   VarStmt,    // same as ConstStmt
@@ -66,6 +68,7 @@ enum class NodeKind : u16 {
   ReturnStmt, // a = expr (or 0 if empty return)
   IfStmt,     // a = cond, b = then block, c = else block
   ForStmt,    // a = index into BodyIR::fors
+  ForRange,   // a = SymId (loop var name), b = Iter<T> NodeId, c = body NodeId
   ExprStmt,   // a = expr
   FnLit,      // a = index into BodyIR::fn_lits
   StructType, // b = fields_start, c = fields_count (pairs [SymId, TypeId] in
@@ -82,6 +85,7 @@ enum class NodeKind : u16 {
   SizeOf,    // a = TypeId — sizeof(T) as u64
   AlignOf,   // a = TypeId — alignof(T) as u64
   SliceCast, // a = source NodeId ([]u8), b = elem TypeId → []T
+  IterCreate, // a = source NodeId (Array or Slice expr) → produces Iter<T>
 };
 
 using TypeId = u32;

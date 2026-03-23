@@ -1,18 +1,4 @@
 # TODO
-- [ ] accept initializing an array from a slice []T{...}, the array owns the data 
-- [ ] allow implicit conversion of array to slice
-      this enables:
-      for (var it := array) {}
-      for (var it := slice) {}
-- [ ] use Error in driver and loader code
-- [ ] add anonymous struct syntax:
-    var anon := struct {
-        x: i32,
-        y: i32,
-    }{
-          x = 10,
-          y = 13,
-    };
 - [ ] add metaprogramming pass in meta/
   - [ ] lowers high-level intrinsics: 
     - [ ] @gen
@@ -33,6 +19,22 @@
     - [ ] keep up to MAX_CACHED_SLABS slabs cached (munmap the others)
     - [ ] use madvise(DONTNEED) to drop physical pages but keep mapping
   - [ ] run benchmarks
+
+03/22/26
+- [x] accept initializing an array from a slice []T{...}, the array owns the data 
+- [x] allow implicit conversion of array to slice
+      this enables:
+      for (var it := array) {}
+      for (var it := slice) {}
+- [x] use Error in driver and loader code
+- [x] add anonymous struct syntax:
+    var anon := struct {
+        x: i32,
+        y: i32,
+    }{
+          x = 10,
+          y = 13,
+    };
 
 03/11/26
   - [x] optimize memory allocator

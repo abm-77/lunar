@@ -8,9 +8,9 @@
 #include <compiler/frontend/ast.h>
 #include <compiler/frontend/module.h>
 
-// Collect symbols from one module into a pre-existing (possibly shared)
+// collect symbols from one module into a pre-existing (possibly shared)
 // SymbolTable. module_idx is the namespace slot to write into.
-// Returns an Error on the first duplicate name within that module.
+// returns an Error on the first duplicate name within that module.
 inline std::optional<Error>
 collect_module_symbols(const Module &mod, const BodyIR &ir,
                        const TypeAst &type_ast, u32 module_idx,
@@ -47,14 +47,14 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       case NodeKind::EnumType:
       case NodeKind::FnType:
       case NodeKind::Ident: {
-        // Ident covers simple type aliases: const AllocHandle := u64
+        // ident node covers simple type aliases: const AllocHandle := u64
         s.kind = SymbolKind::Type;
         s.type_node = d.init;
       } break;
 
       case NodeKind::Path: {
-        // Cross-module type alias: const Entity := world::Entity
-        // The Path node is resolved during type lowering using the import map.
+        // cross-module type alias: const Entity := world::Entity
+        // the Path node is resolved during type lowering using the import map.
         s.kind = SymbolKind::Type;
         s.type_node = d.init;
       } break;
@@ -67,12 +67,12 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       } break;
       }
     } else {
-      // No initializer. For extern declarations, the type annotation determines
+      // no initializer. for extern declarations, the type annotation determines
       // whether this is an extern function (FnType) or an extern global.
       if (d.is_extern && d.type != 0 && type_ast.kind[d.type] == TypeKind::Fn) {
         s.kind = SymbolKind::Func;
         s.annotate_type = d.type; // FnType TypeId — used by codegen
-        // Populate ret_type so body_check can type-check calls.
+        // populate ret_type so body_check can type-check calls.
         s.sig.ret_type = type_ast.a[d.type];
         // body = 0 (extern: no definition in this module)
       } else {

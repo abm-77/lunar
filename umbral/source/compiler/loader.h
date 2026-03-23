@@ -13,7 +13,7 @@
 #include <compiler/frontend/module.h>
 #include <compiler/frontend/parser.h>
 
-// A fully parsed module and its resolved import map.
+// a fully parsed module and its resolved import map.
 struct LoadedModule {
   std::filesystem::path abs_path; // absolute path to .um file
   std::string rel_path;           // e.g. "game/ecs/world"
@@ -21,32 +21,32 @@ struct LoadedModule {
   Module mod;
   BodyIR ir;
   TypeAst type_ast;
-  // Maps alias SymId → index in the modules vector returned by load_modules.
-  // Key is the alias if given, otherwise the last path segment.
+  // maps alias SymId → index in the modules vector returned by load_modules.
+  // key is the alias if given, otherwise the last path segment.
   std::unordered_map<SymId, u32> import_map;
 };
 
-// Internal DFS state for load_modules.
+// internal DFS state for load_modules.
 struct ModuleLoader {
   const std::filesystem::path &root;
   Interner &interner;
 
-  // Canonical path → index in `modules` (set after a module is fully loaded).
+  // canonical path → index in `modules` (set after a module is fully loaded).
   std::unordered_map<std::string, u32> visited;
-  // Canonical paths currently on the DFS stack (for cycle detection).
+  // canonical paths currently on the DFS stack (for cycle detection).
   std::set<std::string> in_progress;
 
   std::vector<LoadedModule> modules; // post-order output
 
-  // Returns the index of the module in `modules`, or an error string.
-  std::expected<u32, std::string> load(const std::filesystem::path &abs_path);
+  // returns the index of the module in `modules`, or an error.
+  Result<u32> load(const std::filesystem::path &abs_path);
 };
 
-// Load the entry file and all transitive imports.
-// The returned vector is topologically ordered: each module appears after all
-// its dependencies. The entry module is last.
+// load the entry file and all transitive imports.
+// the returned vector is topologically ordered: each module appears after all
+// its dependencies. the entry module is last.
 // root defaults to the directory containing entry_file.
-inline std::expected<std::vector<LoadedModule>, std::string>
+inline Result<std::vector<LoadedModule>>
 load_modules(const std::filesystem::path &entry_file,
              const std::filesystem::path &root, Interner &interner) {
   ModuleLoader loader{root, interner};
@@ -55,54 +55,54 @@ load_modules(const std::filesystem::path &entry_file,
   return std::move(loader.modules);
 }
 
-// Convenience overload: infer root from entry_file's parent directory.
-inline std::expected<std::vector<LoadedModule>, std::string>
+// convenience overload: infer root from entry_file's parent directory.
+inline Result<std::vector<LoadedModule>>
 load_modules(const std::filesystem::path &entry_file, Interner &interner) {
   return load_modules(entry_file, entry_file.parent_path(), interner);
 }
 
-inline std::expected<u32, std::string>
+inline Result<u32>
 ModuleLoader::load(const std::filesystem::path &abs_path) {
   std::string canonical_key = abs_path.string();
 
-  // Already loaded — return existing index.
+  // already loaded — return existing index.
   if (auto it = visited.find(canonical_key); it != visited.end())
     return it->second;
 
-  // Cycle check.
+  // cycle check.
   if (in_progress.count(canonical_key)) {
-    return std::unexpected("circular import detected: " + canonical_key);
+    return std::unexpected(Error{.msg = "circular import detected: " + canonical_key});
   }
 
-  // Read source.
+  // read source.
   std::ifstream f(abs_path);
-  if (!f) return std::unexpected("cannot open '" + abs_path.string() + "'");
+  if (!f) return std::unexpected(Error{.msg = "cannot open '" + abs_path.string() + "'"});
   std::string src((std::istreambuf_iterator<char>(f)), {});
 
-  // Lex.
+  // lex.
   KeywordTable kws;
   kws.init(interner);
   auto lex_r = lex_source(src, interner, kws);
   if (!lex_r)
-    return std::unexpected(format_error(lex_r.error(), src, abs_path.string()));
+    return std::unexpected(Error{.msg = format_error(lex_r.error(), src, abs_path.string())});
 
-  // Parse.
+  // parse.
   IntrinsicTable intrinsics;
   intrinsics.init(interner);
   Parser parser(*lex_r, intrinsics);
   parser.parse_module();
   if (parser.error())
     return std::unexpected(
-        format_error(*parser.error(), src, abs_path.string()));
+        Error{.msg = format_error(*parser.error(), src, abs_path.string())});
 
   in_progress.insert(canonical_key);
 
-  // Recurse into imports.
+  // recurse into imports.
   // import_map will map alias SymId → child module index.
   std::unordered_map<SymId, u32> import_map;
 
   for (const ImportDecl &imp : parser.mod.imports) {
-    // Build filesystem path from path segments.
+    // build filesystem path from path segments.
     std::filesystem::path rel;
     for (u32 k = 0; k < imp.path_list_count; ++k) {
       SymId seg =
@@ -117,7 +117,7 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
       child_canonical = std::filesystem::canonical(child_abs);
     } catch (...) {
       in_progress.erase(canonical_key);
-      return std::unexpected("module not found: '" + child_abs.string() + "'");
+      return std::unexpected(Error{.msg = "module not found: '" + child_abs.string() + "'"});
     }
 
     auto child_r = load(child_canonical);
@@ -127,10 +127,10 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
     }
     u32 child_idx = *child_r;
 
-    // Determine alias: use `as <alias>` if given, else last segment.
+    // determine alias: use `as <alias>` if given, else last segment.
     SymId alias_id = imp.alias;
     if (alias_id == 0) {
-      // Last segment.
+      // last segment.
       alias_id = static_cast<SymId>(
           parser.mod.sym_list[imp.path_list_start + imp.path_list_count - 1]);
     }
@@ -139,7 +139,7 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
 
   in_progress.erase(canonical_key);
 
-  // Compute a relative path string for the module (relative to root).
+  // compute a relative path string for the module (relative to root).
   std::string rel_path =
       std::filesystem::relative(abs_path, root).replace_extension("").string();
 

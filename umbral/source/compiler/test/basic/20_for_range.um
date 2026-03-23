@@ -1,0 +1,31 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# @iter + for-range: iterate over arrays and slices.
+
+const sum_arr := fn(a: &[4]i32) -> i32 {
+  var s: i32 = 0;
+  for (var x := @iter(*a)) {
+    s += x;
+  }
+  return s;
+}
+
+const sum_slice := fn(s: []i32) -> i32 {
+  var acc: i32 = 0;
+  for (var x := @iter(s)) {
+    acc += x;
+  }
+  return acc;
+}
+
+const main := fn() -> void {
+  const a := [4]i32{1, 2, 3, 4};
+  const s1 := sum_arr(&a);
+}
+
+# CHECK: define i32 @_U_20_for_range__sum_arr
+# CHECK: forin.header
+# CHECK: forin.body
+# CHECK: forin.step
+# CHECK: define i32 @_U_20_for_range__sum_slice
+# CHECK: define i32 @main

@@ -25,31 +25,31 @@ struct Symbol {
   Span span{};
   u32 module_idx = 0; // which LoadedModule this symbol belongs to
 
-  // Type symbol
+  // type symbol
   // init NodeId from Decl (StructType / EnumType / FnType / Path)
   NodeId type_node = 0;
-  // For cross-module type aliases (type_node = Path): the SymbolId of the
+  // for cross-module type aliases (type_node = Path): the SymbolId of the
   // actual target type after path resolution. 0 = not a cross-module alias.
   SymbolId aliased_sym = 0;
 
-  // Func symbol
+  // func symbol
   FuncSig sig{};
   NodeId body = 0;
   SymId impl_owner = 0;   // non-zero for impl methods (= type name SymId)
   u32 generics_start = 0; // into Module::generic_params
   u32 generics_count = 0; // 0 = not generic
 
-  // For monomorphized instances: pre-lowered concrete CTypeIds (= u32) for the
+  // for monomorphized instances: pre-lowered concrete CTypeIds (= u32) for the
   // function signature (avoids re-lowering with the substitution at codegen).
   bool is_mono_instance = false;
   u32 mono_concrete_ret = 0;    // valid only when is_mono_instance
   u32 mono_self_ctype = 0;      // non-zero if this is a mono instance method (CTypeId)
   std::vector<u32> mono_concrete_params; // explicit params only (excludes self)
-  // Type-param substitution used when monomorphizing (SymId → CTypeId).
-  // Populated by BodyChecker::monomorphize; used by codegen for @size_of/@align_of.
+  // type-param substitution used when monomorphizing (SymId → CTypeId).
+  // populated by BodyChecker::monomorphize; used by codegen for @size_of/@align_of.
   std::unordered_map<SymId, u32> mono_type_subst;
 
-  // GlobalVar
+  // global var
   TypeId annotate_type = 0; // syntax level (0 if inferred)
   NodeId init_expr;
   bool is_mut = false;
@@ -57,8 +57,8 @@ struct Symbol {
 
 struct SymbolTable {
   std::vector<Symbol> symbols;
-  // Per-module namespaces: module_namespaces[module_idx][name] = SymbolId.
-  // Module 0 is pre-created; call add_module_namespace() for each additional.
+  // per-module namespaces: module_namespaces[module_idx][name] = SymbolId.
+  // module 0 is pre-created; call add_module_namespace() for each additional.
   std::vector<std::unordered_map<SymId, SymbolId>> module_namespaces;
 
   SymbolTable() {
@@ -66,8 +66,7 @@ struct SymbolTable {
     module_namespaces.push_back({}); // module 0 namespace
   }
 
-  // Allocate a namespace slot for an additional module (call once per module >
-  // 0).
+  // allocate a namespace slot for an additional module (call once per module > 0).
   void add_module_namespace() { module_namespaces.push_back({}); }
 
   SymbolId add(u32 mod_idx, Symbol s) {
@@ -86,7 +85,7 @@ struct SymbolTable {
     return kInvalidSymbol;
   }
 
-  // Like lookup(mod_idx, name) but only returns if the symbol is pub.
+  // like lookup(mod_idx, name) but only returns if the symbol is pub.
   SymbolId lookup_pub(u32 mod_idx, SymId name) const {
     SymbolId sid = lookup(mod_idx, name);
     return (sid != kInvalidSymbol && symbols[sid].is_pub) ? sid

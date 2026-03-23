@@ -1,0 +1,16 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# Anonymous struct syntax: struct { fields }{ inits }
+# Produces an anonymous value type (Tuple CType in codegen).
+
+const main := fn() -> void {
+  const p := struct { x: i32, y: i32 }{ x = 10, y = 20 };
+  var q := struct { a: i64, b: i64 }{ a = 1, b = 2 };
+  const px := p.x;
+  const py := p.y;
+  q.a = 99;
+}
+
+# CHECK: define i32 @main
+# CHECK: alloca { i64, i64 }
+# CHECK: alloca { i32, i32 }

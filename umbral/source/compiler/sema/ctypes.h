@@ -28,6 +28,7 @@ enum class CTypeKind : u8 {
   Struct, // symbol
   Enum,   // symbol
   Slice,  // inner = elem CTypeId
+  Iter,   // inner = elem CTypeId  (runtime: { ptr*, i64 len, i64 idx })
 };
 
 struct CType {
@@ -62,7 +63,7 @@ struct TypeTable {
           e.count != t.count || e.list_count != t.list_count ||
           e.symbol != t.symbol)
         continue;
-      // Compare list contents (not just list_start) to enable dedup when the
+      // compare list contents (not just list_start) to enable dedup when the
       // same type args are pushed multiple times at different offsets.
       if (e.list_count > 0 &&
           !std::equal(list.begin() + e.list_start,

@@ -24,16 +24,15 @@ struct CTypeLowerer {
   // CTypeId → cached LLVM type (null means lowering failed / type is void)
   std::unordered_map<CTypeId, llvm::Type *> cache;
 
-  // CTypeId → cached LLVM function type (null means lowering failed / type is
-  // void)
+  // CTypeId → cached LLVM function type (null means lowering failed / type is void)
   std::unordered_map<CTypeId, llvm::FunctionType *> fn_type_cache;
 
   CTypeLowerer(llvm::LLVMContext &c, TypeTable &t, const SymbolTable &s,
                const std::vector<LoadedModule> &m, const Interner &i)
       : ctx(c), types(t), syms(s), modules(m), interner(i) {}
 
-  // Returns the LLVM type for the given canonical type.
-  // Returns nullptr only for CTypeKind::Void (callers must handle that).
+  // returns the LLVM type for the given canonical type.
+  // returns nullptr only for CTypeKind::Void (callers must handle that).
   llvm::Type *lower(CTypeId id) {
     auto it = cache.find(id);
     if (it != cache.end()) return it->second;
@@ -42,8 +41,8 @@ struct CTypeLowerer {
     return result;
   }
 
-  // Returns the u32 index of a named field within its LLVM struct layout.
-  // The field order matches the order fields appear in the StructType node.
+  // returns the u32 index of a named field within its LLVM struct layout.
+  // field order matches the order fields appear in the StructType node.
   u32 field_index(SymbolId struct_sym, SymId field_name) {
     Symbol sym = syms.get(struct_sym);
     const BodyIR &ir = modules[sym.module_idx].ir;
@@ -61,7 +60,7 @@ private:
   llvm::Type *lower_impl(CTypeId id) {
     const CType &ct = types.types[id];
     switch (ct.kind) {
-    // ── primitives ────────────────────────────────────────────────────────
+    // primitives
     case CTypeKind::Void: return nullptr; // callers check for void specially
     case CTypeKind::Bool: return llvm::Type::getInt1Ty(ctx);
     case CTypeKind::I8: return llvm::Type::getInt8Ty(ctx);
@@ -75,10 +74,10 @@ private:
     case CTypeKind::F32: return llvm::Type::getFloatTy(ctx);
     case CTypeKind::F64: return llvm::Type::getDoubleTy(ctx);
 
-    // ── reference → opaque pointer ────────────────────────────────────────
+    // reference → opaque pointer
     case CTypeKind::Ref: return llvm::PointerType::get(ctx, 0);
 
-    // ── [N x T] ───────────────────────────────────────────────────────────
+    // [N x T]
     case CTypeKind::Array: {
       llvm::Type *elem = lower(ct.inner);
       assert(types.types[ct.inner].kind != CTypeKind::Void &&
@@ -86,7 +85,7 @@ private:
       return llvm::ArrayType::get(elem, ct.count);
     }
 
-    // ── anonymous struct { T0, T1, ... } ─────────────────────────────────
+    // anonymous struct { T0, T1, ... }
     case CTypeKind::Tuple: {
       std::vector<llvm::Type *> elems;
       elems.reserve(ct.list_count);
@@ -95,8 +94,7 @@ private:
       return llvm::StructType::get(ctx, elems);
     }
 
-    // ── fn(params) -> ret  →  pointer to FunctionType ────────────────────
-    // list = [ret_type, param0, param1, ...]
+    // fn(params) -> ret → pointer to FunctionType; list = [ret_type, param0, param1, ...]
     case CTypeKind::Fn: {
       llvm::Type *ret = lower(types.list[ct.list_start]);
       llvm::Type *ret_type = ret ? ret : llvm::Type::getVoidTy(ctx);
@@ -109,16 +107,25 @@ private:
       return llvm::PointerType::get(ctx, 0);
     }
 
-    // ── named struct ──────────────────────────────────────────────────────
+    // named struct
     case CTypeKind::Struct: return lower_struct(id, ct);
 
-    // ── enum → i32 tag ────────────────────────────────────────────────────
+    // enum → i32 tag
     case CTypeKind::Enum: return llvm::Type::getInt32Ty(ctx);
 
-    // ── slice → { ptr, i64 } ──────────────────────────────────────────────
+    // slice → { ptr, i64 }
     case CTypeKind::Slice: {
       std::vector<llvm::Type *> fields = { llvm::PointerType::getUnqual(ctx),
                                            llvm::Type::getInt64Ty(ctx) };
+      return llvm::StructType::get(ctx, fields);
+    }
+
+    case CTypeKind::Iter: { // { ptr*, i64 len, i64 idx }
+      std::vector<llvm::Type *> fields = {
+        llvm::PointerType::getUnqual(ctx),
+        llvm::Type::getInt64Ty(ctx),
+        llvm::Type::getInt64Ty(ctx)
+      };
       return llvm::StructType::get(ctx, fields);
     }
     }
@@ -148,7 +155,7 @@ private:
       subst[param_name] = concrete;
     }
 
-    // Build module_contexts so the TypeLowerer can distinguish enum vs struct
+    // build module_contexts so the TypeLowerer can distinguish enum vs struct
     // fields from any module.
     std::vector<ModuleContext> local_ctx;
     local_ctx.reserve(modules.size());

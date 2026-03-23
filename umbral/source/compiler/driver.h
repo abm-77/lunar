@@ -36,7 +36,7 @@ class Driver {
 public:
   // compile src_path to a standalone executable at out_path.
   // libruntime.a is embedded in uc and written to a temp file at link time.
-  // The output binary is fully self-contained — Vulkan loader (libvulkan.so)
+  // the output binary is fully self-contained — Vulkan loader (libvulkan.so)
   // must be present on the target system, but nothing else.
   DriverResult run(const std::string &src_path, const DriverOptions &opts = {});
 
@@ -61,12 +61,12 @@ inline DriverResult Driver::run(const std::string &src_path,
 
   Interner interner;
 
-  // Load entry file and all transitive imports (topological order).
+  // load entry file and all transitive imports (topological order).
   auto load_r = load_modules(entry, root, interner);
-  if (!load_r) return {false, load_r.error()};
+  if (!load_r) return {false, load_r.error().msg};
   auto &modules = *load_r;
 
-  // Sema over all modules.
+  // sema over all modules.
   auto sema_r = run_sema(modules, interner);
   if (!sema_r) {
     const auto &err = sema_r.error();
@@ -77,27 +77,27 @@ inline DriverResult Driver::run(const std::string &src_path,
     return {false, format_error(err, esrc, epath)};
   }
 
-  // LLVM Codegen
+  // LLVM codegen
   auto llvm_ir = run_codegen(*sema_r, modules, interner, entry.stem().string());
   if (!llvm_ir) {
     const std::string &entry_src = modules.back().src;
     return {false, format_error(llvm_ir.error(), entry_src, src_path)};
   }
 
-  // Optionally dump LLVM IR
+  // optionally dump LLVM IR
   if (opts.dump_ir) {
     std::fputs(llvm_ir->ir.c_str(), stdout);
     return {true};
   }
 
-  // Emit native object file
+  // emit native object file
   auto obj_path = std::filesystem::temp_directory_path() /
                   ("umbral_" + std::to_string(::getpid()) + ".o");
   auto obj_r =
       emit_object(*llvm_ir->context, *llvm_ir->module, obj_path.string());
   if (!obj_r) return {false, "codegen: " + obj_r.error().msg};
 
-  // Write embedded libruntime.a to a temp file
+  // write embedded libruntime.a to a temp file
   std::filesystem::path rt_path;
   auto rt_r = write_runtime(rt_path);
   if (!rt_r.ok) {
@@ -105,10 +105,10 @@ inline DriverResult Driver::run(const std::string &src_path,
     return rt_r;
   }
 
-  // Link final executable
+  // link final executable
   auto link_r = link(obj_path, rt_path, opts.out_path);
 
-  // Clean up temp files regardless of link success.
+  // clean up temp files regardless of link success.
   std::filesystem::remove(obj_path);
   std::filesystem::remove(rt_path);
 

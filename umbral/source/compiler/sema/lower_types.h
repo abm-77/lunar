@@ -10,11 +10,11 @@
 #include "ctypes.h"
 #include "symbol.h"
 
-// Forward declaration — full type available in module.h.
+// forward declaration — full type available in module.h.
 struct Module;
 
-// Bundles all per-module data for cross-module type resolution.
-// All pointers are non-owning; the LoadedModule vector keeps them alive.
+// bundles all per-module data for cross-module type resolution.
+// all pointers are non-owning; the LoadedModule vector keeps them alive.
 struct ModuleContext {
   const TypeAst                        *type_ast   = nullptr;
   const BodyIR                         *ir         = nullptr;
@@ -31,18 +31,18 @@ struct TypeLowerer {
   std::unordered_map<SymId, CTypeId> type_subst; // type-param substitution
   u32 module_idx = 0; // which module namespace to search for user-defined types
   bool lenient = false; // if true, unknown named types return Void instead of error
-  // Per-module context vector for struct/enum node kind distinction.
+  // per-module context vector for struct/enum node kind distinction.
   const std::vector<ModuleContext> *module_contexts = nullptr;
-  // Fallback BodyIR for the current (or only) module when module_contexts is null.
+  // fallback BodyIR for the current (or only) module when module_contexts is null.
   const BodyIR *current_ir = nullptr;
-  // Import alias map (alias SymId → module index) for resolving module::Type.
+  // import alias map (alias SymId → module index) for resolving module::Type.
   const std::unordered_map<SymId, u32> *import_map = nullptr;
 
   TypeLowerer(const TypeAst &ta, const SymbolTable &s, const Interner &i,
               TypeTable &o)
       : type_ast(ta), syms(s), interner(i), out(o) {}
 
-  // Returns the CTypeId for a primitive type name, or nullopt if not a builtin.
+  // returns the CTypeId for a primitive type name, or nullopt if not a builtin.
   static std::optional<CTypeId> builtin_from_name(std::string_view sv,
                                                    TypeTable &out) {
     if (sv == "void") return out.builtin(CTypeKind::Void);
@@ -80,7 +80,7 @@ struct TypeLowerer {
         Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
         return std::unexpected(Error{sp, "unknown type name"});
       }
-      // Follow cross-module type alias to the actual struct/enum symbol
+      // follow cross-module type alias to the actual struct/enum symbol
       if (syms.get(sid).aliased_sym != 0) sid = syms.get(sid).aliased_sym;
       CType ct;
       CTypeKind ct_kind = CTypeKind::Struct;
@@ -98,7 +98,7 @@ struct TypeLowerer {
           if (tnk == NodeKind::EnumType) {
             ct_kind = CTypeKind::Enum;
           } else if (tnk == NodeKind::Ident) {
-            // Simple builtin type alias: const AllocHandle := u64
+            // simple builtin type alias: const AllocHandle := u64
             SymId alias_name = ir->nodes.a[resolved.type_node];
             std::string_view asv = interner.view(alias_name);
             if (auto b = builtin_from_name(asv, out)) return *b;
@@ -147,7 +147,7 @@ struct TypeLowerer {
       SymbolId sid = syms.lookup_pub(dep_mod_idx, type_name);
       if (sid == kInvalidSymbol) {
         if (lenient) return out.builtin(CTypeKind::Void);
-        // Distinguish between "not found" and "not exported".
+        // distinguish between "not found" and "not exported".
         if (syms.lookup(dep_mod_idx, type_name) != kInvalidSymbol)
           return std::unexpected(Error{sp, "type is not exported from module"});
         return std::unexpected(Error{sp, "unknown type in qualified reference"});
@@ -166,7 +166,7 @@ struct TypeLowerer {
           if (tnk == NodeKind::EnumType) {
             ct_kind = CTypeKind::Enum;
           } else if (tnk == NodeKind::Ident) {
-            // Simple builtin type alias: pub const AllocHandle := u64
+            // simple builtin type alias: pub const AllocHandle := u64
             SymId alias_name = ir->nodes.a[resolved.type_node];
             std::string_view asv = interner.view(alias_name);
             if (auto b = builtin_from_name(asv, out)) return *b;
@@ -176,7 +176,7 @@ struct TypeLowerer {
       ct.kind = ct_kind;
       ct.symbol = sid;
 
-      // Lower generic type args (e.g., mem::Alloc<i32>) and store in ct.list.
+      // lower generic type args (e.g., mem::Alloc<i32>) and store in ct.list.
       if (targs_count > 0) {
         std::vector<CTypeId> lowered;
         for (u32 k = 0; k < targs_count; ++k) {

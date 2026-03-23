@@ -1,0 +1,22 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# []T{...} infers count from elements and produces an owned array.
+
+const sum3 := fn(arr: &[3]i32) -> i32 {
+  return arr[0] + arr[1] + arr[2];
+}
+
+const main := fn() -> void {
+  # []i32{1,2,3} should produce [3]i32 (count inferred as 3)
+  const a := []i32{1, 2, 3};
+  const s := sum3(&a);
+
+  # Explicit-count form still works
+  const b := [3]i32{4, 5, 6};
+  const t := sum3(&b);
+}
+
+# CHECK: define i32 @_U_18_array_lit__sum3
+# CHECK: getelementptr [3 x i32]
+# CHECK: define i32 @main
+# CHECK: alloca [3 x i32]
