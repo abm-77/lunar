@@ -141,7 +141,7 @@ TEST_F(SemaFixture, CollectImplMethodHasImplOwner) {
 }
 
 TEST_F(SemaFixture, CollectExternFunc) {
-  parse("extern const abs: fn(i32) -> i32;");
+  parse("@extern abs : fn(i32) -> i32;");
   SymbolTable table;
   auto err = collect_module_symbols(parser->mod, parser->body_ir,
                                     parser->type_ast, 0, table, "");
@@ -157,7 +157,7 @@ TEST_F(SemaFixture, CollectExternFunc) {
 }
 
 TEST_F(SemaFixture, CollectExternGlobalVar) {
-  parse("extern var errno: i32;");
+  parse("@extern errno : i32;");
   SymbolTable table;
   auto err = collect_module_symbols(parser->mod, parser->body_ir,
                                     parser->type_ast, 0, table, "");
@@ -167,12 +167,11 @@ TEST_F(SemaFixture, CollectExternGlobalVar) {
   const Symbol &sym = table.get(sid);
   EXPECT_EQ(sym.kind, SymbolKind::GlobalVar);
   EXPECT_TRUE(sym.is_extern);
-  EXPECT_TRUE(sym.is_mut);
   EXPECT_NE(sym.annotate_type, 0u);
 }
 
 TEST_F(SemaFixture, CollectExternConst) {
-  parse("extern const EINVAL: i32;");
+  parse("@extern EINVAL : i32;");
   SymbolTable table;
   auto err = collect_module_symbols(parser->mod, parser->body_ir,
                                     parser->type_ast, 0, table, "");
@@ -355,7 +354,7 @@ TEST_F(SemaFixture, SemaMethodCall) {
 }
 
 TEST_F(SemaFixture, SemaExternFuncCallable) {
-  auto sr = sema("extern const abs: fn(i32) -> i32;"
+  auto sr = sema("@extern abs : fn(i32) -> i32;"
                  "const f := fn () -> i32 { return abs(-1); }");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
@@ -363,13 +362,13 @@ TEST_F(SemaFixture, SemaExternFuncCallable) {
 TEST_F(SemaFixture, SemaExternFuncReturnTypeFlows) {
   // The return type of the extern call must unify with the declared return
   // type.
-  auto sr = sema("extern const neg: fn(i32) -> i32;"
+  auto sr = sema("@extern neg : fn(i32) -> i32;"
                  "const f := fn () -> i32 { return neg(5); }");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 
 TEST_F(SemaFixture, SemaExternGlobalReadable) {
-  auto sr = sema("extern var errno: i32;"
+  auto sr = sema("@extern errno : i32;"
                  "const f := fn () -> i32 { return errno; }");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
@@ -433,14 +432,14 @@ struct MultiModFixture : ::testing::Test {
 };
 
 TEST_F(MultiModFixture, LoadSingleModule) {
-  write("main.um", "pub const x: i32 = 0;");
+  write("main.um", "@pub const x: i32 = 0;");
   auto lr = load("main.um");
   ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error().msg);
   EXPECT_EQ(lr->size(), 1u);
 }
 
 TEST_F(MultiModFixture, LoadTwoModules) {
-  write("math.um", "pub const add := fn (a: i32, b: i32) -> i32 { return a; }");
+  write("math.um", "@pub const add := fn (a: i32, b: i32) -> i32 { return a; }");
   write("main.um", "import math;");
   auto lr = load("main.um");
   ASSERT_TRUE(lr.has_value()) << (lr.has_value() ? "" : lr.error().msg);
@@ -452,7 +451,7 @@ TEST_F(MultiModFixture, LoadTwoModules) {
 
 TEST_F(MultiModFixture, CrossModuleFunctionCall) {
   write("math.um", ""
-                   "pub const add := fn (a: i32, b: i32) -> i32 { return a; }");
+                   "@pub const add := fn (a: i32, b: i32) -> i32 { return a; }");
   write("main.um", ""
                    "import math;"
                    "const f := fn () -> i32 { return math::add(1, 2); }");
@@ -476,7 +475,7 @@ TEST_F(MultiModFixture, MissingModuleDetected) {
 
 TEST_F(MultiModFixture, CrossModuleTypeAlias) {
   write("types.um", ""
-                    "pub const Point: type = struct { x: i32, y: i32 }");
+                    "@pub const Point: type = struct { x: i32, y: i32 }");
   write("main.um", ""
                    "import types;"
                    "const Point := types::Point;"
@@ -488,7 +487,7 @@ TEST_F(MultiModFixture, CrossModuleTypeAlias) {
 TEST_F(MultiModFixture, NestedModulePath) {
   // game.ecs.world → game/ecs/world.um
   write("game/ecs/world.um", ""
-                             "pub const Entity: type = struct { id: u32 }");
+                             "@pub const Entity: type = struct { id: u32 }");
   write("main.um", ""
                    "import game.ecs.world => world;"
                    "const Entity := world::Entity;"
@@ -501,7 +500,7 @@ TEST_F(MultiModFixture, NestedModulePathImplicitAlias) {
   // import game.ecs.world  →  alias = "world" (last segment)
   write("game/ecs/world.um",
         ""
-        "pub const spawn := fn (id: u32) -> u32 { return id; }");
+        "@pub const spawn := fn (id: u32) -> u32 { return id; }");
   write("main.um", ""
                    "import game.ecs.world;"
                    "const f := fn () -> u32 { return world::spawn(1); }");
@@ -512,10 +511,10 @@ TEST_F(MultiModFixture, NestedModulePathImplicitAlias) {
 TEST_F(MultiModFixture, TransitiveDependency) {
   // main → mid → leaf: three levels, topological order verified
   write("leaf.um", ""
-                   "pub const val := fn () -> i32 { return 42; }");
+                   "@pub const val := fn () -> i32 { return 42; }");
   write("mid.um", ""
                   "import leaf;"
-                  "pub const double := fn () -> i32 { return leaf::val(); }");
+                  "@pub const double := fn () -> i32 { return leaf::val(); }");
   write("main.um", ""
                    "import mid;"
                    "const f := fn () -> i32 { return mid::double(); }");

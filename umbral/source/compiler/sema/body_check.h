@@ -656,7 +656,22 @@ struct BodyChecker {
             sema.node_symbol[n] = msym_id;
             const Symbol &msym = syms.get(msym_id);
             if (msym.generics_count == 0 && msym.sig.ret_type != 0) {
-              auto r = lowerer.lower(msym.sig.ret_type);
+              // lower the return type using the method's own module's TypeAst,
+              // not the caller's — they may differ for cross-module types.
+              std::optional<TypeLowerer> dep_ml;
+              if (msym.module_idx != module_idx && module_contexts &&
+                  msym.module_idx < module_contexts->size()) {
+                const ModuleContext &mctx = (*module_contexts)[msym.module_idx];
+                if (mctx.type_ast) {
+                  dep_ml.emplace(*mctx.type_ast, syms, interner, types);
+                  dep_ml->module_idx = msym.module_idx;
+                  dep_ml->module_contexts = module_contexts;
+                  dep_ml->current_ir = mctx.ir;
+                  dep_ml->import_map = mctx.import_map;
+                }
+              }
+              TypeLowerer &ml = dep_ml ? *dep_ml : lowerer;
+              auto r = ml.lower(msym.sig.ret_type);
               if (r) result = IType::from(*r);
             } else {
               result = IType::fresh(unifier.fresh()); // resolved at call site
@@ -671,23 +686,17 @@ struct BodyChecker {
                  tsym_ir.nodes.kind[tsym.type_node] == NodeKind::MetaBlock)) {
               // for MetaBlock (@gen type), evaluate to find the effective StructType
               NodeId effective_type_node = tsym.type_node;
-              if (tsym_ir.nodes.kind[tsym.type_node] == NodeKind::MetaBlock) {
-                // need a lowerer with type_subst populated to evaluate the block
-                // use a temporary lowerer to avoid polluting the current one
-              }
               u32 tsym_mod_for_fields = tsym.module_idx;
               std::optional<TypeLowerer> dep_fl_early;
-              {
-                if (tsym_mod_for_fields != module_idx && module_contexts &&
-                    tsym_mod_for_fields < module_contexts->size()) {
-                  const ModuleContext &mctx = (*module_contexts)[tsym_mod_for_fields];
-                  if (mctx.type_ast) {
-                    dep_fl_early.emplace(*mctx.type_ast, syms, interner, types);
-                    dep_fl_early->module_idx = tsym_mod_for_fields;
-                    dep_fl_early->module_contexts = module_contexts;
-                    dep_fl_early->current_ir = mctx.ir;
-                    dep_fl_early->import_map = mctx.import_map;
-                  }
+              if (tsym_mod_for_fields != module_idx && module_contexts &&
+                  tsym_mod_for_fields < module_contexts->size()) {
+                const ModuleContext &mctx = (*module_contexts)[tsym_mod_for_fields];
+                if (mctx.type_ast) {
+                  dep_fl_early.emplace(*mctx.type_ast, syms, interner, types);
+                  dep_fl_early->module_idx = tsym_mod_for_fields;
+                  dep_fl_early->module_contexts = module_contexts;
+                  dep_fl_early->current_ir = mctx.ir;
+                  dep_fl_early->import_map = mctx.import_map;
                 }
               }
               TypeLowerer &fl_eval = dep_fl_early ? *dep_fl_early : lowerer;

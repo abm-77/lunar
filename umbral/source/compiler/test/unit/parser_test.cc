@@ -10,18 +10,20 @@
 struct ParseFixture : ::testing::Test {
   Interner interner;
   KeywordTable kws;
+  IntrinsicTable intrinsics;
 
   // Keep the lex result alive so the Parser's TokenStream reference stays
   // valid.
   std::optional<Result<TokenStream>> lex_result;
   std::optional<Parser> p;
 
-  void SetUp() override { kws.init(interner); }
+  void SetUp() override {
+    kws.init(interner);
+    intrinsics.init(interner);
+  }
 
   Parser &parse(std::string_view src) {
     lex_result.emplace(lex_source(src, interner, kws));
-    IntrinsicTable intrinsics;
-    intrinsics.init(interner);
     p.emplace(lex_result->value(), intrinsics);
     return *p;
   }
@@ -93,7 +95,7 @@ TEST_F(ParseFixture, StructDecl) {
 }
 
 TEST_F(ParseFixture, PubStructDecl) {
-  auto &p = parse_mod("pub const Foo := struct { v: i32 }");
+  auto &p = parse_mod("@pub const Foo := struct { v: i32 }");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_TRUE(p.mod.decls[0].is_pub);
@@ -114,7 +116,7 @@ TEST_F(ParseFixture, FuncDeclNoParams) {
 }
 
 TEST_F(ParseFixture, PubFuncDecl) {
-  auto &p = parse_mod("pub const add := fn(a: i32, b: i32) -> i32 {}");
+  auto &p = parse_mod("@pub const add := fn(a: i32, b: i32) -> i32 {}");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_TRUE(p.mod.decls[0].is_pub);
@@ -128,7 +130,7 @@ TEST_F(ParseFixture, PubFuncDecl) {
 }
 
 TEST_F(ParseFixture, MultipleDecls) {
-  auto &p = parse_mod("const x := 1; var y: i32 = 2; pub const z := 3");
+  auto &p = parse_mod("const x := 1; var y: i32 = 2; @pub const z := 3");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 3u);
   EXPECT_EQ(p.mod.decls[0].kind, DeclKind::Const);

@@ -67,14 +67,16 @@ All declarations (functions, types, globals) are unified `const`/`var` bindings.
 ### Module Items
 
 ```
-module_item := ['pub'] 'import' path ['=>' ident] ';'
-             | ['pub'] ('const' | 'var') ident ['<' generic_params '>']
+module_item := 'import' path ['=>' ident] ';'
+             | annotation* ('const' | 'var') ident ['<' generic_params '>']
                    (':=' expr | [':' type] ['=' expr]) [';']
+             | '@extern' ident ':' type [';']
              | 'impl' ident ['<' ident (',' ident)* '>'] '{' impl_method* '}'
 
+annotation     := '@pub' | '@gen'
 path           := ident ('.' ident)*
 generic_params := ident ':' ('type' | type) (',' ident ':' ('type' | type))*
-impl_method    := ['pub'] ('const' | 'var') ident ':=' expr [';']
+impl_method    := ['@gen'] ('const' | 'var') ident ':=' expr [';']
 ```
 
 ```
@@ -93,11 +95,16 @@ const add := fn(a: i32, b: i32) -> i32 {
     return a + b;
 }
 
-# public function
-pub const greet := fn() -> void {}
+# public function — exported to importing modules
+@pub const greet := fn() -> void {}
 
-# function type alias — FnType expression (bare param types, no body)
+# extern declaration — symbol defined outside this module (e.g. in C runtime)
+@extern abs : fn(v: i32) -> i32;
+@extern errno : i32;
+
+# function type alias — FnType expression (param names optional, no body)
 const BinaryOp := fn(i32, i32) -> i32;
+const BinaryOpNamed := fn(a: i32, b: i32) -> i32;  # names discarded
 
 # var with explicit type and no initializer
 var counter: i32;
@@ -113,7 +120,7 @@ type := '&' ['mut'] type                             # reference
       | '[]' type                                    # slice: fat pointer { ptr, len }
       | '[' (int | ident) ']' type                  # array: [N]T
       | '(' type (',' type)+ ')'                    # tuple
-      | 'fn' '(' (type (',' type)*)? ')' '->' type  # function type
+      | 'fn' '(' ([ident ':'] type (',' [ident ':'] type)*)? ')' '->' type  # function type; param names optional
       | ident ['<' type (',' type)* '>']            # named type, optional generic args
 ```
 
@@ -155,25 +162,25 @@ const identity<T: type> := fn(x: T) -> T {
 
 ### impl Blocks
 
-Methods are defined in `impl` blocks. Instance methods take `&self` or `&mut self` as the first parameter. Static methods do not. All methods can be marked `pub`.
+Methods are defined in `impl` blocks. Instance methods take `&self` or `&mut self` as the first parameter. Static methods do not. Methods are always accessible from any module that can see the type — visibility lives on the type declaration, not on individual methods.
 
 ```
 impl Option<T> {
-    pub const create := fn(v: T) -> Option<T> {
+    const create := fn(v: T) -> Option<T> {
         return Option<T> { has_value = true, value = v };
     }
 
-    pub const none := fn() -> Option<T> {
+    const none := fn() -> Option<T> {
         return Option<T> { has_value = false };
     }
 }
 
 impl Array<T, N> {
-    pub const create := fn() -> Array<T, N> {
+    const create := fn() -> Array<T, N> {
         return Array<T, N> { data = [N]T{}, count = 0 };
     }
 
-    pub const push := fn(&mut self, v: T) -> void {
+    const push := fn(&mut self, v: T) -> void {
         if (self.count >= N) return;
         self.data[self.count] = v;
         self.count += 1;
@@ -382,7 +389,17 @@ Pass `--root <dir>` to `uc` to set the module root (defaults to the entry file's
 
 ### Built-in Intrinsics
 
-These are prefix `@` forms parsed specially by the compiler.
+All `@name` forms are intrinsics — there are no separate keywords for visibility or extern.
+
+**Declaration annotations** (appear before `const`/`var` at module level or in impl blocks):
+
+| Annotation | Description |
+|------------|-------------|
+| `@pub` | export this declaration; required for cross-module access |
+| `@gen` | enable compile-time metaprogramming in this declaration |
+| `@extern name : type` | declare an externally-defined symbol (no body emitted) |
+
+**Expression intrinsics** (used inside function bodies or type positions):
 
 | Intrinsic | Description |
 |-----------|-------------|
@@ -393,12 +410,16 @@ These are prefix `@` forms parsed specially by the compiler.
 | `@slice_cast(expr, T)` | reinterpret slice element type (same total bytes) |
 | `@iter(arr_or_slice)` | wrap array or slice in a runtime iterator for range-for |
 | `@site_id()` | compile-time call-site identifier → `u32` (used for allocation tagging) |
+| `@memcpy(dst, src, n)` | copy `n` bytes from `src` to `dst` |
+| `@memmov(dst, src, n)` | move `n` bytes (handles overlap) |
+| `@memset(dst, val, n)` | fill `n` bytes at `dst` with `val` |
+| `@memcmp(a, b, n)` | compare `n` bytes; returns `i32` (same as C `memcmp`) |
 
 ---
 
 ### Compile-Time Metaprogramming (`@gen`)
 
-`@gen` marks a declaration as a metaprogramming construct. Inside an `@gen` body, compile-time intrinsics (`@if`, `@assert`, `@for_fields`, `@field`) are available.
+`@gen` marks a declaration as a metaprogramming construct. Inside an `@gen` body, compile-time intrinsics (`@if`, `@assert`, `@fields`, `@field`) are available.
 
 #### `@gen` type — conditional struct shape
 
@@ -434,7 +455,7 @@ impl SmallVec<T, N> {
 
 Only the live branch is emitted in codegen; dead branches are discarded.
 
-#### `@for_fields` and `@field` — compile-time field iteration
+#### `@fields` and `@field` — compile-time field iteration
 
 ```
 const Player := struct {
@@ -461,7 +482,7 @@ const Vec2 := struct { x: i32, y: i32 };
 }
 ```
 
-`@for_fields(T)` is a compile-time-only iterator: the loop body is unrolled once per field at codegen time. `field.name` gives the field's name as `[]u8`; `@field(obj, field)` reads the field's value with its concrete type.
+`@fields(T)` is a compile-time-only iterator: the loop body is unrolled once per field at codegen time. `field.name` gives the field's name as `[]u8`; `@field(obj, field)` reads the field's value with its concrete type.
 
 ---
 
@@ -495,8 +516,85 @@ const slice := alloc.slice_mut();   # []i32, mutable view
 alloc.destroy();
 ```
 
+#### `sys.window` — window creation and lifecycle
+
+Requires a Vulkan-capable display. The produced binary is self-contained — no GLFW install needed on the target system.
+
+```
+import sys.window => window;
+
+var win := window::Window::create("My App", 1280, 720);
+
+for (; !win.should_close();) {
+    window::Window::poll_events();
+    # ...game loop...
+}
+
+win.destroy();
+```
+
+`Window` methods:
+
+| Method | Description |
+|--------|-------------|
+| `Window::create(title: []u8, width: i32, height: i32) -> Window` | create and show a window |
+| `Window::poll_events()` | process OS events; call once per frame (static) |
+| `win.should_close() -> bool` | true when the OS or user has requested close |
+| `win.request_close()` | programmatically set the close flag |
+| `win.destroy()` | destroy the window and release resources |
+
+#### `sys.input` — keyboard and mouse input
+
+Must import `sys.window` as well. Call `input::begin_frame` once per frame before any queries.
+
+```
+import sys.window => window;
+import sys.input => input;
+
+var win := window::Window::create("test", 640, 480);
+
+for (; !win.should_close();) {
+    window::Window::poll_events();
+    input::begin_frame(&win);
+
+    if (input::key_pressed(&win, input::Key::Space)) { ... }
+    if (input::mouse_pressed(&win, input::MouseButton::Left)) {
+        const x := input::mouse_x(&win);
+        const y := input::mouse_y(&win);
+    }
+}
+```
+
+Key query functions (all take `w: &Window` and a `Key`):
+
+| Function | Description |
+|----------|-------------|
+| `key_down(w, k)` | true while key is held |
+| `key_up(w, k)` | true while key is not held |
+| `key_pressed(w, k)` | true on the frame the key went down |
+| `key_released(w, k)` | true on the frame the key went up |
+
+Mouse button query functions (take `w: &Window` and a `MouseButton`): `mouse_down`, `mouse_up`, `mouse_pressed`, `mouse_released` — same semantics as key equivalents.
+
+Mouse position functions (take `w: &Window`):
+
+| Function | Return | Description |
+|----------|--------|-------------|
+| `mouse_x(w)` | `f64` | cursor X in window pixels |
+| `mouse_y(w)` | `f64` | cursor Y in window pixels |
+| `mouse_delta_x(w)` | `f64` | X movement since last frame |
+| `mouse_delta_y(w)` | `f64` | Y movement since last frame |
+| `mouse_wheel_x(w)` | `f32` | horizontal scroll delta this frame |
+| `mouse_wheel_y(w)` | `f32` | vertical scroll delta this frame |
+
+**`Key` variants:** `Unknown`, `A`–`Z`, `Num0`–`Num9`, `Space`, `Enter`, `Tab`, `Backspace`, `Escape`, `Left`, `Right`, `Up`, `Down`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, modifier keys (`LeftShift`, `RightShift`, `LeftControl`, `RightControl`, `LeftAlt`, `RightAlt`, `LeftSuper`, `RightSuper`), punctuation, `F1`–`F12`, keypad keys (`Kp0`–`Kp9`, `KpDecimal`, `KpDivide`, `KpMultiply`, `KpSubtract`, `KpAdd`, `KpEnter`), `Count`.
+
+**`MouseButton` variants:** `Unknown`, `Left`, `Right`, `Middle`, `Count`.
+
 ---
 
 ## Keywords
 
-`fn` `const` `var` `mut` `if` `else` `for` `return` `struct` `enum` `type` `impl` `import` `pub` `true` `false` `as` `self`
+`fn` `const` `var` `mut` `if` `else` `for` `return` `struct` `enum` `type` `impl` `import` `true` `false` `as` `self`
+
+`pub` and `extern` are **not** keywords — they are `@pub` and `@extern` intrinsic annotations.

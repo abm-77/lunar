@@ -108,7 +108,6 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       Symbol s;
       s.kind = SymbolKind::Func;
       s.name = m.name;
-      s.is_pub = m.is_pub;
       s.span = m.span;
       s.module_idx = module_idx;
       u32 idx = ir.nodes.a[m.init];

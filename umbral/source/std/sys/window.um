@@ -1,0 +1,42 @@
+@pub const WindowHandle := u64;
+
+@extern rt_window_create : fn(title: []u8, width: i32, height: i32) -> WindowHandle;
+@extern rt_window_destroy : fn(h: WindowHandle) -> void;
+@extern rt_window_poll_events : fn() -> void;
+@extern rt_window_should_close : fn(h: WindowHandle) -> bool;
+@extern rt_window_request_close : fn(h: WindowHandle) -> void;
+
+@pub const Window := struct {
+  handle: WindowHandle,
+  width: i32,
+  height: i32,
+};
+
+impl Window {
+  const create := fn (title: []u8, width: i32, height: i32) -> Window {
+    const h := rt_window_create(title, width, height);
+    @assert(h != 0, "failed to create window");
+
+    return Window {
+      handle = h,
+      width = width,
+      height = height,
+    };
+  }
+
+  const destroy := fn(&mut self) -> void {
+    rt_window_destroy(self.handle);
+  }
+
+  const poll_events := fn() -> void {
+    rt_window_poll_events();
+  }
+
+  const should_close := fn(&self) -> bool {
+    return rt_window_should_close(self.handle);
+  }
+
+  const request_close := fn(&self) -> void {
+    rt_window_request_close(self.handle);
+  }
+}

@@ -1,6 +1,6 @@
 import sys.mem => mem;
 
-pub const List<T: type> := struct {
+@pub const List<T: type> := struct {
   alloc: mem::Alloc<T>,
   len: u64,
 };

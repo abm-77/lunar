@@ -1,17 +1,17 @@
-pub const Option<T: type> := struct {
+@pub const Option<T: type> := struct {
   has_value: bool,
   value: T,
 }
 
 impl Option<T> {
-  pub const create := fn(v: T) -> Option<T> {
+  const create := fn(v: T) -> Option<T> {
     return Option<T> {
         has_value = true,
         value = v,
     };
   }
 
-  pub const none := fn() -> Option<T> {
+  const none := fn() -> Option<T> {
     return Option<T> {
         has_value = false,
     };

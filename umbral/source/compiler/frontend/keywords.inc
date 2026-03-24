@@ -10,11 +10,9 @@
   X(Type, "type")                                                              \
   X(Impl, "impl")                                                              \
   X(Import, "import")                                                          \
-  X(Pub, "pub")                                                                \
   X(True_, "true")                                                             \
   X(False_, "false")                                                          \
   X(Var, "var")                                                               \
   X(Where, "where")                                                               \
   X(Enum, "enum")                                                             \
-  X(Self_, "self")                                                             \
-  X(Extern, "extern")
+  X(Self_, "self")

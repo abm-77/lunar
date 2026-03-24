@@ -10,6 +10,8 @@
   X(MemMov,    "memmov")     \
   X(MemSet,    "memset")     \
   X(MemCmp,    "memcmp")     \
+  X(Pub,        "pub")        \
+  X(Extern,     "extern")    \
   X(MetaGen,    "gen")       \
   X(MetaElseIf, "else_if")   \
   X(MetaFields, "fields")    \

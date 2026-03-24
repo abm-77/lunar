@@ -2,7 +2,7 @@
 
 # @slice_cast(expr, T) — pure type-level reinterpret of a slice
 
-extern get_bytes() -> []u8;
+@extern get_bytes : fn() -> []u8;
 
 const main := fn() -> void {
   const raw    := get_bytes();

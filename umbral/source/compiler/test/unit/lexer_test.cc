@@ -76,7 +76,6 @@ TEST(KeywordTable, AllKeywordsRecognised) {
     {"type",   TokenKind::KwType},
     {"impl",   TokenKind::KwImpl},
     {"import", TokenKind::KwImport},
-    {"pub",    TokenKind::KwPub},
     {"true",   TokenKind::KwTrue_},
     {"false",  TokenKind::KwFalse_},
     {"var",    TokenKind::KwVar},
@@ -213,7 +212,6 @@ TEST_F(LexFixture, KeywordsProduceKwTokens) {
   EXPECT_EQ(kinds("else")[0],   TokenKind::KwElse);
   EXPECT_EQ(kinds("return")[0], TokenKind::KwReturn);
   EXPECT_EQ(kinds("struct")[0], TokenKind::KwStruct);
-  EXPECT_EQ(kinds("pub")[0],    TokenKind::KwPub);
   EXPECT_EQ(kinds("true")[0],   TokenKind::KwTrue_);
   EXPECT_EQ(kinds("false")[0],  TokenKind::KwFalse_);
   EXPECT_EQ(kinds("var")[0],    TokenKind::KwVar);
@@ -451,13 +449,13 @@ TEST_F(LexFixture, SimpleDeclaration) {
 
 TEST_F(LexFixture, FunctionSignature) {
   using TK = TokenKind;
-  auto k = kinds("pub fn add(a: i32, b: i32) -> i32");
+  auto k = kinds("@pub const add := fn(a: i32, b: i32) -> i32 {}");
   std::vector<TK> expected = {
-    TK::KwPub, TK::KwFn, TK::Ident,
-    TK::LParen,
+    TK::At, TK::Ident, TK::KwConst, TK::Ident, TK::ColonEqual,
+    TK::KwFn, TK::LParen,
     TK::Ident, TK::Colon, TK::Ident, TK::Comma,
     TK::Ident, TK::Colon, TK::Ident,
-    TK::RParen, TK::Arrow, TK::Ident,
+    TK::RParen, TK::Arrow, TK::Ident, TK::LBrace, TK::RBrace,
   };
   EXPECT_EQ(k, expected);
 }

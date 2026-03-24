@@ -1,26 +1,52 @@
 # TODO
-- [ ] add metaprogramming pass in meta/
-  - [ ] lowers high-level intrinsics: 
-    - [ ] @gen
+- [ ] add gfx runtime support
+  - [ ] open windows
+  - [ ] create shaders
+  - [ ] draw to screen 
+- [ ] add audio runtime support
+  - [ ] play sounds 
+  - [ ] mix audio 
+- [ ] add file i/o runtime support
+  - [ ] read files
+  - [ ] write files
+  - [ ] more print variants (sprintf, fprintf, etc);
+- [ ] builtin @asset management
+  - [ ] @asset is a builtin that embeds an asset within 
+        the produced executable
+  - [ ] we need to create a pseudo file system for asset management
+  - [ ] compression ?
+  - [ ] asset atlas
+  - [ ] handle tracking
+- [ ] get gamepad input
+
+03/23/26
+- [x] add input runtime support
+  - [x] get keyboard input 
+  - [x] get mouse input
+- [x] memory intrinsics
+   - [x] @memmov
+   - [x] @memcpy
+   - [x] @memset
+   - [x] @memcmp
+
+03/22/26
+- [x] flesh out meta/
+  - [x] lowers high-level intrinsics: 
+    - [x] @gen
       A @gen is an annotation applied to a construct to enable compile-time metaprogramming.
       @gen can be applied to a type declaration to enable the production of a different type based on compile conditions.
       @gen can be applied to impl to access compile-time generation inside the impl block
-    - [ ] @for_fields(struct)
+    - [x] @for_fields(struct)
       Can only appear in an @gen block. iterates over fields of struct
-    - [ ] @field(s, f)
+    - [x] @field(s, f)
       access field f of struct s
-    - [ ] @if, @else_if, @else
-    - [ ] @assert
-    - [ ] @println(fmt: []u8, ...) -> sys.io.fmt::println(fmt: []u8, []sys.io.fmt::Arg)
-  - [ ] desugar:
-    - [ ] handle obj.method(...) -> Obj::method(&obj) desugar
-- [ ] optimize slab allocator
-  - [ ] implement slab cache
-    - [ ] keep up to MAX_CACHED_SLABS slabs cached (munmap the others)
-    - [ ] use madvise(DONTNEED) to drop physical pages but keep mapping
-  - [ ] run benchmarks
-
-03/22/26
+    - [x] @if, @else_if, @else
+    - [x] @assert
+- [x] remove metapgramming stuff from sema and put it in its own module
+- [x] optimize slab allocator
+  - [x] implement slab cache
+    - [x] keep up to MAX_CACHED_SLABS slabs cached (munmap the others)
+    - [x] use madvise(DONTNEED) to drop physical pages but keep mapping
 - [x] accept initializing an array from a slice []T{...}, the array owns the data 
 - [x] allow implicit conversion of array to slice
       this enables:

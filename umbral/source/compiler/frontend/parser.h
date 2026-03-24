@@ -210,6 +210,8 @@ private:
       std::vector<u32> params;
       if (!match(TokenKind::RParen)) {
         do {
+          // allow optional "name:" prefix for readability (name is discarded)
+          if (at(TokenKind::Ident) && k(1) == TokenKind::Colon) i += 2;
           params.push_back(parse_type());
         } while (match(TokenKind::Comma));
         expect(TokenKind::RParen, "expected ')'");
@@ -1154,17 +1156,14 @@ private:
       impl_block.generic_params = std::move(impl_generics);
       while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
         auto ms = sp();
-        // optional @gen annotation before pub/const/var
+        // optional @gen annotation before const/var
         bool is_gen_method = false;
-        if (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+        while (at(TokenKind::At) && k(1) == TokenKind::Ident) {
           SymId iname = static_cast<SymId>(t.payload[i + 1]);
           auto ikind = intrinsics.lookup(iname);
-          if (ikind && *ikind == IntrinsicKind::MetaGen) {
-            is_gen_method = true;
-            i += 2; // consume '@gen'
-          }
+          if (ikind && *ikind == IntrinsicKind::MetaGen) { is_gen_method = true; i += 2; }
+          else break;
         }
-        bool is_pub_method = match(TokenKind::KwPub);
         DeclKind mkind;
         if (match(TokenKind::KwConst)) mkind = DeclKind::Const;
         else if (match(TokenKind::KwVar)) mkind = DeclKind::Var;
@@ -1195,7 +1194,7 @@ private:
         match(TokenKind::Semicolon); // optional
         Span mend = {ms.start, t.end[i - 1]};
         impl_block.methods.push_back(
-            {mname, mty, minit, 0, 0, is_pub_method, false, is_gen_method, mkind, mend});
+            {mname, mty, minit, 0, 0, false, false, is_gen_method, mkind, mend});
       }
       expect(TokenKind::RBrace, "expected '}'");
       match(TokenKind::Semicolon); // optional trailing ';'
@@ -1204,42 +1203,26 @@ private:
       return;
     }
 
-    // optional @gen annotation before pub/extern/const/var
-    bool is_gen = false;
-    if (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+    // consume leading annotations: @pub, @gen, @extern
+    bool is_pub = false, is_gen = false;
+    while (at(TokenKind::At) && k(1) == TokenKind::Ident) {
       SymId iname = static_cast<SymId>(t.payload[i + 1]);
       auto ikind = intrinsics.lookup(iname);
-      if (ikind && *ikind == IntrinsicKind::MetaGen) {
-        is_gen = true;
-        i += 2; // consume '@gen'
+      if (!ikind) break;
+      if (*ikind == IntrinsicKind::Pub) { is_pub = true; i += 2; }
+      else if (*ikind == IntrinsicKind::MetaGen) { is_gen = true; i += 2; }
+      else if (*ikind == IntrinsicKind::Extern) {
+        i += 2; // consume '@extern'
+        // @extern name : type ;
+        SymId ename = expect_ident("expected extern declaration name");
+        expect(TokenKind::Colon, "expected ':'");
+        TypeId ty = parse_type();
+        match(TokenKind::Semicolon);
+        Span endsp = {s.start, t.end[i - 1]};
+        mod.decls.push_back({ename, ty, 0, 0, 0, is_pub, true, false, DeclKind::Const, endsp});
+        return;
       }
-    }
-    bool is_pub = match(TokenKind::KwPub);
-    bool is_extern = match(TokenKind::KwExtern);
-
-    // extern shorthand: extern name(params) -> ret;
-    if (is_extern && at(TokenKind::Ident) && k(1) == TokenKind::LParen) {
-      SymId ename = expect_ident("expected function name");
-      expect(TokenKind::LParen, "expected '('");
-      std::vector<TypeId> param_types;
-      if (!match(TokenKind::RParen)) {
-        do {
-          expect_ident("expected param name");
-          expect(TokenKind::Colon, "expected ':'");
-          param_types.push_back(parse_type());
-        } while (match(TokenKind::Comma));
-        expect(TokenKind::RParen, "expected ')'");
-      }
-      expect(TokenKind::Arrow, "expected '->'");
-      TypeId ret = parse_type();
-      auto [ls, cnt] =
-          type_ast.push_list(param_types.data(), param_types.size());
-      Span endsp = {s.start, t.end[i - 1]};
-      TypeId fn_type = type_ast.make(TypeKind::Fn, endsp, ret, ls, cnt);
-      match(TokenKind::Semicolon);
-      mod.decls.push_back(
-          {ename, fn_type, 0, 0, 0, is_pub, true, false, DeclKind::Const, endsp});
-      return;
+      else break;
     }
 
     // import <path> [=> <ident>] ;
@@ -1273,8 +1256,8 @@ private:
     }
     TypeId ty = 0;
     NodeId init = 0;
-    // module-level function shorthand: [pub] const/var name[<...>](params) [-> ret] { body }
-    if (!is_extern && at(TokenKind::LParen)) {
+    // module-level function shorthand: const/var name[<...>](params) [-> ret] { body }
+    if (at(TokenKind::LParen)) {
       expect(TokenKind::LParen, "expected '('");
       auto [ps, pc] = parse_fn_params();
       TypeId ret = 0;
@@ -1289,11 +1272,7 @@ private:
                            is_pub, false, is_gen, kind, endsp});
       return;
     }
-    if (is_extern) {
-      // extern declarations require an explicit type annotation and no body.
-      expect(TokenKind::Colon, "expected ':' after extern declaration name");
-      ty = parse_type();
-    } else if (match(TokenKind::ColonEqual)) {
+    if (match(TokenKind::ColonEqual)) {
       init = parse_expr();
     } else {
       if (match(TokenKind::Colon)) ty = parse_type();
@@ -1302,6 +1281,6 @@ private:
     match(TokenKind::Semicolon); // optional at module level
     Span endsp = {s.start, t.end[i - 1]};
     mod.decls.push_back(
-        {name, ty, init, generics_start, generics_count, is_pub, is_extern, is_gen, kind, endsp});
+        {name, ty, init, generics_start, generics_count, is_pub, false, is_gen, kind, endsp});
   }
 };

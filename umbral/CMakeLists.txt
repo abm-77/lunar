@@ -25,6 +25,7 @@ find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 add_library(runtime STATIC
 ./source/runtime/fmt.c
 ./source/runtime/mem.c
+./source/runtime/window.c
 )
 target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
@@ -46,7 +47,7 @@ endif()
 
 if(UNIX AND NOT APPLE)
 target_link_libraries(runtime PUBLIC
-dl pthread X11 Xrandr Xi Xxf86vm Xcursor m
+dl pthread X11 Xrandr Xi Xcursor m
 )
 endif()
 
@@ -62,10 +63,23 @@ add_custom_command(
   COMMENT "Embedding libruntime.a into uc"
 )
 
+# ---- Embed libglfw3.a into uc as a byte array ----
+add_custom_command(
+  OUTPUT ${CMAKE_BINARY_DIR}/glfw_blob.cc
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=${GLFW_LIB}
+    -DOUTPUT=${CMAKE_BINARY_DIR}/glfw_blob.cc
+    -DSYMBOL=umbral_glfw_blob
+    -P ${CMAKE_SOURCE_DIR}/cmake/embed_blob.cmake
+  DEPENDS ${GLFW_LIB}
+  COMMENT "Embedding libglfw3.a into uc"
+)
+
 # ---- compiler binary ----
 add_executable(uc
   ./source/compiler/main.cc
   ${CMAKE_BINARY_DIR}/runtime_blob.cc
+  ${CMAKE_BINARY_DIR}/glfw_blob.cc
 )
 
 # LLVM include/defs
@@ -131,6 +145,24 @@ target_include_directories(runtime_tests PRIVATE ./source/runtime)
 target_compile_definitions(runtime_tests PRIVATE UM_TESTING=1)
 target_link_libraries(runtime_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(runtime_tests)
+
+add_executable(fmt_tests
+  ./source/runtime/test/fmt_test.cc
+  ./source/runtime/fmt.c
+)
+target_include_directories(fmt_tests PRIVATE ./source/runtime)
+target_link_libraries(fmt_tests PRIVATE GTest::gtest_main)
+gtest_discover_tests(fmt_tests)
+
+add_executable(window_tests
+  ./source/runtime/test/window_test.cc
+  ./source/runtime/test/window_test_stubs.c
+  ./source/runtime/window.c
+)
+target_include_directories(window_tests PRIVATE "${GLFW_INCLUDE_DIR}" ./source/runtime)
+target_compile_definitions(window_tests PRIVATE UM_TESTING=1 UM_DEBUG=0)
+target_link_libraries(window_tests PRIVATE GTest::gtest_main)
+gtest_discover_tests(window_tests)
 
 # lit functional tests
 set(FILECHECK "${CMAKE_SOURCE_DIR}/../build/_b_llvm/bin/FileCheck" CACHE PATH "Path to FileCheck binary" FORCE)

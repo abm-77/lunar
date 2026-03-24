@@ -1,6 +1,6 @@
 # RUN: %uc %s --dump-ir | %FileCheck %s
 
-extern const rt_fmt_print_line: fn([]u8, []i32) -> void;
+@extern rt_fmt_print_line : fn([]u8, []i32) -> void;
 
 const make_arr := fn() -> [3]i32 {
   return [3]i32{ 1, 2, 3 };

@@ -1086,33 +1086,10 @@ struct FuncEmitter {
     }
   }
 
-  llvm::Value *emit_path(NodeId n) {
-    // path nodes: either a sema-resolved function/method, or an enum variant
-    // (sema leaves node_symbol == 0 for enum variants).
-    u32 seg_start = ir.nodes.b[n];
-    u32 seg_count = ir.nodes.c[n];
-
-    SymbolId sym_id = bsema.node_symbol[n];
-    if (sym_id != 0) {
-      // sema resolved it — static method or cross-module function.
-      auto it = cg.fn_map.find(sym_id);
-      assert(it != cg.fn_map.end() && "resolved path symbol not in fn_map");
-      return it->second;
-    }
-
-    // enum variant: look up the enum type from the first segment and find the
-    // variant index by name from the last segment.
-    assert(seg_count >= 2 && "unresolved Path must have >= 2 segments");
-    SymId enum_name = ir.nodes.list[seg_start];
-    SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
-
-    SymbolId enum_sid = cg.sema.syms.lookup(sym.module_idx, enum_name);
-    assert(enum_sid != kInvalidSymbol && "enum type not found");
-    const Symbol &esym = cg.sema.syms.symbols[enum_sid];
+  llvm::Value *emit_enum_variant(const Symbol &esym, SymId variant_name) {
     const BodyIR &enum_ir = cg.modules[esym.module_idx].ir;
     assert(enum_ir.nodes.kind[esym.type_node] == NodeKind::EnumType &&
-           "first Path segment is not an enum type");
-
+           "path type symbol is not an enum");
     u32 vs = enum_ir.nodes.b[esym.type_node];
     u32 vn = enum_ir.nodes.c[esym.type_node];
     for (u32 i = 0; i < vn; ++i) {
@@ -1120,8 +1097,39 @@ struct FuncEmitter {
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()),
                                       i);
     }
-    assert(false && "enum variant not found in type");
+    assert(false && "enum variant not found");
     return nullptr;
+  }
+
+  llvm::Value *emit_path(NodeId n) {
+    // path nodes: either a sema-resolved function/method, or an enum variant
+    // (sema leaves node_symbol == 0 for same-module enum variants).
+    u32 seg_start = ir.nodes.b[n];
+    u32 seg_count = ir.nodes.c[n];
+
+    SymbolId sym_id = bsema.node_symbol[n];
+    if (sym_id != 0) {
+      // sema resolved it — static method, cross-module function, or cross-module
+      // enum type (when the path is module::Enum::Variant and Variant is not a
+      // method). in the last case sym_id points to the Type symbol, not fn_map.
+      auto it = cg.fn_map.find(sym_id);
+      if (it != cg.fn_map.end()) return it->second;
+
+      // sym_id is a Type symbol: cross-module enum variant reference.
+      const Symbol &esym = cg.sema.syms.symbols[sym_id];
+      SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
+      return emit_enum_variant(esym, variant_name);
+    }
+
+    // same-module enum variant: first segment names the enum type, last names
+    // the variant.
+    assert(seg_count >= 2 && "unresolved Path must have >= 2 segments");
+    SymId enum_name = ir.nodes.list[seg_start];
+    SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
+
+    SymbolId enum_sid = cg.sema.syms.lookup(sym.module_idx, enum_name);
+    assert(enum_sid != kInvalidSymbol && "enum type not found");
+    return emit_enum_variant(cg.sema.syms.symbols[enum_sid], variant_name);
   }
 
   // returns a pointer to the storage location (not a loaded value).
