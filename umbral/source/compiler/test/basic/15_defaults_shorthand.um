@@ -2,7 +2,7 @@
 
 # Default parameters and method shorthand.
 
-@extern abs : fn(x: i32) -> i32;
+@extern const abs : fn(x: i32) -> i32;
 
 const Counter := struct {
   value: i32,

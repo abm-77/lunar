@@ -49,21 +49,21 @@ const Window := window::Window;
   Count,
 }
 
-@extern rt_input_begin_frame    : fn(h: WindowHandle) -> void;
-@extern rt_get_mouse_x          : fn(h: WindowHandle) -> f64;
-@extern rt_get_mouse_y          : fn(h: WindowHandle) -> f64;
-@extern rt_get_mouse_delta_x    : fn(h: WindowHandle) -> f64;
-@extern rt_get_mouse_delta_y    : fn(h: WindowHandle) -> f64;
-@extern rt_get_mouse_wheel_x    : fn(h: WindowHandle) -> f32;
-@extern rt_get_mouse_wheel_y    : fn(h: WindowHandle) -> f32;
-@extern rt_get_key_down              : fn(h: WindowHandle, k: Key) -> bool;
-@extern rt_get_key_up                : fn(h: WindowHandle, k: Key) -> bool;
-@extern rt_get_key_pressed           : fn(h: WindowHandle, k: Key) -> bool;
-@extern rt_get_key_released          : fn(h: WindowHandle, k: Key) -> bool;
-@extern rt_get_mouse_button_down     : fn(h: WindowHandle, b: MouseButton) -> bool;
-@extern rt_get_mouse_button_up       : fn(h: WindowHandle, b: MouseButton) -> bool;
-@extern rt_get_mouse_button_pressed  : fn(h: WindowHandle, b: MouseButton) -> bool;
-@extern rt_get_mouse_button_released : fn(h: WindowHandle, b: MouseButton) -> bool;
+@extern const rt_input_begin_frame    : fn(h: WindowHandle) -> void;
+@extern const rt_get_mouse_x          : fn(h: WindowHandle) -> f64;
+@extern const rt_get_mouse_y          : fn(h: WindowHandle) -> f64;
+@extern const rt_get_mouse_delta_x    : fn(h: WindowHandle) -> f64;
+@extern const rt_get_mouse_delta_y    : fn(h: WindowHandle) -> f64;
+@extern const rt_get_mouse_wheel_x    : fn(h: WindowHandle) -> f32;
+@extern const rt_get_mouse_wheel_y    : fn(h: WindowHandle) -> f32;
+@extern const rt_get_key_down              : fn(h: WindowHandle, k: Key) -> bool;
+@extern const rt_get_key_up                : fn(h: WindowHandle, k: Key) -> bool;
+@extern const rt_get_key_pressed           : fn(h: WindowHandle, k: Key) -> bool;
+@extern const rt_get_key_released          : fn(h: WindowHandle, k: Key) -> bool;
+@extern const rt_get_mouse_button_down     : fn(h: WindowHandle, b: MouseButton) -> bool;
+@extern const rt_get_mouse_button_up       : fn(h: WindowHandle, b: MouseButton) -> bool;
+@extern const rt_get_mouse_button_pressed  : fn(h: WindowHandle, b: MouseButton) -> bool;
+@extern const rt_get_mouse_button_released : fn(h: WindowHandle, b: MouseButton) -> bool;
 
 # call once per frame before querying input state
 @pub const begin_frame := fn(w: &Window) -> void {

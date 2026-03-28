@@ -2,8 +2,8 @@
 
 # extern declarations: functions and globals defined outside the module.
 
-@extern abs : fn(i32) -> i32;
-@extern errno : i32;
+@extern const abs : fn(i32) -> i32;
+@extern const errno : i32;
 
 const main := fn() -> void {
   var x := abs(-5);

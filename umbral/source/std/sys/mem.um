@@ -5,9 +5,9 @@
   len: u64,
 };
 
-@extern rt_alloc : fn(size: u64, align: u64, tag: u32, site: u32) -> AllocHandle;
-@extern rt_free : fn(handle: AllocHandle, site: u32) -> void;
-@extern rt_slice_from_alloc : fn(handle: AllocHandle, elem_size: u64, elem_align: u64, requested_len: u64, site_id: u32, mut_flag: u32) -> []u8;
+@extern const rt_alloc : fn(size: u64, align: u64, tag: u32, site: u32) -> AllocHandle;
+@extern const rt_free : fn(handle: AllocHandle, site: u32) -> void;
+@extern const rt_slice_from_alloc : fn(handle: AllocHandle, elem_size: u64, elem_align: u64, requested_len: u64, site_id: u32, mut_flag: u32) -> []u8;
 
 impl Alloc<T> {
   const create(len: u64, tag: u32 = 0, site_id : u32 = @site_id()) -> Alloc<T> {

@@ -141,7 +141,7 @@ TEST_F(SemaFixture, CollectImplMethodHasImplOwner) {
 }
 
 TEST_F(SemaFixture, CollectExternFunc) {
-  parse("@extern abs : fn(i32) -> i32;");
+  parse("@extern const abs : fn(i32) -> i32;");
   SymbolTable table;
   auto err = collect_module_symbols(parser->mod, parser->body_ir,
                                     parser->type_ast, 0, table, "");
@@ -157,7 +157,7 @@ TEST_F(SemaFixture, CollectExternFunc) {
 }
 
 TEST_F(SemaFixture, CollectExternGlobalVar) {
-  parse("@extern errno : i32;");
+  parse("@extern const errno : i32;");
   SymbolTable table;
   auto err = collect_module_symbols(parser->mod, parser->body_ir,
                                     parser->type_ast, 0, table, "");
@@ -171,7 +171,7 @@ TEST_F(SemaFixture, CollectExternGlobalVar) {
 }
 
 TEST_F(SemaFixture, CollectExternConst) {
-  parse("@extern EINVAL : i32;");
+  parse("@extern const EINVAL : i32;");
   SymbolTable table;
   auto err = collect_module_symbols(parser->mod, parser->body_ir,
                                     parser->type_ast, 0, table, "");
@@ -354,7 +354,7 @@ TEST_F(SemaFixture, SemaMethodCall) {
 }
 
 TEST_F(SemaFixture, SemaExternFuncCallable) {
-  auto sr = sema("@extern abs : fn(i32) -> i32;"
+  auto sr = sema("@extern const abs : fn(i32) -> i32;"
                  "const f := fn () -> i32 { return abs(-1); }");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
@@ -362,13 +362,13 @@ TEST_F(SemaFixture, SemaExternFuncCallable) {
 TEST_F(SemaFixture, SemaExternFuncReturnTypeFlows) {
   // The return type of the extern call must unify with the declared return
   // type.
-  auto sr = sema("@extern neg : fn(i32) -> i32;"
+  auto sr = sema("@extern const neg : fn(i32) -> i32;"
                  "const f := fn () -> i32 { return neg(5); }");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 
 TEST_F(SemaFixture, SemaExternGlobalReadable) {
-  auto sr = sema("@extern errno : i32;"
+  auto sr = sema("@extern const errno : i32;"
                  "const f := fn () -> i32 { return errno; }");
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }

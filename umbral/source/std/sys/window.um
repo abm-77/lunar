@@ -1,10 +1,10 @@
 @pub const WindowHandle := u64;
 
-@extern rt_window_create : fn(title: []u8, width: i32, height: i32) -> WindowHandle;
-@extern rt_window_destroy : fn(h: WindowHandle) -> void;
-@extern rt_window_poll_events : fn() -> void;
-@extern rt_window_should_close : fn(h: WindowHandle) -> bool;
-@extern rt_window_request_close : fn(h: WindowHandle) -> void;
+@extern const rt_window_create : fn(title: []u8, width: i32, height: i32) -> WindowHandle;
+@extern const rt_window_destroy : fn(h: WindowHandle) -> void;
+@extern const rt_window_poll_events : fn() -> void;
+@extern const rt_window_should_close : fn(h: WindowHandle) -> bool;
+@extern const rt_window_request_close : fn(h: WindowHandle) -> void;
 
 @pub const Window := struct {
   handle: WindowHandle,
