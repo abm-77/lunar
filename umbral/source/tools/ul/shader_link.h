@@ -5,10 +5,28 @@
 #include <unordered_map>
 #include <vector>
 
+// return a pointer to the first element of v satisfying pred, or nullptr.
+template <typename T, typename Pred>
+const T *find_ptr(const std::vector<T> &v, Pred pred) {
+  for (const T &e : v)
+    if (pred(e)) return &e;
+  return nullptr;
+}
+
 enum IOKind : u8 {
   None,
   Location,
   Position,
+};
+
+// mirrors ShaderFieldKind in compiler/frontend/module.h
+enum ShaderFieldKind : u8 {
+  SFKIND_NONE      = 0,
+  SFKIND_VS_IN     = 1,
+  SFKIND_VS_OUT    = 2,
+  SFKIND_FS_IN     = 3,
+  SFKIND_FS_OUT    = 4,
+  SFKIND_DRAW_DATA = 5,
 };
 
 struct PodField {
@@ -60,10 +78,23 @@ struct StageInfo {
   StageBody body;
 };
 
+struct ShaderFnParam {
+  uint32_t sym_id;    // interner SymId; matches Ident nodes in the body
+  std::string type_name; // e.g. "f32", "vec2"
+};
+
+struct ShaderFnInfo {
+  std::string shader_type_name;
+  std::string method_name;
+  std::vector<ShaderFnParam> params; // explicit params only; self is omitted (globals)
+  StageBody body;
+};
+
 struct Sidecar {
   std::string module_name;
   std::vector<PodType> pods;
   std::vector<ShaderType> shaders;
+  std::vector<ShaderFnInfo> shader_fns;
   std::vector<StageInfo> stages;
 };
 

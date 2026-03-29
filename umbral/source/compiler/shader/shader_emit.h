@@ -68,7 +68,17 @@ static inline void serialize_body_ir(UmshadersWriter &w, const LoadedModule &lm,
     w.u32(ir.nodes.span_s[i]);
     w.u32(ir.nodes.span_e[i]);
     w.u32(ir.nodes.a[i]);
-    w.u32(ir.nodes.b[i]);
+    // ShaderFrameRead.b is a compiler-internal TypeId; translate to SymId
+    // (the interned name of T) so the asset linker can resolve it via sym_names.
+    uint32_t b_out = ir.nodes.b[i];
+    if (static_cast<NodeKind>(ir.nodes.kind[i]) == NodeKind::ShaderFrameRead) {
+      TypeId tid = static_cast<TypeId>(b_out);
+      b_out = (tid > 0 && tid < lm.type_ast.kind.size() &&
+               lm.type_ast.kind[tid] == TypeKind::Named)
+                  ? static_cast<uint32_t>(lm.type_ast.a[tid])
+                  : 0;
+    }
+    w.u32(b_out);
     w.u32(ir.nodes.c[i]);
   }
 
@@ -97,11 +107,30 @@ static inline void serialize_body_ir(UmshadersWriter &w, const LoadedModule &lm,
   // sym_names: collect all SymIds that appear in SymId-bearing node fields
   std::unordered_set<SymId> sym_id_set;
   collect_sym_ids(ir, sym_id_set);
+  // ShaderFrameRead.b is written as a SymId (translated above); ensure it's in the table
+  for (uint32_t i = 1; i < node_count; ++i) {
+    if (static_cast<NodeKind>(ir.nodes.kind[i]) == NodeKind::ShaderFrameRead) {
+      TypeId tid = static_cast<TypeId>(ir.nodes.b[i]);
+      if (tid > 0 && tid < lm.type_ast.kind.size() &&
+          lm.type_ast.kind[tid] == TypeKind::Named)
+        sym_id_set.insert(lm.type_ast.a[tid]);
+    }
+  }
   w.u32(static_cast<uint32_t>(sym_id_set.size()));
   for (SymId sid : sym_id_set) {
     w.u32(sid);
     w.str(interner.view(sid));
   }
+}
+
+// resolve a TypeId to a shader type name string ("f32", "vec2", etc.).
+// returns "" for reference types (self params) and unrecognized types.
+static inline std::string shader_type_name_for(TypeId tid, const TypeAst &ta,
+                                               const Interner &interner) {
+  if (tid == 0) return "";
+  TypeKind k = ta.kind[tid];
+  if (k == TypeKind::Named) return std::string(interner.view(ta.a[tid]));
+  return ""; // Ref (self), Slice, Array, etc. — not serialized as params
 }
 
 // write one .umshaders file per module that has shader decls.
@@ -116,6 +145,7 @@ inline void emit_umshaders(const std::vector<LoadedModule> &modules,
 
     // skip modules with no shader content
     bool has_shaders = !mod.shader_stages.empty() ||
+                       !mod.shader_fns.empty() ||
                        !mod.shader_field_annots.empty() ||
                        !mod.io_field_annots.empty();
     if (!has_shaders) continue;
@@ -173,6 +203,43 @@ inline void emit_umshaders(const std::vector<LoadedModule> &modules,
         w.u8(static_cast<uint8_t>(a->kind));
         w.str(""); // type_name: filled by linker from the struct definition
       }
+    }
+
+    // @shader_fn methods — shader-side helpers callable from @stage or other @shader_fn
+    w.u32(static_cast<uint32_t>(mod.shader_fns.size()));
+    for (const ShaderFnInfo &sf : mod.shader_fns) {
+      w.str(interner.view(sf.shader_type));
+      w.str(interner.view(sf.method_name));
+
+      // serialize explicit params (skip self: Ref types map to globals)
+      uint32_t body_root = 0;
+      u32 params_start = 0, params_count = 0;
+      SymbolId type_sym_id = sema.syms.lookup(mi, sf.shader_type);
+      if (type_sym_id != kInvalidSymbol) {
+        SymbolId method_sym_id = sema.methods.lookup(type_sym_id, sf.method_name);
+        if (method_sym_id != kInvalidSymbol) {
+          const Symbol &msym = sema.syms.symbols[method_sym_id];
+          body_root = msym.body;
+          params_start = msym.sig.params_start;
+          params_count = msym.sig.params_count;
+        }
+      }
+
+      // count non-self params (skip Ref types used for self/&mut self)
+      std::vector<std::pair<u32, std::string>> explicit_params;
+      for (u32 pi = 0; pi < params_count; ++pi) {
+        const FuncParam &p = mod.params[params_start + pi];
+        std::string tname = shader_type_name_for(p.type, lm.type_ast, interner);
+        if (!tname.empty())
+          explicit_params.push_back({static_cast<u32>(p.name), tname});
+      }
+      w.u32(static_cast<uint32_t>(explicit_params.size()));
+      for (const auto &[sym_id, tname] : explicit_params) {
+        w.u32(sym_id);
+        w.str(tname);
+      }
+
+      serialize_body_ir(w, lm, body_root, interner);
     }
 
     // @stage methods — write header + serialized BodyIR

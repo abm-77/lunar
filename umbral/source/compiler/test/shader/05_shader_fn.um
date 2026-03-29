@@ -1,0 +1,54 @@
+# RUN: mkdir -p %t.d && %uc %s --sidecar-out %t.d && %ul --dump-ir %t.d/05_shader_fn.umshaders 2>/dev/null | %FileCheck %s
+
+# vertex stage: standard entry point with no helper
+# CHECK: "hlsl.shader"="vertex"
+
+# fragment stage: helper emitted as internal function, called from @main
+# CHECK: define internal void @sample_tex()
+# CHECK: load target("spirv.Image"
+# CHECK: load target("spirv.Sampler"
+# CHECK: define void @main()
+# CHECK: call void @sample_tex()
+# CHECK: "hlsl.shader"="pixel"
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const SpriteVertex := struct {
+  @location(0) pos: vec2,
+};
+
+@shader_pod const SpriteVsOut := struct {
+  @builtin(position) clip: vec4,
+  @location(0)       uv:   vec2,
+};
+
+@shader_pod const SpriteFsOut := struct {
+  @location(0) color: vec4,
+};
+
+@shader const SpriteShader := struct {
+  @vs_in   vin:  SpriteVertex,
+  @vs_out  vout: SpriteVsOut,
+  @fs_in   fin:  SpriteVsOut,
+  @fs_out  fout: SpriteFsOut,
+};
+
+impl SpriteShader {
+  @shader_fn
+  const sample_tex := fn(&self) -> void {
+    const col := @sample(@texture2d(0), @sampler(0), self.fin.uv);
+    self.fout.color = col;
+  };
+
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    self.vout.clip = vec4(self.vin.pos.x, self.vin.pos.y, 0.0, 1.0);
+    self.vout.uv   = vec2(self.vin.pos.x, self.vin.pos.y);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    self.sample_tex();
+  };
+}

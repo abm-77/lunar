@@ -52,6 +52,7 @@ struct BodyChecker {
   std::unordered_map<SymId, SymbolId> field_iter_struct;
   // set when checking a @stage method; used to enforce shader field access rules.
   std::optional<ShaderStage> current_shader_stage;
+  bool is_shader_fn = false;           // true when checking a @shader_fn body
   SymId current_shader_type_name = 0;
   // set by AssignStmt check before checking the LHS so Field can detect writes.
   bool in_assign_lhs = false;
@@ -220,6 +221,16 @@ struct BodyChecker {
         }
         current_shader_type_name = si.shader_type;
         break;
+      }
+    }
+    // detect @shader_fn — enables shader intrinsics but no stage-specific field checks.
+    if (!current_shader_stage) {
+      for (const ShaderFnInfo &sf : mod.shader_fns) {
+        if (sf.shader_type == fn_sym.impl_owner && sf.method_name == fn_sym.name) {
+          is_shader_fn = true;
+          current_shader_type_name = sf.shader_type;
+          break;
+        }
       }
     }
 
@@ -1153,15 +1164,15 @@ struct BodyChecker {
     case NodeKind::ShaderTexture2d:
     case NodeKind::ShaderSampler:
     case NodeKind::ShaderDrawPacket: {
-      if (!current_shader_stage)
-        emit(node_span(n), "shader intrinsic used outside @stage method");
+      if (!current_shader_stage && !is_shader_fn)
+        emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
       check_expr(ir.nodes.a[n], sema);
       result = IType::fresh(unifier.fresh()); // opaque handle
       break;
     }
     case NodeKind::ShaderSample: {
-      if (!current_shader_stage)
-        emit(node_span(n), "shader intrinsic used outside @stage method");
+      if (!current_shader_stage && !is_shader_fn)
+        emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
       check_expr(ir.nodes.a[n], sema);
       check_expr(ir.nodes.b[n], sema);
       check_expr(ir.nodes.c[n], sema);
@@ -1183,14 +1194,14 @@ struct BodyChecker {
       break;
     }
     case NodeKind::ShaderDrawId: {
-      if (!current_shader_stage)
-        emit(node_span(n), "shader intrinsic used outside @stage method");
+      if (!current_shader_stage && !is_shader_fn)
+        emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
       result = IType::from(types.builtin(CTypeKind::U32));
       break;
     }
     case NodeKind::ShaderFrameRead: {
-      if (!current_shader_stage)
-        emit(node_span(n), "shader intrinsic used outside @stage method");
+      if (!current_shader_stage && !is_shader_fn)
+        emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
       check_expr(ir.nodes.a[n], sema); // offset
       TypeId tid = static_cast<TypeId>(ir.nodes.b[n]);
       auto ct = lowerer.lower(tid);
@@ -1198,8 +1209,8 @@ struct BodyChecker {
       break;
     }
     case NodeKind::ShaderRef: {
-      if (!current_shader_stage)
-        emit(node_span(n), "shader intrinsic used outside @stage method");
+      if (!current_shader_stage && !is_shader_fn)
+        emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
       SymbolId bundle_sid = kInvalidSymbol;
       for (u32 s = 1; s < syms.symbols.size() && bundle_sid == kInvalidSymbol; ++s) {
         const Symbol &sv = syms.symbols[s];

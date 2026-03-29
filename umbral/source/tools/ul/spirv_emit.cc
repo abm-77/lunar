@@ -37,6 +37,45 @@ void spirv_init_target(void) {
   LLVMInitializeSPIRVAsmPrinter();
 }
 
+// SPIR-V decoration ordinals (Unified Specification §3.20 Decoration)
+static constexpr uint32_t SPV_DECO_BUILTIN        = 11;
+static constexpr uint32_t SPV_DECO_LOCATION        = 30;
+static constexpr uint32_t SPV_DECO_BINDING         = 33;
+static constexpr uint32_t SPV_DECO_DESCRIPTOR_SET  = 34;
+
+// SPIR-V BuiltIn variable values (§3.21 BuiltIn)
+static constexpr uint32_t SPV_BUILTIN_POSITION    = 0;
+static constexpr uint32_t SPV_BUILTIN_DRAW_INDEX  = 4418;
+
+// LLVM SPIR-V backend address space encoding
+static constexpr unsigned SPIRV_AS_UNIFORM_CONSTANT = 0;  // textures, samplers
+static constexpr unsigned SPIRV_AS_INPUT            = 1;  // stage inputs
+static constexpr unsigned SPIRV_AS_OUTPUT           = 3;  // stage outputs
+static constexpr unsigned SPIRV_AS_STORAGE_BUFFER   = 12; // SSBOs
+
+// OpTypeImage integer parameter layout: {Dim, Depth, Arrayed, MS, Sampled, ImageFormat}
+// values below describe a plain 2D sampled color image (§3.11 Image Operands)
+static constexpr uint32_t SPV_IMAGE_DIM_2D          = 1;
+static constexpr uint32_t SPV_IMAGE_DEPTH_NONE       = 0;
+static constexpr uint32_t SPV_IMAGE_NOT_ARRAYED      = 0;
+static constexpr uint32_t SPV_IMAGE_SINGLE_SAMPLE    = 0;
+static constexpr uint32_t SPV_IMAGE_SAMPLED          = 1;
+static constexpr uint32_t SPV_IMAGE_FORMAT_UNKNOWN   = 0;
+
+// return the SymId of the "self" parameter in body.sym_names; 0 if absent.
+static uint32_t find_self_sym_id(const StageBody &body) {
+  for (const auto &[sid, name] : body.sym_names)
+    if (name == "self") return sid;
+  return 0;
+}
+
+// return the index into sc.shaders whose name matches stage.shader_type_name.
+static size_t find_shader_idx(const Sidecar &sc, const StageInfo &stage) {
+  for (size_t s = 0; s < sc.shaders.size(); ++s)
+    if (sc.shaders[s].name == stage.shader_type_name) return s;
+  return 0;
+}
+
 // map a PodField type_name string to the corresponding
 // llvm::Type*. returns nullptr for unrecognized names.
 static llvm::Type *llvm_type_for(llvm::LLVMContext &ctx,
@@ -56,6 +95,47 @@ static llvm::Type *llvm_type_for(llvm::LLVMContext &ctx,
   if (type_name == "mat4")
     return llvm::ArrayType::get(llvm::FixedVectorType::get(f32, 4), 4);
   return nullptr;
+}
+
+// build an anonymous struct LLVM type for a @shader_pod.
+// returns nullptr if any field type is unrecognized.
+static llvm::Type *llvm_pod_type(llvm::LLVMContext &ctx, const PodType &pod) {
+  std::vector<llvm::Type *> ftys;
+  ftys.reserve(pod.fields.size());
+  for (const auto &f : pod.fields) {
+    llvm::Type *ft = llvm_type_for(ctx, f.type_name);
+    if (!ft) return nullptr;
+    ftys.push_back(ft);
+  }
+  return llvm::StructType::get(ctx, ftys);
+}
+
+// LLVM struct type mirroring draw_packet_t (runtime/gfx/gfx.h).
+// field order is fixed ABI; must match the C struct exactly.
+static llvm::StructType *draw_packet_struct_type(llvm::LLVMContext &ctx) {
+  auto *i32 = llvm::Type::getInt32Ty(ctx);
+  auto *i64 = llvm::Type::getInt64Ty(ctx);
+  return llvm::StructType::get(
+      ctx, {i64, i64, i64,           // pipeline_handle, vertex_buffer_handle, index_buffer_handle
+            i32, i32, i32, i32, i32, // first_index, index_count, vertex_count, instance_count, first_instance
+            i32, i32,                // draw_data_offset, material_data_offset
+            i32, i32, i32});         // tex2d_index, sampler_index, flags
+}
+
+// field index within draw_packet_t by name; -1 if not found.
+static int draw_packet_field_index(const std::string &name) {
+  static const std::pair<const char *, int> kFields[] = {
+      {"pipeline_handle", 0},      {"vertex_buffer_handle", 1},
+      {"index_buffer_handle", 2},  {"first_index", 3},
+      {"index_count", 4},          {"vertex_count", 5},
+      {"instance_count", 6},       {"first_instance", 7},
+      {"draw_data_offset", 8},     {"material_data_offset", 9},
+      {"tex2d_index", 10},         {"sampler_index", 11},
+      {"flags", 12},
+  };
+  for (const auto &[fname, idx] : kFields)
+    if (name == fname) return idx;
+  return -1;
 }
 
 // maps (shader_field_kind, pod_field_name) → GlobalVariable* in the LLVM
@@ -106,23 +186,18 @@ static void declare_io_vars(llvm::Module &mod, const Sidecar &sc,
                             size_t shader_idx, uint8_t stage_kind,
                             IOVarMap &io_var_map) {
   for (const auto &annot : sc.shaders[shader_idx].annots) {
-    const PodType *pod_type = nullptr;
-    for (const auto &pod : sc.pods) {
-      if (annot.pod_type_name == pod.name) {
-        pod_type = &pod;
-        break;
-      }
-    }
+    const PodType *pod_type = find_ptr(sc.pods, [&](const PodType &p) {
+      return p.name == annot.pod_type_name;
+    });
     if (!pod_type) continue;
 
-    // 1=vs_in, 3=fs_in → Input address space (1); 2=vs_out, 4=fs_out → Output
-    // (3)
+    // vs_in, fs_in → Input; vs_out, fs_out → Output
     unsigned addr_space = 0;
     switch (annot.shader_field_kind) {
-    case 1:
-    case 3: addr_space = 1; break;
-    case 2:
-    case 4: addr_space = 3; break;
+    case SFKIND_VS_IN:
+    case SFKIND_FS_IN:  addr_space = SPIRV_AS_INPUT;  break;
+    case SFKIND_VS_OUT:
+    case SFKIND_FS_OUT: addr_space = SPIRV_AS_OUTPUT; break;
     default: continue;
     }
 
@@ -135,11 +210,9 @@ static void declare_io_vars(llvm::Module &mod, const Sidecar &sc,
           nullptr, field.name, nullptr, llvm::GlobalVariable::NotThreadLocal,
           addr_space);
       if (field.io_kind == IOKind::Location) {
-        // Location decoration id = 33; operand = location_index
-        spv_decoration(mod, gvar, {33, field.location_index});
+        spv_decoration(mod, gvar, {SPV_DECO_LOCATION, field.location_index});
       } else if (field.io_kind == IOKind::Position) {
-        // Builtin decoration id = 11; Position builtin value = 0
-        spv_decoration(mod, gvar, {11, 0});
+        spv_decoration(mod, gvar, {SPV_DECO_BUILTIN, SPV_BUILTIN_POSITION});
       }
       io_var_map[{annot.shader_field_kind, field.name}] = gvar;
     }
@@ -150,9 +223,10 @@ static void declare_io_vars(llvm::Module &mod, const Sidecar &sc,
 // spirv.Image params: elem_ty, {Dim=1(2D), Depth=0, Arrayed=0, MS=0,
 //   Sampled=1, Format=0(Unknown)}.
 static llvm::TargetExtType *spirv_image2d_ty(llvm::LLVMContext &ctx) {
-  return llvm::TargetExtType::get(ctx, "spirv.Image",
-                                  {llvm::Type::getFloatTy(ctx)},
-                                  {1u, 0u, 0u, 0u, 1u, 0u});
+  return llvm::TargetExtType::get(
+      ctx, "spirv.Image", {llvm::Type::getFloatTy(ctx)},
+      {SPV_IMAGE_DIM_2D, SPV_IMAGE_DEPTH_NONE, SPV_IMAGE_NOT_ARRAYED,
+       SPV_IMAGE_SINGLE_SAMPLE, SPV_IMAGE_SAMPLED, SPV_IMAGE_FORMAT_UNKNOWN});
 }
 static llvm::TargetExtType *spirv_sampler_ty(llvm::LLVMContext &ctx) {
   return llvm::TargetExtType::get(ctx, "spirv.Sampler", {}, {});
@@ -189,12 +263,12 @@ static void declare_descriptor_bindings(llvm::Module &mod,
   }
 
   auto *i8 = llvm::Type::getInt8Ty(mod.getContext());
-  // texture/sampler arrays use proper SPIR-V opaque element types so that
-  // @sample can call llvm.spv.sampled.image with correctly-typed operands.
-  // SSBO arrays (frame_arena, draw_packets) use i8 for byte-addressed access.
   auto *tex_arr = llvm::ArrayType::get(spirv_image2d_ty(mod.getContext()), 0);
   auto *samp_arr = llvm::ArrayType::get(spirv_sampler_ty(mod.getContext()), 0);
-  auto *ssbo_arr = llvm::ArrayType::get(i8, 0);
+  // frame_arena: byte SSBO for arbitrary byte-addressed reads via @frame_read<T>
+  auto *frame_arr = llvm::ArrayType::get(i8, 0);
+  // draw_packets: typed struct SSBO; fields accessed via @draw_packet(id).field
+  auto *pkt_arr = llvm::ArrayType::get(draw_packet_struct_type(mod.getContext()), 0);
 
   auto emit_binding = [&](const char *name, llvm::Type *arr_ty,
                           unsigned binding, unsigned addr_space) {
@@ -202,25 +276,24 @@ static void declare_descriptor_bindings(llvm::Module &mod,
         mod, arr_ty, /*isConst*/ false, llvm::GlobalValue::ExternalLinkage,
         nullptr, name, nullptr, llvm::GlobalVariable::NotThreadLocal,
         addr_space);
-    // DescriptorSet=0 (deco 33), Binding=N (deco 34)
     auto *i32 = llvm::Type::getInt32Ty(mod.getContext());
     auto *ds_inner = llvm::MDNode::get(
         mod.getContext(),
-        {llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 33)),
+        {llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, SPV_DECO_DESCRIPTOR_SET)),
          llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 0))});
     auto *bd_inner = llvm::MDNode::get(
         mod.getContext(),
-        {llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 34)),
+        {llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, SPV_DECO_BINDING)),
          llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, binding))});
     auto *outer = llvm::MDNode::get(mod.getContext(), {ds_inner, bd_inner});
     gvar->setMetadata("spirv.Decorations", outer);
     return gvar;
   };
 
-  if (need_tex) emit_binding("textures_2d", tex_arr, 0, 0);
-  if (need_samp) emit_binding("samplers", samp_arr, 1, 0);
-  if (need_frame) emit_binding("frame_arena", ssbo_arr, 2, 12);
-  if (need_pkt) emit_binding("draw_packets", ssbo_arr, 3, 12);
+  if (need_tex) emit_binding("textures_2d", tex_arr, 0, SPIRV_AS_UNIFORM_CONSTANT);
+  if (need_samp) emit_binding("samplers", samp_arr, 1, SPIRV_AS_UNIFORM_CONSTANT);
+  if (need_frame) emit_binding("frame_arena", frame_arr, 2, SPIRV_AS_STORAGE_BUFFER);
+  if (need_pkt) emit_binding("draw_packets", pkt_arr, 3, SPIRV_AS_STORAGE_BUFFER);
 }
 
 // create void main() and mark it as a shader entry point
@@ -231,7 +304,6 @@ static void declare_descriptor_bindings(llvm::Module &mod,
 static void declare_entry_point(llvm::Module &mod, llvm::Function **out_fn,
                                 uint8_t stage_kind,
                                 const IOVarMap &io_var_map) {
-  (void)io_var_map;
   auto *ret_type = llvm::Type::getVoidTy(mod.getContext());
   auto *fn_type = llvm::FunctionType::get(ret_type, {}, /*isVarArg*/ false);
   auto *fn = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
@@ -257,6 +329,8 @@ struct EmitCtx {
   // SymId → SSA value for immutable bindings and function params (ConstStmt,
   // args)
   std::unordered_map<uint32_t, llvm::Value *> sym_values;
+  // method_name → LLVM function for @shader_fn helpers callable from this stage
+  std::unordered_map<std::string, llvm::Function *> shader_fn_map;
 
   EmitCtx(llvm::LLVMContext &ctx, llvm::Module &mod_, llvm::Function *fn_,
           const StageBody &body_, const IOVarMap &ivm, const Sidecar &sc_,
@@ -352,9 +426,30 @@ llvm::Value *EmitCtx::emit(uint32_t node_id, bool is_lhs) {
       }
     }
 
-    // general struct field: only self.annot.pod IO accesses are supported;
-    // arbitrary GEP would need a full type map which the sidecar doesn't carry.
-    (void)fname;
+    // general struct field: emit base as a value and extract the named field.
+    // handles draw_packet_t (hardcoded layout) and @shader_pod types from the sidecar.
+    {
+      llvm::Value *base_val = emit(base_nid);
+      if (base_val) {
+        if (auto *st = llvm::dyn_cast<llvm::StructType>(base_val->getType())) {
+          // draw_packet_t
+          if (st == draw_packet_struct_type(llvm_ctx)) {
+            int idx = draw_packet_field_index(fname);
+            if (idx >= 0)
+              return b.CreateExtractValue(base_val, {(unsigned)idx}, fname);
+          }
+          // @shader_pod types listed in the sidecar
+          for (const auto &pod : sc.pods) {
+            llvm::Type *pod_ty = llvm_pod_type(llvm_ctx, pod);
+            if (pod_ty != st) continue;
+            for (unsigned fi = 0; fi < pod.fields.size(); ++fi) {
+              if (pod.fields[fi].name == fname)
+                return b.CreateExtractValue(base_val, {fi}, fname);
+            }
+          }
+        }
+      }
+    }
     return nullptr;
   }
 
@@ -466,7 +561,27 @@ llvm::Value *EmitCtx::emit(uint32_t node_id, bool is_lhs) {
       }
       return vec;
     }
-    // method calls and mat4 construction are not valid in shader bodies.
+    // method calls: self.shader_fn_name(args) → call the helper function
+    if (callee_nid && callee_nid < body.nodes.size()) {
+      const BodyNode &callee_nd = body.nodes[callee_nid];
+      if (static_cast<NodeKind>(callee_nd.kind) == NodeKind::Field) {
+        const BodyNode &base_nd = body.nodes[callee_nd.a];
+        if (static_cast<NodeKind>(base_nd.kind) == NodeKind::Ident &&
+            base_nd.a == self_sym_id) {
+          const std::string &method = sym_name(callee_nd.b);
+          auto fn_it = shader_fn_map.find(method);
+          if (fn_it != shader_fn_map.end()) {
+            llvm::Function *callee_fn = fn_it->second;
+            std::vector<llvm::Value *> arg_vals;
+            for (uint32_t k = 0; k < args_count; ++k) {
+              llvm::Value *av = emit(body.list[args_start + k]);
+              if (av) arg_vals.push_back(av);
+            }
+            return b.CreateCall(callee_fn, arg_vals);
+          }
+        }
+      }
+    }
     return nullptr;
   }
 
@@ -690,19 +805,17 @@ llvm::Value *EmitCtx::emit(uint32_t node_id, bool is_lhs) {
     // by declare_descriptor_bindings before body emission.
 
   case NodeKind::ShaderDrawId: {
-    // gl_InstanceIndex equivalent: GlobalVariable in Input AS decorated
-    // with BuiltinDrawIndex (SPIR-V Builtin decoration 4418 = DrawIndex)
+    // load gl_DrawID — Input GlobalVariable decorated with BuiltIn DrawIndex.
     // requires Capability DrawParameters.
-    auto *u32_ty = i32_ty;
     auto *gvar = mod.getGlobalVariable("draw_id");
     if (!gvar) {
       gvar = new llvm::GlobalVariable(
-          mod, u32_ty, false, llvm::GlobalValue::ExternalLinkage, nullptr,
+          mod, i32_ty, false, llvm::GlobalValue::ExternalLinkage, nullptr,
           "draw_id", nullptr, llvm::GlobalVariable::NotThreadLocal,
-          /*Input=*/1);
-      spv_decoration(mod, gvar, {11, 4418}); // Builtin, DrawIndex
+          SPIRV_AS_INPUT);
+      spv_decoration(mod, gvar, {SPV_DECO_BUILTIN, SPV_BUILTIN_DRAW_INDEX});
     }
-    return b.CreateLoad(u32_ty, gvar, "draw_id");
+    return b.CreateLoad(i32_ty, gvar, "draw_id");
   }
 
   case NodeKind::ShaderTexture2d: {
@@ -730,24 +843,34 @@ llvm::Value *EmitCtx::emit(uint32_t node_id, bool is_lhs) {
   }
 
   case NodeKind::ShaderDrawPacket: {
+    // @draw_packet(id) — load a draw_packet_t struct from the draw_packets SSBO.
+    // result supports field access via Field emitter (ExtractValue by name).
     auto *gvar = mod.getGlobalVariable("draw_packets");
     if (!gvar) return nullptr;
     llvm::Value *id = emit(nd.a);
     if (!id) return nullptr;
-    auto *elem_ptr = b.CreateGEP(gvar->getValueType(), gvar,
-                                 {llvm::ConstantInt::get(i32_ty, 0), id});
-    return b.CreateLoad(llvm::Type::getInt8Ty(llvm_ctx), elem_ptr, "pkt");
+    auto *arr_ty = llvm::cast<llvm::ArrayType>(gvar->getValueType());
+    auto *elem_ptr = b.CreateGEP(arr_ty, gvar,
+                                 {llvm::ConstantInt::get(i32_ty, 0), id}, "pkt_ptr");
+    return b.CreateLoad(arr_ty->getElementType(), elem_ptr, "pkt");
   }
 
   case NodeKind::ShaderFrameRead: {
-    // @frame_read<T>(offset) — byte-addressed read from frame_arena SSBO
+    // @frame_read<T>(offset) — byte-addressed read from frame_arena SSBO.
+    // nd.b holds the SymId for T (sidecar translates TypeId → SymId at emit time).
     auto *gvar = mod.getGlobalVariable("frame_arena");
     if (!gvar) return nullptr;
     llvm::Value *offset = emit(nd.a);
     if (!offset) return nullptr;
-    auto *byte_ptr = b.CreateGEP(llvm::Type::getInt8Ty(llvm_ctx), gvar, offset);
-    // cast to i32* and load; T-specific lowering would require TypeId info
-    return b.CreateLoad(i32_ty, byte_ptr, "frame_val");
+    const std::string &type_name = sym_name(nd.b);
+    llvm::Type *target_ty = llvm_type_for(llvm_ctx, type_name);
+    if (!target_ty) {
+      for (const auto &pod : sc.pods)
+        if (pod.name == type_name) { target_ty = llvm_pod_type(llvm_ctx, pod); break; }
+    }
+    if (!target_ty) return nullptr;
+    auto *byte_ptr = b.CreateGEP(llvm::Type::getInt8Ty(llvm_ctx), gvar, offset, "frame_ptr");
+    return b.CreateLoad(target_ty, byte_ptr, "frame_val");
   }
 
   case NodeKind::ShaderSample: {
@@ -774,15 +897,66 @@ llvm::Value *EmitCtx::emit(uint32_t node_id, bool is_lhs) {
   }
 }
 
+// declare and emit all @shader_fn helpers for the given shader type into mod.
+// populates shader_fn_map on each EmitCtx that will use the helpers.
+// must be called before emitting the entry point body.
+static void
+declare_shader_fns(llvm::Module &mod, const Sidecar &sc, size_t shader_idx,
+                   const IOVarMap &io_var_map,
+                   std::unordered_map<std::string, llvm::Function *> &out_map) {
+  const std::string &shader_type = sc.shaders[shader_idx].name;
+  for (const ShaderFnInfo &sfi : sc.shader_fns) {
+    if (sfi.shader_type_name != shader_type) continue;
+
+    // build param type list from serialized params
+    std::vector<llvm::Type *> param_types;
+    for (const ShaderFnParam &p : sfi.params) {
+      llvm::Type *pt = llvm_type_for(mod.getContext(), p.type_name);
+      if (!pt) {
+        fprintf(stderr,
+                "spirv_emit: unknown param type '%s' in @shader_fn %s\n",
+                p.type_name.c_str(), sfi.method_name.c_str());
+        continue;
+      }
+      param_types.push_back(pt);
+    }
+
+    // return type: for now all @shader_fn helpers return void; callers use
+    // the void return and rely on side-effects via globals or future support
+    // for explicit return types (not yet in the sidecar format).
+    auto *ret_ty = llvm::Type::getVoidTy(mod.getContext());
+    auto *fn_ty = llvm::FunctionType::get(ret_ty, param_types, false);
+    auto *fn = llvm::Function::Create(fn_ty, llvm::Function::InternalLinkage,
+                                      sfi.method_name, mod);
+
+    // emit the body
+    uint32_t self_sym_id = find_self_sym_id(sfi.body);
+
+    EmitCtx ectx(mod.getContext(), mod, fn, sfi.body, io_var_map, sc,
+                 shader_idx, self_sym_id);
+
+    // bind params to sym_values (skip self; explicit params map by position)
+    {
+      auto arg_it = fn->arg_begin();
+      for (const ShaderFnParam &p : sfi.params) {
+        if (arg_it == fn->arg_end()) break;
+        ectx.sym_values[p.sym_id] = &*arg_it;
+        ++arg_it;
+      }
+    }
+
+    if (sfi.body.body_root != 0 && !sfi.body.nodes.empty())
+      ectx.emit(sfi.body.body_root);
+    auto *cur_bb = ectx.b.GetInsertBlock();
+    if (cur_bb && !cur_bb->getTerminator()) ectx.b.CreateRetVoid();
+
+    out_map[sfi.method_name] = fn;
+  }
+}
+
 int spirv_emit_stage(const Sidecar &sc, const StageInfo &stage,
                      const char *out_path) {
-  size_t shader_idx = 0;
-  for (size_t s = 0; s < sc.shaders.size(); ++s) {
-    if (sc.shaders[s].name == stage.shader_type_name) {
-      shader_idx = s;
-      break;
-    }
-  }
+  size_t shader_idx = find_shader_idx(sc, stage);
 
   //  set up LLVM module targeting SPIR-V 1.5 / Vulkan 1.2
   llvm::LLVMContext ctx;
@@ -806,6 +980,10 @@ int spirv_emit_stage(const Sidecar &sc, const StageInfo &stage,
   IOVarMap io_var_map;
   declare_io_vars(mod, sc, shader_idx, stage.stage_kind, io_var_map);
   declare_descriptor_bindings(mod, stage.body);
+
+  std::unordered_map<std::string, llvm::Function *> shader_fn_map;
+  declare_shader_fns(mod, sc, shader_idx, io_var_map, shader_fn_map);
+
   llvm::Function *entry_fn = nullptr;
   declare_entry_point(mod, &entry_fn, stage.stage_kind, io_var_map);
 
@@ -815,17 +993,10 @@ int spirv_emit_stage(const Sidecar &sc, const StageInfo &stage,
     b.SetInsertPoint(bb);
     b.CreateRetVoid();
   } else {
-    uint32_t self_sym_id = 0;
-    for (const auto &[sid, name] : stage.body.sym_names) {
-      if (name == "self") {
-        self_sym_id = sid;
-        break;
-      }
-    }
     EmitCtx ectx(ctx, mod, entry_fn, stage.body, io_var_map, sc, shader_idx,
-                 self_sym_id);
+                 find_self_sym_id(stage.body));
+    ectx.shader_fn_map = shader_fn_map;
     ectx.emit(stage.body.body_root);
-    // ensure the entry block has a terminator
     auto *cur_bb = ectx.b.GetInsertBlock();
     if (cur_bb && !cur_bb->getTerminator()) ectx.b.CreateRetVoid();
   }
@@ -852,13 +1023,7 @@ int spirv_emit_stage(const Sidecar &sc, const StageInfo &stage,
 }
 
 int spirv_dump_stage_ir(const Sidecar &sc, const StageInfo &stage) {
-  size_t shader_idx = 0;
-  for (size_t s = 0; s < sc.shaders.size(); ++s) {
-    if (sc.shaders[s].name == stage.shader_type_name) {
-      shader_idx = s;
-      break;
-    }
-  }
+  size_t shader_idx = find_shader_idx(sc, stage);
 
   llvm::LLVMContext ctx;
   llvm::Module mod("shader", ctx);
@@ -873,14 +1038,17 @@ int spirv_dump_stage_ir(const Sidecar &sc, const StageInfo &stage) {
   }
   llvm::TargetOptions target_opts;
   std::unique_ptr<llvm::TargetMachine> tm(
-      tgt->createTargetMachine(triple, "", "", target_opts,
-                               std::nullopt, std::nullopt,
-                               llvm::CodeGenOptLevel::Default));
+      tgt->createTargetMachine(triple, "", "", target_opts, std::nullopt,
+                               std::nullopt, llvm::CodeGenOptLevel::Default));
   mod.setDataLayout(tm->createDataLayout());
 
   IOVarMap io_var_map;
   declare_io_vars(mod, sc, shader_idx, stage.stage_kind, io_var_map);
   declare_descriptor_bindings(mod, stage.body);
+
+  std::unordered_map<std::string, llvm::Function *> shader_fn_map;
+  declare_shader_fns(mod, sc, shader_idx, io_var_map, shader_fn_map);
+
   llvm::Function *entry_fn = nullptr;
   declare_entry_point(mod, &entry_fn, stage.stage_kind, io_var_map);
 
@@ -890,12 +1058,9 @@ int spirv_dump_stage_ir(const Sidecar &sc, const StageInfo &stage) {
     b.SetInsertPoint(bb);
     b.CreateRetVoid();
   } else {
-    uint32_t self_sym_id = 0;
-    for (const auto &[sid, name] : stage.body.sym_names) {
-      if (name == "self") { self_sym_id = sid; break; }
-    }
     EmitCtx ectx(ctx, mod, entry_fn, stage.body, io_var_map, sc, shader_idx,
-                 self_sym_id);
+                 find_self_sym_id(stage.body));
+    ectx.shader_fn_map = shader_fn_map;
     ectx.emit(stage.body.body_root);
     auto *cur_bb = ectx.b.GetInsertBlock();
     if (cur_bb && !cur_bb->getTerminator()) ectx.b.CreateRetVoid();

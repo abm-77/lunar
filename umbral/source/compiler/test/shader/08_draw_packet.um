@@ -1,0 +1,54 @@
+# RUN: mkdir -p %t.d && %uc %s --sidecar-out %t.d && %ul --dump-ir %t.d/08_draw_packet.umshaders 2>/dev/null | %FileCheck %s
+
+# vertex stage comes first; fragment stage checks follow its attribute marker.
+# CHECK: "hlsl.shader"="vertex"
+
+# @draw_packet lowers to a GEP into the draw_packets SSBO (binding=3, set=0),
+# loading the full struct as { i64, i64, i64, i32x10 }, then extractvalue per field.
+# CHECK: @draw_packets = external addrspace(12) global [0 x
+# CHECK: getelementptr {{.*}}@draw_packets
+# CHECK: load { i64
+# CHECK: extractvalue { i64{{.*}} 10
+# CHECK: extractvalue { i64{{.*}} 11
+# CHECK: "hlsl.shader"="pixel"
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const Vert08In := struct {
+  @location(0) pos: vec2,
+  @location(1) uv:  vec2,
+};
+
+@shader_pod const Vert08Out := struct {
+  @builtin(position) clip: vec4,
+  @location(0)       uv:   vec2,
+};
+
+@shader_pod const Frag08Out := struct {
+  @location(0) color: vec4,
+};
+
+@shader const DrawPacketShader := struct {
+  @vs_in  vin:  Vert08In,
+  @vs_out vout: Vert08Out,
+  @fs_in  fin:  Vert08Out,
+  @fs_out fout: Frag08Out,
+};
+
+impl DrawPacketShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    self.vout.clip = vec4(self.vin.pos.x, self.vin.pos.y, 0.0, 1.0);
+    self.vout.uv   = vec2(self.vin.uv.x, self.vin.uv.y);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    const pkt  := @draw_packet(@draw_id());
+    const tex  := @texture2d(pkt.tex2d_index);
+    const samp := @sampler(pkt.sampler_index);
+    const col  := @sample(tex, samp, self.fin.uv);
+    self.fout.color = col;
+  };
+}

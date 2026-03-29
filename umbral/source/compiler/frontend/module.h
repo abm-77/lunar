@@ -34,6 +34,12 @@ struct ShaderStageInfo {
   SymId stage_name_sym; // interned SymId of "vertex" or "fragment"; resolved in body_check
 };
 
+// @shader_fn annotation on an impl method — shader-side helper callable from @stage/@shader_fn.
+struct ShaderFnInfo {
+  SymId shader_type;  // the impl type name
+  SymId method_name;  // the method annotated with @shader_fn
+};
+
 struct GenericParam {
   SymId name;        // e.g., T
   bool is_type;      // true = type param; false = const generic
@@ -95,4 +101,5 @@ struct Module {
   std::vector<ShaderFieldAnnot> shader_field_annots;
   std::vector<IOFieldAnnot>     io_field_annots;
   std::vector<ShaderStageInfo>  shader_stages;
+  std::vector<ShaderFnInfo>     shader_fns;
 };

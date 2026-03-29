@@ -1,0 +1,48 @@
+# RUN: mkdir -p %t.d && %uc %s --sidecar-out %t.d && %ul --dump-ir %t.d/09_frame_read.umshaders 2>/dev/null | %FileCheck %s
+
+# vertex stage comes first; fragment stage checks follow its attribute marker.
+# CHECK: "hlsl.shader"="vertex"
+
+# @frame_read<vec4>(offset) lowers to: extract draw_data_offset (field 8) from
+# the draw_packet struct, GEP into the [0 x i8] frame_arena SSBO, load as <4 x float>.
+# CHECK: @frame_arena = external addrspace(12) global [0 x i8]
+# CHECK: extractvalue { i64{{.*}} 8
+# CHECK: getelementptr i8, ptr addrspace(12) @frame_arena
+# CHECK: load <4 x float>
+# CHECK: "hlsl.shader"="pixel"
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const Vert09In := struct {
+  @location(0) pos: vec2,
+};
+
+@shader_pod const Vert09Out := struct {
+  @builtin(position) clip: vec4,
+};
+
+@shader_pod const Frag09Out := struct {
+  @location(0) color: vec4,
+};
+
+@shader const FrameReadShader := struct {
+  @vs_in  vin:  Vert09In,
+  @vs_out vout: Vert09Out,
+  @fs_in  fin:  Vert09Out,
+  @fs_out fout: Frag09Out,
+};
+
+impl FrameReadShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    self.vout.clip = vec4(self.vin.pos.x, self.vin.pos.y, 0.0, 1.0);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    const pkt  := @draw_packet(@draw_id());
+    const data := @frame_read<vec4>(pkt.draw_data_offset);
+    self.fout.color = data;
+  };
+}

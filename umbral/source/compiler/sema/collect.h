@@ -120,10 +120,16 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       s.generics_start = impl_generics_start;
       s.generics_count = impl_generics_count;
 
-      // mark @stage methods so native codegen skips them
+      // mark @stage and @shader_fn methods so native codegen skips them
       for (const ShaderStageInfo &si : mod.shader_stages) {
         if (si.shader_type == impl.type_name && si.method_name == m.name) {
           s.flags = s.flags | SymFlags::ShaderStage;
+          break;
+        }
+      }
+      for (const ShaderFnInfo &sf : mod.shader_fns) {
+        if (sf.shader_type == impl.type_name && sf.method_name == m.name) {
+          s.flags = s.flags | SymFlags::ShaderFn;
           break;
         }
       }

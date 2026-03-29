@@ -1,0 +1,23 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: answer = 42
+
+# verifies that plain impl methods on a @shader struct (no @stage or @shader_fn)
+# compile as native cpu code and are callable like any other method.
+
+import sys.io.fmt;
+
+@shader const S := struct { n: i32 };
+
+impl S {
+  # cpu-side: no @stage or @shader_fn → compiled to native, not excluded by shader codegen
+  const mul := fn(&self, factor: i32) -> i32 {
+    return self.n * factor;
+  };
+}
+
+const main := fn() -> i32 {
+  const s := S { n = 6 };
+  const r := s.mul(7);
+  fmt::println("answer = {}", []fmt::Arg{ fmt::arg_i32(r) });
+  return 0;
+};

@@ -34,11 +34,10 @@ int umrf_emit(const Sidecar &sc, size_t shader_idx, const char *out_path) {
   }
   const ShaderType &shader = sc.shaders[shader_idx];
 
-  // find the @vs_in annotated field (shader_field_kind == 1)
-  const ShaderAnnot *vs_in_annot = nullptr;
-  for (const auto &a : shader.annots) {
-    if (a.shader_field_kind == 1) { vs_in_annot = &a; break; }
-  }
+  // find the @vs_in annotated field
+  const ShaderAnnot *vs_in_annot = find_ptr(shader.annots, [](const ShaderAnnot &a) {
+    return a.shader_field_kind == SFKIND_VS_IN;
+  });
   if (!vs_in_annot) {
     fprintf(stderr, "umrf_emit: shader '%s' has no @vs_in field\n",
             shader.name.c_str());
@@ -46,10 +45,9 @@ int umrf_emit(const Sidecar &sc, size_t shader_idx, const char *out_path) {
   }
 
   // find the pod type by name
-  const PodType *pod = nullptr;
-  for (const auto &p : sc.pods) {
-    if (p.name == vs_in_annot->pod_type_name) { pod = &p; break; }
-  }
+  const PodType *pod = find_ptr(sc.pods, [&](const PodType &p) {
+    return p.name == vs_in_annot->pod_type_name;
+  });
   if (!pod) {
     fprintf(stderr, "umrf_emit: pod type '%s' not found\n",
             vs_in_annot->pod_type_name.c_str());

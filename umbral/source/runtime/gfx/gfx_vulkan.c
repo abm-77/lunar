@@ -947,7 +947,7 @@ gfx_cmd_handle_t rt_gfx_begin_frame(gfx_device_handle_t dev) {
   vkWaitForFences(d->device, 1, &d->in_flight_fences[slot], VK_TRUE,
                   UINT64_MAX);
   gfx_deferred_tick(&d->resources, d->device);
-  // gfx_arena_next_frame(&d->arena);
+  gfx_arena_next_frame(&d->arena);
   vkResetFences(d->device, 1, &d->in_flight_fences[slot]);
   VkResult r = vkAcquireNextImageKHR(d->device, d->swapchain, UINT64_MAX,
                                      d->image_available[slot], VK_NULL_HANDLE,

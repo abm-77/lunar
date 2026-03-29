@@ -20,6 +20,7 @@
   X(Shader,        "shader")        \
   X(ShaderPod,     "shader_pod")    \
   X(Stage,         "stage")         \
+  X(ShaderFn,      "shader_fn")     \
   X(ShaderRef,     "shader_ref")    \
   X(VsIn,          "vs_in")         \
   X(VsOut,         "vs_out")        \

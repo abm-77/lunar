@@ -1293,6 +1293,7 @@ private:
         auto ms = sp();
         bool is_gen_method = false;
         SymId stage_name_sym = 0;
+        bool is_shader_fn = false;
         while (at(TokenKind::At) && k(1) == TokenKind::Ident) {
           SymId iname = static_cast<SymId>(t.payload[i + 1]);
           auto ikind = intrinsics.lookup(iname);
@@ -1304,6 +1305,7 @@ private:
             stage_name_sym = expect_ident("expected 'vertex' or 'fragment'");
             expect(TokenKind::RParen, "expected ')' after stage name");
           }
+          else if (*ikind == IntrinsicKind::ShaderFn) { is_shader_fn = true; i += 2; }
           else break;
         }
         DeclKind mkind;
@@ -1338,6 +1340,8 @@ private:
           {mname, mty, minit, 0, 0, is_gen_method ? DeclFlags::Gen : DeclFlags::None, mkind, endsp});
         if (stage_name_sym != 0)
           mod.shader_stages.push_back({type_name, mname, stage_name_sym});
+        if (is_shader_fn)
+          mod.shader_fns.push_back({type_name, mname});
       }
       expect(TokenKind::RBrace, "expected '}'");
       match(TokenKind::Semicolon); // optional trailing ';'

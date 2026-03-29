@@ -143,6 +143,20 @@ static int sidecar_read(const uint8_t *data, size_t len, Sidecar &out) {
     out.shaders.push_back({.name = shader_name, .annots = std::move(annots)});
   }
 
+  uint32_t shader_fn_count = r.u32();
+  for (u32 s = 0; s < shader_fn_count; ++s) {
+    ShaderFnInfo &sfi = out.shader_fns.emplace_back();
+    sfi.shader_type_name = r.str();
+    sfi.method_name = r.str();
+    uint32_t param_count = r.u32();
+    sfi.params.resize(param_count);
+    for (u32 p = 0; p < param_count; ++p) {
+      sfi.params[p].sym_id = r.u32();
+      sfi.params[p].type_name = r.str();
+    }
+    read_body(r, sfi.body);
+  }
+
   uint32_t stage_count = r.u32();
   for (u32 s = 0; s < stage_count; ++s) {
     out.stages.push_back({

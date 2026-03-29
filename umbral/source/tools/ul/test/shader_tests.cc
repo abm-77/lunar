@@ -87,6 +87,8 @@ static void write_minimal_sidecar(UmshadersWriter &w) {
   w.str("vin");
   w.u8(1 /*vs_in*/);
   w.str("P");
+  // zero shader_fn helpers
+  w.u32(0);
   // one vertex stage with empty body (body_root=0, all counts=0)
   w.u32(1);
   w.str("S");
@@ -356,6 +358,8 @@ TEST_F(ShaderLinkTest, SymNamesRoundTrip) {
   w.str("vin");
   w.u8(1);
   w.str("P");
+  // zero shader_fn helpers
+  w.u32(0);
   // one vertex stage
   w.u32(1);
   w.str("S");

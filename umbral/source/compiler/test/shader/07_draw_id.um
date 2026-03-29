@@ -1,0 +1,48 @@
+# RUN: mkdir -p %t.d && %uc %s --sidecar-out %t.d && %ul --dump-ir %t.d/07_draw_id.umshaders 2>/dev/null | %FileCheck %s
+
+# @draw_id lowers to an Input addrspace(1) global with BuiltIn 4418 (DrawIndex).
+# Global declaration, then load in the function body, then stage attribute, then decoration metadata.
+# CHECK: @draw_id = external addrspace(1) global i32
+# CHECK: load i32, ptr addrspace(1) @draw_id
+# CHECK: "hlsl.shader"="vertex"
+# CHECK: {i32 11, i32 4418}
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const Vert07In := struct {
+  @location(0) pos: vec2,
+};
+
+@shader_pod const Vert07Out := struct {
+  @builtin(position) clip: vec4,
+  @location(0)       uv:   vec2,
+};
+
+@shader_pod const Frag07Out := struct {
+  @location(0) color: vec4,
+};
+
+@shader const DrawIdShader := struct {
+  @vs_in  vin:  Vert07In,
+  @vs_out vout: Vert07Out,
+  @fs_in  fin:  Vert07Out,
+  @fs_out fout: Frag07Out,
+};
+
+impl DrawIdShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    const id := @draw_id();
+    self.vout.clip = vec4(self.vin.pos.x, self.vin.pos.y, 0.0, 1.0);
+    self.vout.uv   = vec2(self.vin.pos.x, self.vin.pos.y);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    const tex  := @texture2d(0);
+    const samp := @sampler(0);
+    const col  := @sample(tex, samp, self.fin.uv);
+    self.fout.color = col;
+  };
+}

@@ -21,9 +21,10 @@ enum class SymFlags : u8 {
   None         = 0,
   Pub          = 1 << 0, // @pub
   Extern       = 1 << 1, // @extern
-  ShaderStage  = 1 << 2, // @stage method — skip native codegen
-  MonoInstance = 1 << 3, // monomorphized instance
-  Mut          = 1 << 4, // mutable global (var)
+  ShaderStage  = 1 << 2, // @stage method — skip native codegen, serialized to .umshaders
+  ShaderFn     = 1 << 3, // @shader_fn method — skip native codegen, serialized to .umshaders
+  MonoInstance = 1 << 4, // monomorphized instance
+  Mut          = 1 << 5, // mutable global (var)
 };
 
 struct Symbol {
