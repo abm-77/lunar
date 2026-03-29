@@ -89,9 +89,13 @@ inline DriverResult Driver::run(const std::string &src_path,
     bool has_any = false;
     for (const auto &lm : modules)
       if (!lm.mod.shader_stages.empty()) { has_any = true; break; }
-    if (has_any)
-      emit_umshaders(modules, *sema_r, interner,
-                     std::filesystem::temp_directory_path().string());
+    if (has_any) {
+      std::string sidecar_dir = opts.sidecar_out.empty()
+                                    ? std::filesystem::temp_directory_path().string()
+                                    : opts.sidecar_out;
+      emit_umshaders(modules, *sema_r, interner, sidecar_dir);
+      if (!opts.sidecar_out.empty()) return {true};
+    }
   }
 
   // LLVM codegen

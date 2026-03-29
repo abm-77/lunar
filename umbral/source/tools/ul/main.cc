@@ -33,16 +33,10 @@ static std::string out_path(const char *out_dir, const char *name,
 }
 
 // dispatch table: file extension → handler
-//
-// TODO: each handler should process one file and write its output(s) into
-// out_dir.
-// TODO: --pack mode: collect processed output paths and call pack_build() at
-// the end.
 
 typedef int (*handler_fn)(const char *in_path, const char *out_dir);
 
 static int handle_umshaders(const char *in_path, const char *out_dir) {
-  // TODO: call shader_link(in_path, out_dir)
   return shader_link(in_path, out_dir);
 }
 
@@ -93,6 +87,7 @@ int main(int argc, char **argv) {
   const char *out_dir = ".";
   const char *pack_out = nullptr;
   int compress = 0;
+  int dump_ir = 0;
   std::vector<const char *> inputs;
 
   for (int i = 1; i < argc; ++i) {
@@ -102,6 +97,8 @@ int main(int argc, char **argv) {
       pack_out = argv[++i];
     } else if (!strcmp(argv[i], "--compress")) {
       compress = 1;
+    } else if (!strcmp(argv[i], "--dump-ir")) {
+      dump_ir = 1;
     } else {
       inputs.push_back(argv[i]);
     }
@@ -109,7 +106,7 @@ int main(int argc, char **argv) {
 
   if (inputs.empty()) {
     fprintf(stderr, "usage: ul [--out-dir <dir>] [--pack <out.umpack>] "
-                    "[--compress] <file> ...\n");
+                    "[--compress] [--dump-ir] <file> ...\n");
     return 1;
   }
 
@@ -130,16 +127,16 @@ int main(int argc, char **argv) {
       ++errors;
       continue;
     }
-    if (fn(in, out_dir) != 0) {
+    int rc = (dump_ir && !strcmp(ext, ".umshaders"))
+                 ? shader_link_dump_ir(in)
+                 : fn(in, out_dir);
+    if (rc != 0) {
       ++errors;
       continue;
     }
-    // TODO: if pack_out, push the generated output file(s) into pack_inputs
   }
 
   if (pack_out && errors == 0) {
-    // TODO: pack_inputs is currently empty; populate it from the generated
-    // output paths above.
     std::vector<pack_input_t> pi;
     for (const auto &s : pack_inputs) pi.push_back({s.c_str()});
     if (pack_build(pi.data(), (uint32_t)pi.size(), pack_out, compress) != 0)

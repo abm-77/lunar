@@ -156,7 +156,9 @@ static int sidecar_read(const uint8_t *data, size_t len, Sidecar &out) {
   return r.ok ? 0 : -1;
 }
 
-int shader_link(const char *sidecar_path, const char *out_dir) {
+// load_sidecar — read and parse sidecar_path into sc.
+// returns 0 on success; -1 on file or parse error.
+static int load_sidecar(const char *sidecar_path, Sidecar &sc) {
   FILE *f = fopen(sidecar_path, "rb");
   if (!f) {
     fprintf(stderr, "shader_link: cannot open %s\n", sidecar_path);
@@ -168,9 +170,21 @@ int shader_link(const char *sidecar_path, const char *out_dir) {
   std::vector<uint8_t> buf((size_t)file_len);
   fread(buf.data(), 1, (size_t)file_len, f);
   fclose(f);
+  return sidecar_read(buf.data(), buf.size(), sc);
+}
 
+int shader_link_dump_ir(const char *sidecar_path) {
+  spirv_init_target();
   Sidecar sc;
-  if (sidecar_read(buf.data(), buf.size(), sc) != 0) return -1;
+  if (load_sidecar(sidecar_path, sc) != 0) return -1;
+  for (const StageInfo &stg : sc.stages)
+    if (spirv_dump_stage_ir(sc, stg) != 0) return -1;
+  return 0;
+}
+
+int shader_link(const char *sidecar_path, const char *out_dir) {
+  Sidecar sc;
+  if (load_sidecar(sidecar_path, sc) != 0) return -1;
 
   for (size_t si = 0; si < sc.shaders.size(); si++) {
     const ShaderType &sh = sc.shaders[si];

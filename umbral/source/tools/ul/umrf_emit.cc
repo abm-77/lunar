@@ -1,5 +1,6 @@
 #include "umrf_emit.h"
 #include <common/bin_io.h>
+#include <runtime/gfx/gfx_refl.h>
 #include <cstdio>
 #include <cstring>
 

@@ -6,7 +6,7 @@
 int main(int argc, char **argv) {
   if (argc < 2) {
     std::fprintf(stderr,
-                 "usage: uc <file>.um [-o <output>] [--root <dir>] [--dump-ir]\n");
+                 "usage: uc <file>.um [-o <output>] [--root <dir>] [--dump-ir] [--sidecar-out <dir>]\n");
     return 1;
   }
 
@@ -20,6 +20,8 @@ int main(int argc, char **argv) {
       opts.root_override = argv[++i];
     } else if (flag == "--dump-ir") {
       opts.dump_ir = true;
+    } else if (flag == "--sidecar-out" && i + 1 < argc) {
+      opts.sidecar_out = argv[++i];
     }
   }
 

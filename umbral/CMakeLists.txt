@@ -227,7 +227,7 @@ configure_file(
 
 add_custom_target(check-lit
   COMMAND python3 ${LIT_PY} -v ${CMAKE_BINARY_DIR}
-  DEPENDS uc
+  DEPENDS uc ul
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   COMMENT "Running lit functional tests"
 )

@@ -1,4 +1,18 @@
-# RUN: %uc %s --dump-ir > /dev/null
+# RUN: mkdir -p %t.d && %uc %s --sidecar-out %t.d && %ul --dump-ir %t.d/00_sprite.umshaders 2>/dev/null | %FileCheck %s
+
+# vertex stage: SPIR-V triple, void main(), marked vertex
+# CHECK: target triple = "spirv64-unknown-vulkan1.2"
+# CHECK: define void @main()
+# CHECK: "hlsl.shader"="vertex"
+
+# fragment stage: SPIR-V triple, bindless globals, void main(), texture/sampler loads, marked pixel
+# CHECK: target triple = "spirv64-unknown-vulkan1.2"
+# CHECK: @textures_2d = external global [0 x target("spirv.Image"
+# CHECK: @samplers = external global [0 x target("spirv.Sampler"
+# CHECK: define void @main()
+# CHECK: load target("spirv.Image"
+# CHECK: load target("spirv.Sampler"
+# CHECK: "hlsl.shader"="pixel"
 
 const vec2 := struct { x: f32, y: f32 };
 const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };

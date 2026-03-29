@@ -14,3 +14,8 @@ void spirv_init_target(void);
 //   returns 0 on success; -1 on error
 int spirv_emit_stage(const Sidecar &sc, const StageInfo &stage,
                      const char *out_path);
+
+// build the SPIR-V-targeted LLVM module for one stage and print the IR to stdout.
+// useful for testing: pipe through FileCheck to verify codegen output.
+// returns 0 on success; -1 on error
+int spirv_dump_stage_ir(const Sidecar &sc, const StageInfo &stage);

@@ -77,3 +77,8 @@ struct Sidecar {
 //   <out_dir>/<shader_name>_fs.spv   fragment SPIR-V binary
 //   <out_dir>/<shader_name>.umrf     UMRF vertex reflection blob
 int shader_link(const char *sidecar_path, const char *out_dir);
+
+// shader_link_dump_ir — read a .umshaders sidecar and print the SPIR-V-targeted
+//   LLVM IR for each stage to stdout. intended for lit tests via FileCheck.
+//   returns 0 on success; non-zero on error
+int shader_link_dump_ir(const char *sidecar_path);

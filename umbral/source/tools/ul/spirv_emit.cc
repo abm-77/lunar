@@ -850,3 +850,57 @@ int spirv_emit_stage(const Sidecar &sc, const StageInfo &stage,
   fclose(fout);
   return 0;
 }
+
+int spirv_dump_stage_ir(const Sidecar &sc, const StageInfo &stage) {
+  size_t shader_idx = 0;
+  for (size_t s = 0; s < sc.shaders.size(); ++s) {
+    if (sc.shaders[s].name == stage.shader_type_name) {
+      shader_idx = s;
+      break;
+    }
+  }
+
+  llvm::LLVMContext ctx;
+  llvm::Module mod("shader", ctx);
+  llvm::Triple triple("spirv64-unknown-vulkan1.2");
+  mod.setTargetTriple(triple);
+
+  std::string err;
+  const llvm::Target *tgt = llvm::TargetRegistry::lookupTarget(triple, err);
+  if (!tgt) {
+    fprintf(stderr, "spirv_dump_stage_ir: %s\n", err.c_str());
+    return -1;
+  }
+  llvm::TargetOptions target_opts;
+  std::unique_ptr<llvm::TargetMachine> tm(
+      tgt->createTargetMachine(triple, "", "", target_opts,
+                               std::nullopt, std::nullopt,
+                               llvm::CodeGenOptLevel::Default));
+  mod.setDataLayout(tm->createDataLayout());
+
+  IOVarMap io_var_map;
+  declare_io_vars(mod, sc, shader_idx, stage.stage_kind, io_var_map);
+  declare_descriptor_bindings(mod, stage.body);
+  llvm::Function *entry_fn = nullptr;
+  declare_entry_point(mod, &entry_fn, stage.stage_kind, io_var_map);
+
+  if (stage.body.body_root == 0 || stage.body.nodes.empty()) {
+    auto *bb = llvm::BasicBlock::Create(ctx, "entry", entry_fn);
+    llvm::IRBuilder<> b(ctx);
+    b.SetInsertPoint(bb);
+    b.CreateRetVoid();
+  } else {
+    uint32_t self_sym_id = 0;
+    for (const auto &[sid, name] : stage.body.sym_names) {
+      if (name == "self") { self_sym_id = sid; break; }
+    }
+    EmitCtx ectx(ctx, mod, entry_fn, stage.body, io_var_map, sc, shader_idx,
+                 self_sym_id);
+    ectx.emit(stage.body.body_root);
+    auto *cur_bb = ectx.b.GetInsertBlock();
+    if (cur_bb && !cur_bb->getTerminator()) ectx.b.CreateRetVoid();
+  }
+
+  mod.print(llvm::outs(), nullptr);
+  return 0;
+}
