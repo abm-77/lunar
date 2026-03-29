@@ -15,6 +15,7 @@
 #include <compiler/frontend/parser.h>
 #include <compiler/loader.h>
 #include <compiler/sema/sema.h>
+#include <compiler/shader/shader_emit.h>
 
 // declared in runtime_blob.cc / glfw_blob.cc, generated at build time by
 // cmake/embed_blob.cmake
@@ -31,7 +32,8 @@ struct DriverResult {
 struct DriverOptions {
   std::string out_path = "a.out";
   std::string root_override;
-  bool dump_ir = false; // print LLVM IR to stdout and stop
+  std::string sidecar_out; // if non-empty, write .umshaders to this path and stop
+  bool dump_ir = false;    // print LLVM IR to stdout and stop
 };
 
 class Driver {
@@ -80,6 +82,16 @@ inline DriverResult Driver::run(const std::string &src_path,
     const std::string &esrc = has_mod ? modules[midx].src : modules.back().src;
     std::string epath = has_mod ? modules[midx].abs_path.string() : src_path;
     return {false, format_error(err, esrc, epath)};
+  }
+
+  // emit .umshaders sidecars for any module with shader declarations
+  {
+    bool has_any = false;
+    for (const auto &lm : modules)
+      if (!lm.mod.shader_stages.empty()) { has_any = true; break; }
+    if (has_any)
+      emit_umshaders(modules, *sema_r, interner,
+                     std::filesystem::temp_directory_path().string());
   }
 
   // LLVM codegen

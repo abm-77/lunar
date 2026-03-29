@@ -89,7 +89,7 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
   // parse.
   IntrinsicTable intrinsics;
   intrinsics.init(interner);
-  Parser parser(*lex_r, intrinsics);
+  Parser parser(*lex_r, intrinsics, interner, src);
   parser.parse_module();
   if (parser.error())
     return std::unexpected(

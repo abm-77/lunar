@@ -1,0 +1,166 @@
+# gfx/types.um — opaque handle wrappers, draw packet struct, and C ABI declarations.
+# all types here mirror the C ABI in runtime/gfx/gfx.h exactly.
+# users receive handles from gfx module functions; they never construct them directly.
+
+# each wraps a u64 where 0 is always the null/invalid handle.
+# for Texture2d and Sampler, the lower 32 bits equal the descriptor array index;
+# gfx_draw.um extracts this to fill DrawPacket.tex2d_index / sampler_index.
+
+@pub const Device := struct {
+    # owns all Vulkan state; returned by gfx::init
+    handle: u64,
+}
+
+@pub const Cmd := struct {
+    # single-frame command token; valid only between begin_frame and end_frame
+    handle: u64,
+}
+
+@pub const Pipeline := struct {
+    # compiled raster pipeline; valid until pipeline_destroy
+    handle: u64,
+}
+
+@pub const Texture2d := struct {
+    # 2D RGBA8 sampled image; lower 32 bits = bindless descriptor array index
+    handle: u64,
+}
+
+@pub const Sampler := struct {
+    # immutable sampler object; lower 32 bits = bindless descriptor array index
+    handle: u64,
+}
+
+@pub const PresentMode := enum {
+    Fifo,       # wait for vertical blank; always supported; no tearing
+    Immediate,  # no wait; may tear; lowest latency
+    Mailbox,    # triple-buffer; no tear; preferred when driver supports it
+}
+
+# POD struct mirroring draw_packet_t in gfx.h byte-for-byte; do NOT reorder fields.
+# uploaded to draw_packets_ssbo (set=0, binding=3) each frame.
+# shaders read this as:
+#   layout(set=0, binding=3) readonly buffer DrawPacketBuf { DrawPacket packets[]; };
+#   DrawPacket pkt = packets[gl_DrawID];
+
+@pub const DrawPacket := struct {
+    # resolved pipeline handle; overwritten by DrawStream.submit before calling the runtime
+    pipeline_handle:        u64,
+    # vertex buffer handle; 0 for procedural draws (sprite quads from gl_VertexIndex)
+    vertex_buffer_handle:   u64,
+    # index buffer handle; 0 for non-indexed draws
+    index_buffer_handle:    u64,
+
+    # first index in the index buffer; ignored for non-indexed draws
+    first_index:            u32,
+    # indices per instance (6 for a quad); 0 for non-indexed
+    index_count:            u32,
+    # vertices per instance for non-indexed draws
+    vertex_count:           u32,
+
+    # number of instances; must be >= 1
+    instance_count:         u32,
+    # gl_InstanceIndex base value; 0 in the common case
+    first_instance:         u32,
+
+    # byte offset into frame_arena_ssbo (set=0, binding=2) for per-draw constants.
+    # shaders unpack transform, tint, etc. from this offset.
+    # equals the out_offset from gfx::frame_alloc; must be 256-byte aligned.
+    draw_data_offset:       u32,
+
+    # byte offset into material_data_ssbo (set=0, binding=4) for material constants.
+    # 0 = no material; shader uses its own defaults.
+    material_data_offset:   u32,
+
+    # index into textures_2d[] (set=0, binding=0); = lower 32 bits of Texture2d.handle
+    tex2d_index:            u32,
+    # index into samplers[] (set=0, binding=1); = lower 32 bits of Sampler.handle
+    sampler_index:          u32,
+
+    # bitmask: bit 0 = indexed draw, bit 1 = assert instance_count > 1 in debug
+    flags:                  u32,
+}
+
+@pub const DRAW_FLAG_INDEXED:   u32 = 1;
+@pub const DRAW_FLAG_INSTANCED: u32 = 2;
+
+# these match the public function signatures in runtime/gfx/gfx.h exactly.
+# individual config fields are passed as separate parameters to avoid C struct ABI
+# layout uncertainty across the language boundary.
+
+@extern const rt_gfx_init : fn(
+    window_handle:    u64,   # GLFWwindow* cast to u64; must remain live until shutdown
+    frames_in_flight: u32,   # [1, 3]; 2 recommended
+    max_textures:     u32,   # <= 4096; descriptor array capacity for binding 0
+    max_samplers:     u32,   # <= 256;  descriptor array capacity for binding 1
+    frame_arena_bytes: u64,  # per-frame upload arena size in bytes; multiple of 256
+    draw_packets_max: u32,   # max DrawPacket entries per submit call per frame
+    enable_validation: bool, # enable VK_LAYER_KHRONOS_validation; false in release
+    present_mode:     u32    # PresentMode cast to u32; runtime falls back to Fifo
+) -> u64;                    # device handle; 0 on failure
+
+@extern const rt_gfx_shutdown : fn(
+    dev: u64   # device handle from rt_gfx_init; invalid after this call
+) -> void;
+
+@extern const rt_gfx_begin_frame : fn(
+    dev: u64   # device handle
+) -> u64;      # cmd handle; 0 if swapchain out-of-date (skip frame, retry next)
+
+@extern const rt_gfx_end_frame : fn(
+    dev: u64,  # device handle
+    cmd: u64   # cmd handle from begin_frame; invalid after this call
+) -> void;
+
+@extern const rt_gfx_pipeline_create : fn(
+    dev:      u64,   # device handle
+    vs_spv:   &u8,   # vertex shader SPIR-V bytes; 4-byte aligned; borrowed for duration of call
+    vs_len:   u64,   # byte count of vs_spv; multiple of 4
+    fs_spv:   &u8,   # fragment shader SPIR-V bytes; borrowed for duration of call
+    fs_len:   u64,   # byte count of fs_spv
+    refl:     &u8,   # UMRF reflection blob (asset); borrowed for duration of call
+    refl_len: u64    # byte count of refl
+) -> u64;            # pipeline handle; 0 on failure
+
+@extern const rt_gfx_pipeline_destroy : fn(
+    dev:  u64,   # device handle
+    pipe: u64    # pipeline handle; must not be in use by any in-flight frame
+) -> void;
+
+@extern const rt_gfx_texture2d_create_rgba8 : fn(
+    dev:        u64,   # device handle
+    w:          u32,   # width in texels; must be > 0
+    h:          u32,   # height in texels; must be > 0
+    rgba:       &u8,   # pointer to w*h*4 RGBA8 pixels; row-major; borrowed for call duration
+    rgba_len:   u64,   # must equal w * h * 4
+    debug_name: &u8    # optional UTF-8 label for debug tools; 0 (null) to omit
+) -> u64;              # texture handle; lower 32 bits = descriptor index; 0 on failure
+
+@extern const rt_gfx_texture_destroy : fn(
+    dev: u64,   # device handle
+    tex: u64    # texture handle; deferred by frames_in_flight frames before GPU destroy
+) -> void;
+
+@extern const rt_gfx_sampler_create_linear : fn(
+    dev:        u64,   # device handle
+    debug_name: &u8    # optional UTF-8 label; 0 to omit
+) -> u64;              # sampler handle; lower 32 bits = descriptor index; 0 on failure
+
+@extern const rt_gfx_sampler_destroy : fn(
+    dev:  u64,  # device handle
+    samp: u64   # sampler handle; deferred destruction same as texture_destroy
+) -> void;
+
+@extern const rt_gfx_frame_alloc : fn(
+    dev:        u64,       # device handle; must be called between begin_frame and end_frame
+    size:       u64,       # byte count to allocate; must be > 0
+    align:      u64,       # power-of-two alignment; use 256 for SSBO offsets
+    out_offset: &mut u32   # receives byte offset into frame_arena_ssbo; 0 on failure
+) -> u64;                  # opaque CPU write pointer (cast to &mut T by caller); 0 on failure
+
+@extern const rt_gfx_submit_draw_packets : fn(
+    cmd:          u64,          # cmd handle from begin_frame
+    pipe:         u64,          # pipeline handle; all packets use this pipeline
+    packets:      &DrawPacket,  # array of packet_count packets; borrowed for call duration
+    packet_count: u32           # must be > 0 and <= draw_packets_max from init config
+) -> void;

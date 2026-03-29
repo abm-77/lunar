@@ -139,7 +139,7 @@ private:
       TypeLowerer ml = g_lowerer;
       ml.type_subst = subst;
       ml.lenient = true;
-      mono_sym.is_mono_instance = true;
+      mono_sym.flags = mono_sym.flags | SymFlags::MonoInstance;
       if (gsym.sig.ret_type != 0) {
         auto r = ml.lower(gsym.sig.ret_type);
         if (r) mono_sym.mono_concrete_ret = *r;

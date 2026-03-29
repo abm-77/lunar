@@ -1,0 +1,5 @@
+import math.types;
+
+@pub const texture2d_handle := struct { _index: u32, _pad: u32 };
+@pub const sampler_handle   := struct { _index: u32, _pad: u32 };
+@pub const shader_bundle    := struct { vs_path: []u8, fs_path: []u8, refl_path: []u8 };

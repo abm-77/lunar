@@ -1,0 +1,152 @@
+import sys.gfx.types;
+import sys.gfx.draw;
+import sys.gfx.assets;
+
+# gfx.um — main entry point for the Umbral graphics layer.
+# Vulkan is hidden behind the runtime C ABI; users only see the types below.
+#
+# intended per-frame call sequence:
+#   1. gfx::init(window_handle, cfg)   → Device           (once at startup)
+#   2. gfx::begin_frame(dev)           → Cmd              (each frame)
+#   3. fa := gfx::frame_alloc(dev, @size_of(MyData), 256) (per-draw; write to fa.ptr)
+#   4. ds := draw::DrawStream::begin(dev, cmd, pipeline)
+#      ds.push_sprite(tex, samp, fa.offset, 1, 0)
+#      ds.submit()
+#   5. gfx::end_frame(dev, cmd)                           (each frame)
+#   6. gfx::shutdown(dev)                                 (once at teardown)
+#
+# resource creates/destroys may happen at any time outside a begin/end_frame pair.
+
+# re-export so callers only need `import sys.gfx`
+@pub const Device       := types::Device;
+@pub const Cmd          := types::Cmd;
+@pub const Pipeline     := types::Pipeline;
+@pub const Texture2d    := types::Texture2d;
+@pub const Sampler      := types::Sampler;
+@pub const DrawPacket   := types::DrawPacket;
+@pub const DrawStream   := draw::DrawStream;
+@pub const ShaderBundle := assets::ShaderBundle;
+@pub const PresentMode  := types::PresentMode;
+
+# GfxConfig — init parameters for the device.
+# pass to gfx::init; individual fields forwarded to the runtime.
+@pub const GfxConfig := struct {
+    # number of frames simultaneously in flight; [1, 3]; 2 recommended
+    frames_in_flight:  u32,
+    # bindless texture descriptor array capacity; <= 4096
+    max_textures:      u32,
+    # bindless sampler descriptor array capacity; <= 256
+    max_samplers:      u32,
+    # per-frame transient upload arena in bytes; multiple of 256; default 64 MiB
+    frame_arena_bytes: u64,
+    # max DrawPacket entries per rt_gfx_submit_draw_packets call; default 65536
+    draw_packets_max:  u32,
+    # enable VK_LAYER_KHRONOS_validation; disable in release builds
+    enable_validation: bool,
+    # preferred swapchain present mode; runtime falls back to Fifo if unavailable
+    present_mode:      PresentMode,
+}
+
+# init — create the Vulkan device and swapchain.
+#   window_handle: the GLFWwindow* cast to u64; must stay live until gfx::shutdown.
+#   cfg:           device configuration.
+#   returns a valid Device on success; Device { handle = 0 } on failure.
+@pub const init := fn(window_handle: u64, cfg: GfxConfig) -> Device {
+    const h := types::rt_gfx_init(
+        window_handle,
+        cfg.frames_in_flight,
+        cfg.max_textures,
+        cfg.max_samplers,
+        cfg.frame_arena_bytes,
+        cfg.draw_packets_max,
+        cfg.enable_validation,
+        cfg.present_mode as u32,
+    );
+    return Device { handle = h };
+}
+
+# shutdown — destroy all Vulkan resources and free the device.
+#   dev: must be the Device from gfx::init; invalid after this call.
+#   the GLFW window must still be live when this is called.
+@pub const shutdown := fn(dev: Device) {
+    types::rt_gfx_shutdown(dev.handle);
+}
+
+# begin_frame — acquire the next swapchain image and open a command buffer.
+#   returns Cmd { handle = 0 } if the swapchain is out-of-date (window resized);
+#   skip all rendering this frame and call end_frame with the null cmd anyway.
+@pub const begin_frame := fn(dev: Device) -> Cmd {
+    const h := types::rt_gfx_begin_frame(dev.handle);
+    return Cmd { handle = h };
+}
+
+# end_frame — submit commands and present.
+#   cmd: the Cmd from begin_frame; invalid after this call.
+@pub const end_frame := fn(dev: Device, cmd: Cmd) {
+    types::rt_gfx_end_frame(dev.handle, cmd.handle);
+}
+
+# pipeline_from_shader — load shader blobs and create a compiled raster pipeline.
+@pub const pipeline_from_shader := fn(dev: Device, bundle: ShaderBundle) -> Pipeline {
+    return assets::pipeline_from_shader(dev, bundle);
+}
+
+# pipeline_destroy — destroy a pipeline.
+#   must not be in use by any in-flight frame; caller ensures frames_in_flight frames elapsed.
+@pub const pipeline_destroy := fn(dev: Device, pipe: Pipeline) {
+    assets::pipeline_destroy(dev, pipe);
+}
+
+# texture2d_from_rgba8 — synchronously upload a 2D RGBA8 texture.
+#   w, h:  dimensions in texels; both must be > 0.
+#   bytes: []u8 slice of w * h * 4 pixels; borrowed for duration of this call only.
+#   returns Texture2d { handle = 0 } on failure.
+@pub const texture2d_from_rgba8 := fn(dev: Device, w: u32, h: u32,
+                                       bytes: []u8) -> Texture2d {
+    const h_tex := types::rt_gfx_texture2d_create_rgba8(
+        dev.handle, w, h,
+        bytes.ptr, bytes.len as u64,
+        0 as &u8,  # no debug name
+    );
+    return Texture2d { handle = h_tex };
+}
+
+# texture_destroy — queue a texture for deferred destruction.
+#   safe to call while frames are in flight; runtime delays GPU destroy by frames_in_flight.
+#   the texture's descriptor index must not appear in new draw packets after this call.
+@pub const texture_destroy := fn(dev: Device, tex: Texture2d) {
+    types::rt_gfx_texture_destroy(dev.handle, tex.handle);
+}
+
+# sampler_linear — create a bilinear clamp-to-edge sampler.
+#   returns Sampler { handle = 0 } on failure.
+@pub const sampler_linear := fn(dev: Device) -> Sampler {
+    const h_s := types::rt_gfx_sampler_create_linear(dev.handle, 0 as &u8);
+    return Sampler { handle = h_s };
+}
+
+# sampler_destroy — queue a sampler for deferred destruction.
+@pub const sampler_destroy := fn(dev: Device, samp: Sampler) {
+    types::rt_gfx_sampler_destroy(dev.handle, samp.handle);
+}
+
+# FrameAlloc — result of a frame_alloc call.
+@pub const FrameAlloc := struct {
+    # byte offset from the start of frame_arena_ssbo; use as DrawPacket.draw_data_offset
+    offset: u32,
+    # opaque CPU write pointer encoded as u64; cast to &mut T before writing.
+    # valid until this frame slot is recycled (frames_in_flight frames from now).
+    # do NOT store across frame boundaries.
+    ptr: u64,
+}
+
+# frame_alloc — sub-allocate from the current frame's transient upload arena.
+#   must be called between begin_frame and end_frame.
+#   size:  byte count; must be > 0.
+#   align: power-of-two alignment; pass 256 for DrawPacket.draw_data_offset compatibility.
+#   returns FrameAlloc { offset=0, ptr=0 } if the arena is exhausted (treat as fatal in v0).
+@pub const frame_alloc := fn(dev: Device, size: u64, align: u64) -> FrameAlloc {
+    var out_offset: u32 = 0;
+    const raw_ptr := types::rt_gfx_frame_alloc(dev.handle, size, align, out_offset);
+    return FrameAlloc { offset = out_offset, ptr = raw_ptr };
+}

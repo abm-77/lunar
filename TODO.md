@@ -6,10 +6,6 @@
 - [ ] add audio runtime support
   - [ ] play sounds 
   - [ ] mix audio 
-- [ ] add file i/o runtime support
-  - [ ] read files
-  - [ ] write files
-  - [ ] more print variants (sprintf, fprintf, etc);
 - [ ] builtin @asset management
   - [ ] @asset is a builtin that embeds an asset within 
         the produced executable

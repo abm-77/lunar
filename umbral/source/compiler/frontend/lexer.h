@@ -379,8 +379,8 @@ private:
   }
 };
 
-Result<TokenStream> lex_source(std::string_view src, Interner &interner,
-                               const KeywordTable &kws) {
+inline Result<TokenStream> lex_source(std::string_view src, Interner &interner,
+                                      const KeywordTable &kws) {
   Lexer lexer(src, interner, kws);
   return lexer.lex_all();
 }

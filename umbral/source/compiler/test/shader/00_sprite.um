@@ -1,0 +1,41 @@
+# RUN: %uc %s --dump-ir > /dev/null
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const SpriteVertex := struct {
+  @location(0) pos: vec2,
+  @location(1) uv:  vec2,
+};
+
+@shader_pod const SpriteVsOut := struct {
+  @builtin(position) clip: vec4,
+  @location(0)       uv:   vec2,
+};
+
+@shader_pod const SpriteFsOut := struct {
+  @location(0) color: vec4,
+};
+
+@shader const SpriteShader := struct {
+  @vs_in   vin:  SpriteVertex,
+  @vs_out  vout: SpriteVsOut,
+  @fs_in   fin:  SpriteVsOut,
+  @fs_out  fout: SpriteFsOut,
+};
+
+impl SpriteShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    self.vout.clip = vec4(self.vin.pos.x, self.vin.pos.y, 0.0, 1.0);
+    self.vout.uv   = vec2(self.vin.uv.x, self.vin.uv.y);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    const tex  := @texture2d(0);
+    const samp := @sampler(0);
+    const col  := @sample(tex, samp, self.fin.uv);
+    self.fout.color = col;
+  };
+}

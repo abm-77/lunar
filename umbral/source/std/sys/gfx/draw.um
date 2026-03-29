@@ -1,0 +1,118 @@
+import sys.gfx.types;
+
+# gfx/draw.um — draw stream builder.
+#
+# usage pattern per frame:
+#   var ds := types::DrawStream::begin(dev, cmd, pipeline);
+#   ds.push_sprite(tex, samp, transform_offset, ...);
+#   ds.push_sprite(...);
+#   ds.submit();
+#
+# the stream accumulates DrawPacket values into an internal fixed-size array.
+# submit() uploads them all to the runtime in one call.
+# the array is stack-allocated for v0; increase DS_MAX_PACKETS if needed.
+
+@pub const DS_MAX_PACKETS: u32 = 4096;
+
+@pub const DrawStream := struct {
+    # device and command token for this frame; both must remain valid until submit()
+    dev:      types::Device,
+    cmd:      types::Cmd,
+    # pipeline to use for all draw calls in this stream (v0: one pipeline per stream)
+    pipeline: types::Pipeline,
+    # accumulated packets; written by push_* calls; consumed by submit()
+    # TODO: replace with a heap-backed List<DrawPacket> when list is stable
+    packets:  [4096]types::DrawPacket,
+    count:    u32,
+}
+
+# DrawStream::begin — open a new draw stream for the current frame.
+#   dev:      the device for this frame; must be valid.
+#   cmd:      the command token returned by gfx::begin_frame; must be valid.
+#   pipeline: the compiled pipeline all draws in this stream will use.
+#   returns an uninitialized DrawStream struct ready to receive push calls.
+#   must be followed by exactly one submit() call before end_frame.
+@pub impl DrawStream {
+    @pub const begin := fn(dev: types::Device, cmd: types::Cmd,
+                            pipeline: types::Pipeline) -> DrawStream {
+        # TODO: assert dev.handle != 0 && cmd.handle != 0 && pipeline.handle != 0
+        return DrawStream {
+            dev      = dev,
+            cmd      = cmd,
+            pipeline = pipeline,
+            count    = 0,
+        };
+    }
+
+    # push_sprite — append a textured quad draw for a 2D sprite.
+    #   self:             the stream to append to; must not be submitted yet.
+    #   tex:              the texture to sample; tex.handle must be non-zero.
+    #   samp:             the sampler to use with tex.
+    #   draw_data_offset: frame arena offset for per-draw constants (transform, tint, z-order).
+    #                     obtain by calling gfx::frame_alloc and writing a SpriteData struct.
+    #   instance_count:   number of sprite instances sharing this packet; typically 1.
+    #   first_instance:   gl_InstanceIndex base; use 0 unless batching multiple sprites.
+    # a sprite is a non-indexed procedural quad: 6 vertices generated in the vertex shader
+    # from gl_VertexIndex (two triangles; 0-1-2, 2-3-0 winding).
+    # asserts self.count < DS_MAX_PACKETS.
+    @pub const push_sprite := fn(self: &mut DrawStream,
+                                  tex:              types::Texture2d,
+                                  samp:             types::Sampler,
+                                  draw_data_offset: u32,
+                                  instance_count:   u32,
+                                  first_instance:   u32) {
+        # TODO: assert self.count < DS_MAX_PACKETS
+        # extract descriptor indices from the lower 32 bits of each handle
+        var tex2d_idx:  u32 = tex.handle  as u32;
+        var samp_idx:   u32 = samp.handle as u32;
+
+        self.packets[self.count] = types::DrawPacket {
+            pipeline_handle       = self.pipeline.handle,
+            vertex_buffer_handle  = 0,   # procedural quad; no vertex buffer
+            index_buffer_handle   = 0,
+            first_index           = 0,
+            index_count           = 0,
+            vertex_count          = 6,   # two triangles = 6 vertices for a quad
+            instance_count        = instance_count,
+            first_instance        = first_instance,
+            draw_data_offset      = draw_data_offset,
+            material_data_offset  = 0,
+            tex2d_index           = tex2d_idx,
+            sampler_index         = samp_idx,
+            flags                 = 0,
+        };
+        self.count += 1;
+    }
+
+    # push_draw_packet — append a fully-specified draw packet verbatim.
+    # use this for mesh draws or any draw that does not fit the sprite template.
+    #   self:   the stream; must not be submitted yet.
+    #   packet: a fully constructed DrawPacket; pipeline_handle is overwritten with
+    #           self.pipeline.handle so the caller does not need to fill it in.
+    # asserts self.count < DS_MAX_PACKETS.
+    @pub const push_draw_packet := fn(self: &mut DrawStream, packet: types::DrawPacket) {
+        # TODO: assert self.count < DS_MAX_PACKETS
+        var p := packet;
+        p.pipeline_handle = self.pipeline.handle;
+        self.packets[self.count] = p;
+        self.count += 1;
+    }
+
+    # submit — upload accumulated packets and record draw calls into the command buffer.
+    #   self: the stream; must not have been submitted before; count must be > 0.
+    # after submit, the stream must not be used; create a new one via begin() next frame.
+    # all draw_data_offset values in submitted packets must have been written to
+    # before submit() returns (writes are visible immediately; no extra flush needed for
+    # HOST_COHERENT memory).
+    @pub const submit := fn(self: &mut DrawStream) {
+        # TODO: assert self.count > 0
+        # TODO: assert self.cmd.handle != 0
+        types::rt_gfx_submit_draw_packets(
+            self.cmd.handle,
+            self.pipeline.handle,
+            self.packets[0],  # TODO: pass as slice &packets[0..count]
+            self.count,
+        );
+        self.count = 0;  # prevent double-submit
+    }
+}

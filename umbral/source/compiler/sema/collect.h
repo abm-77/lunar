@@ -25,7 +25,7 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
   for (const Decl &d : mod.decls) {
     Symbol s;
     s.name = d.name;
-    s.is_pub = d.is_pub;
+    if (has(d.flags, DeclFlags::Pub)) s.flags = s.flags | SymFlags::Pub;
     s.span = d.span;
     s.module_idx = module_idx;
 
@@ -65,13 +65,13 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
         s.kind = SymbolKind::GlobalVar;
         s.annotate_type = d.type;
         s.init_expr = d.init;
-        s.is_mut = (d.kind == DeclKind::Var);
+        if (d.kind == DeclKind::Var) s.flags = s.flags | SymFlags::Mut;
       } break;
       }
     } else {
       // no initializer. for extern declarations, the type annotation determines
       // whether this is an extern function (FnType) or an extern global.
-      if (d.is_extern && d.type != 0 && type_ast.kind[d.type] == TypeKind::Fn) {
+      if (has(d.flags, DeclFlags::Extern) && d.type != 0 && type_ast.kind[d.type] == TypeKind::Fn) {
         s.kind = SymbolKind::Func;
         s.annotate_type = d.type; // FnType TypeId — used by codegen
         // populate ret_type so body_check can type-check calls.
@@ -80,11 +80,11 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       } else {
         s.kind = SymbolKind::GlobalVar;
         s.annotate_type = d.type;
-        s.is_mut = (d.kind == DeclKind::Var);
+        if (d.kind == DeclKind::Var) s.flags = s.flags | SymFlags::Mut;
       }
     }
 
-    s.is_extern = d.is_extern;
+    if (has(d.flags, DeclFlags::Extern)) s.flags = s.flags | SymFlags::Extern;
     s.generics_start = d.generics_start;
     s.generics_count = d.generics_count;
 
@@ -119,6 +119,14 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       s.impl_owner = impl.type_name;
       s.generics_start = impl_generics_start;
       s.generics_count = impl_generics_count;
+
+      // mark @stage methods so native codegen skips them
+      for (const ShaderStageInfo &si : mod.shader_stages) {
+        if (si.shader_type == impl.type_name && si.method_name == m.name) {
+          s.flags = s.flags | SymFlags::ShaderStage;
+          break;
+        }
+      }
 
       // impl methods may share names across types; don't dedup-check
       table.add(module_idx, std::move(s));

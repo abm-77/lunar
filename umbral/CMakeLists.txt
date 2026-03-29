@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Passed from superbuild
 set(GLFW_ROOT "" CACHE PATH "GLFW install prefix")
 set(DEPS_VK_HEADERS "" CACHE PATH "Vulkan-Headers include path")
+set(LZ4_DIR "" CACHE PATH "lz4 source root (third_party/lz4)")
 set(COMPILER_DIR "${CMAKE_SOURCE_DIR}/source")
 
 # Vulkan loader from system / SDK
@@ -26,11 +27,13 @@ add_library(runtime STATIC
 ./source/runtime/fmt.c
 ./source/runtime/mem.c
 ./source/runtime/window.c
+./source/runtime/gfx/gfx_vulkan.c
 )
 target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
 "${GLFW_INCLUDE_DIR}"
 ./source/runtime
+./source/runtime/gfx
 )
 target_link_libraries(runtime PUBLIC
 "${GLFW_LIB}"
@@ -99,6 +102,13 @@ enable_testing()
 set(GOOGLETEST_DIR "" CACHE PATH "googletest source root")
 add_subdirectory(${GOOGLETEST_DIR} ${CMAKE_BINARY_DIR}/googletest EXCLUDE_FROM_ALL)
 
+# LZ4 — static library only; disable the CLI tool and shared lib.
+set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS_SAVE ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
+add_subdirectory(${LZ4_DIR}/build/cmake ${CMAKE_BINARY_DIR}/lz4 EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVE})
+
 include(GoogleTest)
 
 add_executable(interner_tests
@@ -163,6 +173,46 @@ target_include_directories(window_tests PRIVATE "${GLFW_INCLUDE_DIR}" ./source/r
 target_compile_definitions(window_tests PRIVATE UM_TESTING=1 UM_DEBUG=0)
 target_link_libraries(window_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(window_tests)
+
+# ---- asset linker ----
+# SPIR-V backend — requires LLVM built with -DLLVM_TARGETS_TO_BUILD=X86;SPIRV
+# (already set in root CMakeLists.txt; rebuild llvm_ep if not yet done).
+llvm_map_components_to_libnames(UL_LLVM_LIBS
+  SPIRVCodeGen SPIRVDesc SPIRVInfo
+  Core Support MC TargetParser
+)
+
+add_executable(ul
+  ./source/tools/ul/main.cc
+  ./source/tools/ul/tex.cc
+  ./source/tools/ul/audio.cc
+  ./source/tools/ul/pack.cc
+  ./source/tools/ul/shader_link.cc
+  ./source/tools/ul/spirv_emit.cc
+  ./source/tools/ul/umrf_emit.cc
+)
+target_include_directories(ul PRIVATE
+  ${COMPILER_DIR}
+  ./source/tools/ul
+  ${LLVM_INCLUDE_DIRS}
+)
+target_compile_definitions(ul PRIVATE ${LLVM_DEFINITIONS})
+target_link_libraries(ul PRIVATE ${UL_LLVM_LIBS} lz4_static)
+
+add_executable(shader_tests
+  ./source/tools/ul/spirv_emit.cc
+  ./source/tools/ul/shader_link.cc
+  ./source/tools/ul/umrf_emit.cc
+  ./source/tools/ul/test/shader_tests.cc
+)
+target_include_directories(shader_tests PRIVATE
+  ${COMPILER_DIR}
+  ./source/tools/ul
+  ${LLVM_INCLUDE_DIRS}
+)
+target_compile_definitions(shader_tests PRIVATE ${LLVM_DEFINITIONS})
+target_link_libraries(shader_tests PRIVATE GTest::gtest_main ${UL_LLVM_LIBS})
+gtest_discover_tests(shader_tests)
 
 # lit functional tests
 set(FILECHECK "${CMAKE_SOURCE_DIR}/../build/_b_llvm/bin/FileCheck" CACHE PATH "Path to FileCheck binary" FORCE)

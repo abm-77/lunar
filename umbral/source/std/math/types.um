@@ -1,0 +1,9 @@
+@pub const vec2 := struct { x: f32, y: f32 };
+@pub const vec3 := struct { x: f32, y: f32, z: f32 };
+@pub const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+@pub const mat4 := struct {
+  col0: vec4,
+  col1: vec4,
+  col2: vec4,
+  col3: vec4,
+};

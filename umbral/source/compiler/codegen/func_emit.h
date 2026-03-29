@@ -50,7 +50,7 @@ struct FuncEmitter {
     for (u32 i = 0; i < sym.sig.params_count; ++i) {
       const FuncParam &fp = mod.params[sym.sig.params_start + i];
       llvm::Type *ty = nullptr;
-      if (sym.is_mono_instance) {
+      if (has(sym.flags, SymFlags::MonoInstance)) {
         // mono_concrete_params excludes self; mono_self_ctype holds it separately.
         if (i == 0 && sym.mono_self_ctype != 0) {
           ty = cg.type_lower.lower(sym.mono_self_ctype);
@@ -299,6 +299,7 @@ struct FuncEmitter {
   llvm::Value *emit_expr(NodeId n) {
     switch (ir.nodes.kind[n]) {
     case NodeKind::IntLit: return emit_int_lit(n);
+    case NodeKind::FloatLit: return emit_float_lit(n);
     case NodeKind::BoolLit: return emit_bool_lit(n);
     case NodeKind::StrLit: return emit_str_lit(n);
     case NodeKind::Ident: return emit_ident(n);
@@ -327,6 +328,14 @@ struct FuncEmitter {
     case NodeKind::MemMov:   return emit_memmov(n);
     case NodeKind::MemSet:   return emit_memset(n);
     case NodeKind::MemCmp:   return emit_memcmp(n);
+    case NodeKind::ShaderTexture2d:
+    case NodeKind::ShaderSampler:
+    case NodeKind::ShaderSample:
+    case NodeKind::ShaderDrawId:
+    case NodeKind::ShaderDrawPacket:
+    case NodeKind::ShaderFrameRead:
+    case NodeKind::ShaderRef:
+      llvm_unreachable("shader intrinsic in native codegen");
     default: assert(false && "unhandled expression kind"); return nullptr;
     }
   }
@@ -337,6 +346,13 @@ struct FuncEmitter {
     return llvm::ConstantInt::get(
         ty, ir.nodes.a[n],
         /*IsSigned=*/is_signed(cg.sema.types.types[ctid].kind));
+  }
+
+  llvm::Value *emit_float_lit(NodeId n) {
+    CTypeId ctid = bsema.node_type[n].concrete;
+    llvm::Type *ty = cg.type_lower.lower(ctid);
+    double val = ir.float_lits[ir.nodes.a[n]];
+    return llvm::ConstantFP::get(ty, val);
   }
 
   llvm::Value *emit_bool_lit(NodeId n) {
@@ -502,6 +518,21 @@ struct FuncEmitter {
     llvm::Value *callee_val = nullptr;
 
     SymbolId callee_sym_id = bsema.node_symbol[callee_nid];
+    if (callee_sym_id != 0 &&
+        cg.sema.syms.symbols[callee_sym_id].kind == SymbolKind::Type) {
+      // positional struct construction: TypeName(arg0, arg1, ...)
+      CTypeId ctid = bsema.node_type[n].concrete;
+      llvm::Type *sty = cg.type_lower.lower(ctid);
+      auto *sty_s = llvm::cast<llvm::StructType>(sty);
+      auto *slot = create_entry_alloca(sty, "sctor");
+      for (u32 i = 0; i < args_count; ++i) {
+        NodeId val_nid = ir.nodes.list[args_start + i];
+        llvm::Value *val = coerce_int(emit_expr(val_nid), sty_s->getElementType(i), val_nid);
+        auto *fp = builder.CreateStructGEP(sty, slot, i);
+        builder.CreateStore(val, fp);
+      }
+      return builder.CreateLoad(sty, slot);
+    }
     if (callee_sym_id != 0) {
       if (auto it = cg.fn_map.find(callee_sym_id); it != cg.fn_map.end()) {
         // direct function/method call.

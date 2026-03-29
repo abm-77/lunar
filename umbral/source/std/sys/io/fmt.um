@@ -1,4 +1,4 @@
-@extern rt_fmt_print_line : fn([]u8, []Arg) -> void;
+@extern const rt_fmt_print_line : fn([]u8, []Arg) -> void;
 
 @pub const ArgTag := enum {
   # store in a

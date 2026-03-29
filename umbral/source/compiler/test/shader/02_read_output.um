@@ -1,0 +1,26 @@
+# RUN: not %uc %s
+# CHECK: write-only shader field
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const SpriteVertex := struct {
+  @location(0) pos: vec2,
+};
+
+@shader_pod const SpriteVsOut := struct {
+  @builtin(position) clip: vec4,
+};
+
+@shader const SpriteShader := struct {
+  @vs_in  vin:  SpriteVertex,
+  @vs_out vout: SpriteVsOut,
+};
+
+impl SpriteShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    # reading self.vout.clip is a write-only field access — error
+    const _ := self.vout.clip;
+  };
+}

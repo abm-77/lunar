@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <common/error.h>
@@ -12,8 +13,9 @@
 
 class Parser {
 public:
-  Parser(const TokenStream &ts, const IntrinsicTable &intrinsics)
-      : t(ts), intrinsics(intrinsics) {}
+  Parser(const TokenStream &ts, const IntrinsicTable &intrinsics,
+         const Interner &interner, std::string_view src = {})
+      : t(ts), intrinsics(intrinsics), interner(interner), src(src) {}
   std::optional<Error> error() const { return err; }
 
   BodyIR body_ir;
@@ -27,8 +29,13 @@ public:
 private:
   const TokenStream &t;
   const IntrinsicTable &intrinsics;
+  const Interner &interner;
+  std::string_view src;
   u32 i = 0;
   std::optional<Error> err;
+  // set to the name of the enclosing module-level decl before parsing its init
+  // expression, so the struct type parser can key field annotations to it.
+  SymId current_struct_name = 0;
 
   // token helpers
   TokenKind k(u32 look = 0) const { return t.kind[i + look]; }
@@ -117,6 +124,59 @@ private:
       return 0;
     }
     return static_cast<SymId>(t.payload[i - 1]);
+  }
+
+  // parse optional per-field annotations (@vs_in/@location(n)/etc.) then the
+  // field SymId. records any annotations in mod.shader_field_annots /
+  // mod.io_field_annots keyed by struct_name. called only from struct-type
+  // body parsing.
+  SymId parse_struct_field_name(SymId struct_name) {
+    ShaderFieldKind sfk = ShaderFieldKind::None;
+    IOAnnotKind iok = IOAnnotKind::None;
+    u32 loc_idx = 0;
+    while (at(TokenKind::At) && k(1) == TokenKind::Ident) {
+      SymId iname = static_cast<SymId>(t.payload[i + 1]);
+      auto ikind = intrinsics.lookup(iname);
+      if (!ikind) break;
+      bool consumed = true;
+      switch (*ikind) {
+      case IntrinsicKind::VsIn:     i += 2; sfk = ShaderFieldKind::VsIn;     break;
+      case IntrinsicKind::VsOut:    i += 2; sfk = ShaderFieldKind::VsOut;    break;
+      case IntrinsicKind::FsIn:     i += 2; sfk = ShaderFieldKind::FsIn;     break;
+      case IntrinsicKind::FsOut:    i += 2; sfk = ShaderFieldKind::FsOut;    break;
+      case IntrinsicKind::DrawData: i += 2; sfk = ShaderFieldKind::DrawData; break;
+      case IntrinsicKind::Location: {
+        i += 2;
+        expect(TokenKind::LParen, "expected '(' after @location");
+        if (at(TokenKind::Int)) { loc_idx = t.payload[i]; ++i; }
+        else set_error(sp(), "expected integer location index");
+        expect(TokenKind::RParen, "expected ')'");
+        iok = IOAnnotKind::Location;
+        break;
+      }
+      case IntrinsicKind::ShaderBuiltin: {
+        i += 2;
+        expect(TokenKind::LParen, "expected '(' after @builtin");
+        Span builtin_sp = sp();
+        SymId builtin_id = expect_ident("expected 'position'");
+        if (builtin_id != 0 && interner.view(builtin_id) != "position")
+          set_error(builtin_sp, "@builtin: only 'position' is supported");
+        expect(TokenKind::RParen, "expected ')'");
+        iok = IOAnnotKind::BuiltinPosition;
+        break;
+      }
+      default: consumed = false; break;
+      }
+      if (!consumed) break;
+    }
+    SymId field_name = expect_ident("expected field name");
+    if (field_name != 0 && struct_name != 0) {
+      if (sfk != ShaderFieldKind::None)
+        mod.shader_field_annots.push_back({struct_name, field_name, sfk});
+      if (iok != IOAnnotKind::None)
+        mod.io_field_annots.push_back({struct_name, field_name, iok, loc_idx});
+    }
+    return field_name;
   }
 
   // peek-scan for generic args '<' ... '>' followed by '{' or '::'.
@@ -440,6 +500,68 @@ private:
         expect(TokenKind::RParen, "expected ')'");
         return body_ir.nodes.make(NodeKind::MetaField, s, obj, field_var);
       }
+      case IntrinsicKind::Texture2d: {
+        expect(TokenKind::LParen, "expected '('");
+        NodeId idx = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderTexture2d, s, idx);
+      }
+      case IntrinsicKind::Sampler: {
+        expect(TokenKind::LParen, "expected '('");
+        NodeId idx = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderSampler, s, idx);
+      }
+      case IntrinsicKind::Sample: {
+        expect(TokenKind::LParen, "expected '('");
+        NodeId tex = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId samp = parse_expr();
+        expect(TokenKind::Comma, "expected ','");
+        NodeId uv = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderSample, s, tex, samp, uv);
+      }
+      case IntrinsicKind::DrawId: {
+        expect(TokenKind::LParen, "expected '('");
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderDrawId, s);
+      }
+      case IntrinsicKind::DrawPacket: {
+        expect(TokenKind::LParen, "expected '('");
+        NodeId id = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderDrawPacket, s, id);
+      }
+      case IntrinsicKind::FrameRead: {
+        // @frame_read<T>(offset)
+        expect(TokenKind::Less, "expected '<' after @frame_read");
+        TypeId elem_ty = parse_type();
+        expect(TokenKind::Greater, "expected '>'");
+        expect(TokenKind::LParen, "expected '('");
+        NodeId offset = parse_expr();
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderFrameRead, s, offset, elem_ty);
+      }
+      case IntrinsicKind::ShaderRef: {
+        expect(TokenKind::LParen, "expected '('");
+        SymId shader_sym = expect_ident("expected shader struct type name");
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderRef, s, shader_sym);
+      }
+      // annotation-only intrinsics: not valid in expression context
+      case IntrinsicKind::Shader:
+      case IntrinsicKind::ShaderPod:
+      case IntrinsicKind::Stage:
+      case IntrinsicKind::VsIn:
+      case IntrinsicKind::VsOut:
+      case IntrinsicKind::FsIn:
+      case IntrinsicKind::FsOut:
+      case IntrinsicKind::DrawData:
+      case IntrinsicKind::Location:
+      case IntrinsicKind::ShaderBuiltin:
+        set_error(s, "annotation-only intrinsic in expression context");
+        return 0;
       // MetaGen, MetaElseIf, MetaAssert: handled as statements, not expressions
       default: set_error(s, "unhandled intrinsic"); return 0;
       }
@@ -513,14 +635,15 @@ private:
         return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid, 0, 0);
       }
 
-      SymId fname = expect_ident("expected field name");
+      SymId fname = parse_struct_field_name(current_struct_name);
 
       if (match(TokenKind::Equal)) {
         // StructExpr: field = expr pairs
         NodeId fval = parse_expr();
         std::vector<u32> packed = {fname, fval};
-        while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace)) {
-          SymId fn2 = expect_ident("expected field name");
+        while (!err && (match(TokenKind::Comma) || match(TokenKind::Semicolon))
+               && !at(TokenKind::RBrace)) {
+          SymId fn2 = parse_struct_field_name(current_struct_name);
           expect(TokenKind::Equal, "expected '='");
           NodeId fv2 = parse_expr();
           packed.push_back(fn2);
@@ -533,12 +656,13 @@ private:
         return body_ir.nodes.make(NodeKind::StructExpr, endsp, 0, ls,
                                   field_count);
       } else {
-        // StructType: field: Type pairs
+        // StructType: field: Type pairs (comma or semicolon separated)
         expect(TokenKind::Colon, "expected ':' or '='");
         TypeId ftype = parse_type();
         std::vector<u32> packed = {fname, ftype};
-        while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace)) {
-          SymId fn2 = expect_ident("expected field name");
+        while (!err && (match(TokenKind::Comma) || match(TokenKind::Semicolon))
+               && !at(TokenKind::RBrace)) {
+          SymId fn2 = parse_struct_field_name(current_struct_name);
           expect(TokenKind::Colon, "expected ':'");
           TypeId ft2 = parse_type();
           packed.push_back(fn2);
@@ -588,6 +712,17 @@ private:
     }
 
     if (match(TokenKind::Int)) return body_ir.nodes.make(NodeKind::IntLit, s, t.payload[i - 1]);
+    if (match(TokenKind::Float)) {
+      u32 idx = static_cast<u32>(body_ir.float_lits.size());
+      Span fs = {t.start[i - 1], t.end[i - 1]};
+      double val = 0.0;
+      if (!src.empty()) {
+        std::string raw(src.data() + fs.start, fs.end - fs.start);
+        try { val = std::stod(raw); } catch (...) { val = 0.0; }
+      }
+      body_ir.float_lits.push_back(val);
+      return body_ir.nodes.make(NodeKind::FloatLit, s, idx);
+    }
     if (match(TokenKind::String))
       return body_ir.nodes.make(NodeKind::StrLit, s, t.payload[i - 1]);
     if (match(TokenKind::KwTrue_))
@@ -828,7 +963,7 @@ private:
         return body_ir.nodes.make(NodeKind::MetaAssert, endsp, cond, msg_n);
       }
     }
-    // unrecognised — try as expression anyway
+    // unrecognized — try as expression anyway
     return parse_expr();
   }
 
@@ -1156,45 +1291,53 @@ private:
       impl_block.generic_params = std::move(impl_generics);
       while (!at(TokenKind::RBrace) && !at(TokenKind::Eof) && !err) {
         auto ms = sp();
-        // optional @gen annotation before const/var
         bool is_gen_method = false;
+        SymId stage_name_sym = 0;
         while (at(TokenKind::At) && k(1) == TokenKind::Ident) {
           SymId iname = static_cast<SymId>(t.payload[i + 1]);
           auto ikind = intrinsics.lookup(iname);
-          if (ikind && *ikind == IntrinsicKind::MetaGen) { is_gen_method = true; i += 2; }
+          if (!ikind) break;
+          if (*ikind == IntrinsicKind::MetaGen) { is_gen_method = true; i += 2; }
+          else if (*ikind == IntrinsicKind::Stage) {
+            i += 2;
+            expect(TokenKind::LParen, "expected '(' after @stage");
+            stage_name_sym = expect_ident("expected 'vertex' or 'fragment'");
+            expect(TokenKind::RParen, "expected ')' after stage name");
+          }
           else break;
         }
         DeclKind mkind;
         if (match(TokenKind::KwConst)) mkind = DeclKind::Const;
         else if (match(TokenKind::KwVar)) mkind = DeclKind::Var;
-        else {
-          set_error(sp(), "expected method declaration in impl block");
-          ++i;
-          continue;
-        }
+        else { set_error(ms, "expected method declaration in impl block"); ++i; continue; }
         SymId mname = expect_ident("expected method name");
         TypeId mty = 0;
         NodeId minit = 0;
-        if (match(TokenKind::LParen)) {
-          // shorthand: name(params) [-> ret] { body }
+        if (at(TokenKind::LParen)) {
+          expect(TokenKind::LParen, "expected '('");
           auto [ps, pc] = parse_fn_params();
           TypeId ret = 0;
           if (match(TokenKind::Arrow)) ret = parse_type();
           NodeId body = parse_block();
           u32 idx = static_cast<u32>(body_ir.fn_lits.size());
           body_ir.fn_lits.push_back({ps, pc, ret, body});
-          Span mend2 = {ms.start, t.end[i - 1]};
-          minit = body_ir.nodes.make(NodeKind::FnLit, mend2, idx);
-        } else if (match(TokenKind::ColonEqual)) {
-          minit = parse_expr();
+          Span endsp = {ms.start, t.end[i - 1]};
+          minit = body_ir.nodes.make(NodeKind::FnLit, endsp, idx);
+          match(TokenKind::Semicolon);
         } else {
-          if (match(TokenKind::Colon)) mty = parse_type();
-          if (match(TokenKind::Equal)) minit = parse_expr();
+          if (match(TokenKind::ColonEqual)) {
+            minit = parse_expr();
+          } else {
+            if (match(TokenKind::Colon)) mty = parse_type();
+            if (match(TokenKind::Equal)) minit = parse_expr();
+          }
+          match(TokenKind::Semicolon);
         }
-        match(TokenKind::Semicolon); // optional
-        Span mend = {ms.start, t.end[i - 1]};
+        Span endsp = {ms.start, t.end[i - 1]};
         impl_block.methods.push_back(
-            {mname, mty, minit, 0, 0, false, false, is_gen_method, mkind, mend});
+          {mname, mty, minit, 0, 0, is_gen_method ? DeclFlags::Gen : DeclFlags::None, mkind, endsp});
+        if (stage_name_sym != 0)
+          mod.shader_stages.push_back({type_name, mname, stage_name_sym});
       }
       expect(TokenKind::RBrace, "expected '}'");
       match(TokenKind::Semicolon); // optional trailing ';'
@@ -1203,23 +1346,28 @@ private:
       return;
     }
 
-    // consume leading annotations: @pub, @gen, @extern
-    bool is_pub = false, is_gen = false;
+    // consume leading annotations: @pub, @gen, @extern, @shader, @shader_pod
+    DeclFlags decl_flags = DeclFlags::None;
     while (at(TokenKind::At) && k(1) == TokenKind::Ident) {
       SymId iname = static_cast<SymId>(t.payload[i + 1]);
       auto ikind = intrinsics.lookup(iname);
       if (!ikind) break;
-      if (*ikind == IntrinsicKind::Pub) { is_pub = true; i += 2; }
-      else if (*ikind == IntrinsicKind::MetaGen) { is_gen = true; i += 2; }
+      if (*ikind == IntrinsicKind::Pub)            { decl_flags = decl_flags | DeclFlags::Pub;       i += 2; }
+      else if (*ikind == IntrinsicKind::MetaGen)   { decl_flags = decl_flags | DeclFlags::Gen;       i += 2; }
+      else if (*ikind == IntrinsicKind::Shader)    { decl_flags = decl_flags | DeclFlags::Shader;    i += 2; }
+      else if (*ikind == IntrinsicKind::ShaderPod) { decl_flags = decl_flags | DeclFlags::ShaderPod; i += 2; }
       else if (*ikind == IntrinsicKind::Extern) {
         i += 2; // consume '@extern'
+        if (!match(TokenKind::KwConst) && !match(TokenKind::KwVar))
+          set_error(s, "expected 'const' or 'var' after @extern");
         // @extern name : type ;
         SymId ename = expect_ident("expected extern declaration name");
         expect(TokenKind::Colon, "expected ':'");
         TypeId ty = parse_type();
         match(TokenKind::Semicolon);
         Span endsp = {s.start, t.end[i - 1]};
-        mod.decls.push_back({ename, ty, 0, 0, 0, is_pub, true, false, DeclKind::Const, endsp});
+        mod.decls.push_back({ename, ty, 0, 0, 0,
+                              decl_flags | DeclFlags::Extern, DeclKind::Const, endsp});
         return;
       }
       else break;
@@ -1269,18 +1417,21 @@ private:
       init = body_ir.nodes.make(NodeKind::FnLit, endsp, idx);
       match(TokenKind::Semicolon);
       mod.decls.push_back({name, ty, init, generics_start, generics_count,
-                           is_pub, false, is_gen, kind, endsp});
+                           decl_flags, kind, endsp});
       return;
     }
+    // set current_struct_name so the struct body parser can key field annotations
+    current_struct_name = name;
     if (match(TokenKind::ColonEqual)) {
       init = parse_expr();
     } else {
       if (match(TokenKind::Colon)) ty = parse_type();
       if (match(TokenKind::Equal)) init = parse_expr();
     }
+    current_struct_name = 0;
     match(TokenKind::Semicolon); // optional at module level
     Span endsp = {s.start, t.end[i - 1]};
-    mod.decls.push_back(
-        {name, ty, init, generics_start, generics_count, is_pub, false, is_gen, kind, endsp});
+    mod.decls.push_back({name, ty, init, generics_start, generics_count,
+                         decl_flags, kind, endsp});
   }
 };

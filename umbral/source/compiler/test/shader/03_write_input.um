@@ -1,0 +1,26 @@
+# RUN: not %uc %s
+# CHECK: read-only shader field
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const SpriteVertex := struct {
+  @location(0) pos: vec2,
+};
+
+@shader_pod const SpriteVsOut := struct {
+  @builtin(position) clip: vec4,
+};
+
+@shader const SpriteShader := struct {
+  @vs_in  vin:  SpriteVertex,
+  @vs_out vout: SpriteVsOut,
+};
+
+impl SpriteShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    # assigning to self.vin.pos is a read-only field access — error
+    self.vin.pos = vec2(0.0, 0.0);
+  };
+}

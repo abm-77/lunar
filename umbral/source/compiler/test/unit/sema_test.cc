@@ -14,9 +14,7 @@
 #include <compiler/sema/sema.h>
 #include <compiler/sema/symbol.h>
 
-// ============================================================
 // Fixture — parses a source string and exposes sema state
-// ============================================================
 
 struct SemaFixture : ::testing::Test {
   Interner interner;
@@ -32,7 +30,7 @@ struct SemaFixture : ::testing::Test {
     EXPECT_TRUE(lex_result->has_value()) << "lex failed";
     IntrinsicTable intrinsics;
     intrinsics.init(interner);
-    parser.emplace(lex_result->value(), intrinsics);
+    parser.emplace(lex_result->value(), intrinsics, interner);
     parser->parse_module();
     EXPECT_FALSE(parser->error().has_value())
         << "parse error: " << (parser->error() ? parser->error()->msg : "");
@@ -46,9 +44,7 @@ struct SemaFixture : ::testing::Test {
   }
 };
 
-// ============================================================
 // Phase 1: collect_symbols
-// ============================================================
 
 TEST_F(SemaFixture, CollectFunction) {
   parse("const add := fn (a: i32, b: i32) -> i32 { return a; }");
@@ -92,7 +88,7 @@ TEST_F(SemaFixture, CollectGlobalVar) {
   SymbolId sid = table.lookup(0, interner.intern("x"));
   EXPECT_NE(sid, kInvalidSymbol);
   EXPECT_EQ(table.get(sid).kind, SymbolKind::GlobalVar);
-  EXPECT_TRUE(table.get(sid).is_mut);
+  EXPECT_TRUE(has(table.get(sid).flags, SymFlags::Mut));
 }
 
 TEST_F(SemaFixture, CollectConstVar) {
@@ -104,7 +100,7 @@ TEST_F(SemaFixture, CollectConstVar) {
   SymbolId sid = table.lookup(0, interner.intern("x"));
   EXPECT_NE(sid, kInvalidSymbol);
   EXPECT_EQ(table.get(sid).kind, SymbolKind::GlobalVar);
-  EXPECT_FALSE(table.get(sid).is_mut);
+  EXPECT_FALSE(has(table.get(sid).flags, SymFlags::Mut));
 }
 
 TEST_F(SemaFixture, CollectDuplicateNameError) {
@@ -150,7 +146,7 @@ TEST_F(SemaFixture, CollectExternFunc) {
   ASSERT_NE(sid, kInvalidSymbol);
   const Symbol &sym = table.get(sid);
   EXPECT_EQ(sym.kind, SymbolKind::Func);
-  EXPECT_TRUE(sym.is_extern);
+  EXPECT_TRUE(has(sym.flags, SymFlags::Extern));
   EXPECT_EQ(sym.body, 0u) << "extern func must have no body";
   EXPECT_NE(sym.sig.ret_type, 0u)
       << "extern func must have ret_type for call type-checking";
@@ -166,7 +162,7 @@ TEST_F(SemaFixture, CollectExternGlobalVar) {
   ASSERT_NE(sid, kInvalidSymbol);
   const Symbol &sym = table.get(sid);
   EXPECT_EQ(sym.kind, SymbolKind::GlobalVar);
-  EXPECT_TRUE(sym.is_extern);
+  EXPECT_TRUE(has(sym.flags, SymFlags::Extern));
   EXPECT_NE(sym.annotate_type, 0u);
 }
 
@@ -180,13 +176,11 @@ TEST_F(SemaFixture, CollectExternConst) {
   ASSERT_NE(sid, kInvalidSymbol);
   const Symbol &sym = table.get(sid);
   EXPECT_EQ(sym.kind, SymbolKind::GlobalVar);
-  EXPECT_TRUE(sym.is_extern);
-  EXPECT_FALSE(sym.is_mut);
+  EXPECT_TRUE(has(sym.flags, SymFlags::Extern));
+  EXPECT_FALSE(has(sym.flags, SymFlags::Mut));
 }
 
-// ============================================================
 // Phase 2: lower_types
-// ============================================================
 
 struct LowerFixture : SemaFixture {
   std::optional<SymbolTable> syms;
@@ -264,9 +258,7 @@ TEST_F(LowerFixture, LowerUserDefinedStruct) {
   EXPECT_EQ(types->types[*r].symbol, syms->lookup(0, foo_sym));
 }
 
-// ============================================================
 // Phase 3: method_table
-// ============================================================
 
 TEST_F(SemaFixture, MethodTableBasic) {
   auto sr =
@@ -300,9 +292,7 @@ TEST_F(SemaFixture, MethodTableMultipleImpls) {
       << "A::get and B::get should be different symbols";
 }
 
-// ============================================================
 // Phase 4: body_check / full sema pipeline
-// ============================================================
 
 TEST_F(SemaFixture, SemaSimpleFunction) {
   auto sr = sema("const add := fn (a: i32, b: i32) -> i32 { return a; }");
@@ -394,9 +384,7 @@ TEST_F(SemaFixture, SemaImplSelfField) {
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 
-// ============================================================
 // Multi-module fixture — writes temp files and calls load_modules
-// ============================================================
 
 struct MultiModFixture : ::testing::Test {
   std::filesystem::path root;
@@ -529,9 +517,7 @@ TEST_F(MultiModFixture, TransitiveDependency) {
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 
-// ============================================================
 // Integer literal widening
-// ============================================================
 
 TEST_F(SemaFixture, IntLiteralWidensToU64Param) {
   // Passing an integer literal to a u64 parameter should work — the literal
@@ -552,9 +538,7 @@ TEST_F(SemaFixture, IntLiteralWidensInAssign) {
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 
-// ============================================================
 // Non-exported symbol errors
-// ============================================================
 
 TEST_F(MultiModFixture, NonExportedFunctionError) {
   write("math.um", "const hidden := fn () -> i32 { return 42; }");

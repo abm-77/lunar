@@ -9,9 +9,7 @@
 #include <compiler/sema/sema.h>
 #include <compiler/sema/symbol.h>
 
-// ============================================================
 // Fixture — parses a source string and exposes sema state
-// ============================================================
 
 struct MetaFixture : ::testing::Test {
   Interner interner;
@@ -27,7 +25,7 @@ struct MetaFixture : ::testing::Test {
     EXPECT_TRUE(lex_result->has_value()) << "lex failed";
     IntrinsicTable intrinsics;
     intrinsics.init(interner);
-    parser.emplace(lex_result->value(), intrinsics);
+    parser.emplace(lex_result->value(), intrinsics, interner);
     parser->parse_module();
     EXPECT_FALSE(parser->error().has_value())
         << "parse error: " << (parser->error() ? parser->error()->msg : "");
@@ -58,9 +56,7 @@ struct MetaLowerFixture : MetaFixture {
   }
 };
 
-// ============================================================
 // Generic collect
-// ============================================================
 
 TEST_F(MetaFixture, CollectGenericFunctionParams) {
   parse("const id<T: type> := fn (a: T) -> T { return a; }");
@@ -92,9 +88,7 @@ TEST_F(MetaFixture, CollectGenericImplMethodInheritsGenericParams) {
   FAIL() << "get method not found";
 }
 
-// ============================================================
 // Generic type lowering
-// ============================================================
 
 TEST_F(MetaLowerFixture, LowerTypeSubstitution) {
   setup("");
@@ -131,9 +125,7 @@ TEST_F(MetaLowerFixture, GenericInstantiationsAreDistinct) {
       << "List<i32> and List<bool> must have different CTypeIds";
 }
 
-// ============================================================
 // Generic method table
-// ============================================================
 
 TEST_F(MetaFixture, MethodTableGenericImpl) {
   auto sr = sema(
@@ -150,9 +142,7 @@ TEST_F(MetaFixture, MethodTableGenericImpl) {
       << "generic impl methods should be in the method table";
 }
 
-// ============================================================
 // Monomorphization
-// ============================================================
 
 TEST_F(MetaFixture, SemaGenericFunctionMonomorphized) {
   auto sr = sema(""

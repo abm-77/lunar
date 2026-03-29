@@ -2,9 +2,7 @@
 
 #include <compiler/frontend/lexer.h>
 
-// ============================================================
 // Helpers
-// ============================================================
 
 struct LexFixture : ::testing::Test {
   Interner interner;
@@ -26,9 +24,7 @@ struct LexFixture : ::testing::Test {
   }
 };
 
-// ============================================================
 // TokenStream
-// ============================================================
 
 TEST(TokenStream, StartsEmpty) {
   TokenStream ts;
@@ -54,9 +50,7 @@ TEST(TokenStream, PushStoresAllFields) {
   EXPECT_EQ(ts.payload[2], 0u); // default payload
 }
 
-// ============================================================
 // KeywordTable
-// ============================================================
 
 TEST(KeywordTable, AllKeywordsRecognised) {
   Interner I;
@@ -98,9 +92,7 @@ TEST(KeywordTable, NonKeywordReturnsNullopt) {
   EXPECT_FALSE(kws.as_keyword(I.intern("")).has_value());
 }
 
-// ============================================================
 // Empty / whitespace / comments
-// ============================================================
 
 TEST_F(LexFixture, EmptyInputProducesEof) {
   auto r = lex("");
@@ -133,9 +125,7 @@ TEST_F(LexFixture, MultipleCommentLines) {
   EXPECT_TRUE(kinds("# line 1\n# line 2\n").empty());
 }
 
-// ============================================================
 // Punctuation — single-char
-// ============================================================
 
 TEST_F(LexFixture, SingleCharPunctuation) {
   using TK = TokenKind;
@@ -158,9 +148,7 @@ TEST_F(LexFixture, SingleCharPunctuation) {
   }
 }
 
-// ============================================================
 // Operators — two-char
-// ============================================================
 
 TEST_F(LexFixture, TwoCharOperators) {
   using TK = TokenKind;
@@ -188,9 +176,7 @@ TEST_F(LexFixture, TwoCharDoesNotConsumeExtra) {
   EXPECT_EQ(k[1], TokenKind::Equal);
 }
 
-// ============================================================
 // Identifiers and keywords
-// ============================================================
 
 TEST_F(LexFixture, Identifier) {
   EXPECT_EQ(kinds("foobar")[0], TokenKind::Ident);
@@ -230,9 +216,7 @@ TEST_F(LexFixture, IdentPayloadIsInternedSym) {
   EXPECT_EQ(r->payload[0], r->payload[1]);
 }
 
-// ============================================================
 // Integers
-// ============================================================
 
 TEST_F(LexFixture, IntegerLiteral) {
   EXPECT_EQ(kinds("123")[0], TokenKind::Int);
@@ -318,9 +302,7 @@ TEST_F(LexFixture, BinaryStopsAtNonBinaryDigit) {
   EXPECT_EQ(k[1], TokenKind::Int);
 }
 
-// ============================================================
 // Float literals
-// ============================================================
 
 TEST_F(LexFixture, FloatLiteral) {
   EXPECT_EQ(kinds("3.14")[0],  TokenKind::Float);
@@ -365,9 +347,7 @@ TEST_F(LexFixture, ZeroDotIdentIsNotFloat) {
   EXPECT_EQ(k[2], TokenKind::Ident);
 }
 
-// ============================================================
 // String literals
-// ============================================================
 
 TEST_F(LexFixture, StringLiteral) {
   EXPECT_EQ(kinds(R"("hello")")[0], TokenKind::String);
@@ -397,9 +377,7 @@ TEST_F(LexFixture, StringWithNewlineIsError) {
   EXPECT_EQ(r.error().msg, "unterminated string");
 }
 
-// ============================================================
 // Errors
-// ============================================================
 
 TEST_F(LexFixture, UnexpectedCharIsError) {
   auto r = lex("$");
@@ -414,9 +392,7 @@ TEST_F(LexFixture, ValidTokensBeforeErrorAreEmitted) {
   EXPECT_EQ(r.error().msg, "unexpected character");
 }
 
-// ============================================================
 // Span accuracy
-// ============================================================
 
 TEST_F(LexFixture, IdentifierSpan) {
   auto r = lex("  foo  ");
@@ -434,9 +410,7 @@ TEST_F(LexFixture, TwoCharOperatorSpan) {
   EXPECT_EQ(r->end[0],   3u);
 }
 
-// ============================================================
 // Integration
-// ============================================================
 
 TEST_F(LexFixture, SimpleDeclaration) {
   using TK = TokenKind;

@@ -17,11 +17,19 @@ struct FuncSig {
   u32 params_count = 0;
 };
 
+enum class SymFlags : u8 {
+  None         = 0,
+  Pub          = 1 << 0, // @pub
+  Extern       = 1 << 1, // @extern
+  ShaderStage  = 1 << 2, // @stage method — skip native codegen
+  MonoInstance = 1 << 3, // monomorphized instance
+  Mut          = 1 << 4, // mutable global (var)
+};
+
 struct Symbol {
   SymbolKind kind{};
   SymId name{};
-  bool is_pub = false;
-  bool is_extern = false;
+  SymFlags flags = SymFlags::None;
   Span span{};
   u32 module_idx = 0; // which LoadedModule this symbol belongs to
 
@@ -41,7 +49,6 @@ struct Symbol {
 
   // for monomorphized instances: pre-lowered concrete CTypeIds (= u32) for the
   // function signature (avoids re-lowering with the substitution at codegen).
-  bool is_mono_instance = false;
   u32 mono_concrete_ret = 0;    // valid only when is_mono_instance
   u32 mono_self_ctype = 0;      // non-zero if this is a mono instance method (CTypeId)
   std::vector<u32> mono_concrete_params; // explicit params only (excludes self)
@@ -55,7 +62,6 @@ struct Symbol {
   // global var
   TypeId annotate_type = 0; // syntax level (0 if inferred)
   NodeId init_expr;
-  bool is_mut = false;
 };
 
 struct SymbolTable {
@@ -91,7 +97,7 @@ struct SymbolTable {
   // like lookup(mod_idx, name) but only returns if the symbol is pub.
   SymbolId lookup_pub(u32 mod_idx, SymId name) const {
     SymbolId sid = lookup(mod_idx, name);
-    return (sid != kInvalidSymbol && symbols[sid].is_pub) ? sid
+    return (sid != kInvalidSymbol && has(symbols[sid].flags, SymFlags::Pub)) ? sid
                                                           : kInvalidSymbol;
   }
 

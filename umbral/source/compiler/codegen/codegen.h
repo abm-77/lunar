@@ -44,8 +44,7 @@ struct CodegenResult {
   std::unique_ptr<llvm::Module> module;
 };
 
-// ── Name mangling
-// ───────────────────────────────────────────────────────────── Scheme:
+// name mangling scheme:
 //   main                                      → "main"
 //   free function `add` in game/ecs/world     →
 //   "_U_game__ecs__world__add__<id>" impl method  `area` on `Quad` in foo →
@@ -99,16 +98,16 @@ inline void declare_globals(CodegenCtx &cg) {
 
     llvm::Type *ty = cg.type_lower.lower(*ctid);
     llvm::GlobalVariable *gv;
-    if (sym.is_extern) {
+    if (has(sym.flags, SymFlags::Extern)) {
       // extern global: external linkage, no initializer, unmangled name.
       auto sv = cg.interner.view(sym.name);
-      gv = new llvm::GlobalVariable(*cg.module, ty, !sym.is_mut,
+      gv = new llvm::GlobalVariable(*cg.module, ty, !has(sym.flags, SymFlags::Mut),
                                     llvm::GlobalValue::ExternalLinkage,
                                     nullptr,
                                     llvm::StringRef{sv.data(), sv.size()});
     } else {
       llvm::Constant *init = llvm::Constant::getNullValue(ty);
-      gv = new llvm::GlobalVariable(*cg.module, ty, !sym.is_mut,
+      gv = new llvm::GlobalVariable(*cg.module, ty, !has(sym.flags, SymFlags::Mut),
                                     llvm::GlobalValue::ExternalLinkage,
                                     init, mangle(i, cg));
     }
@@ -121,8 +120,9 @@ inline void declare_functions(CodegenCtx &cg) {
     const Symbol &sym = cg.sema.syms.symbols[i];
     if (sym.kind != SymbolKind::Func) continue;
     if (sym.generics_count > 0) continue;
+    if (has(sym.flags, SymFlags::ShaderStage)) continue; // shader stage methods are emitted to .umshaders, not native code
 
-    if (sym.is_extern) {
+    if (has(sym.flags, SymFlags::Extern)) {
       // Extern function: build LLVM type from the FnType TypeId in annotate_type.
       assert(sym.annotate_type != 0 && "extern func must have a type annotation");
       const TypeAst &ta = cg.modules[sym.module_idx].type_ast;
@@ -162,7 +162,7 @@ inline void declare_functions(CodegenCtx &cg) {
     // lowering.
     llvm::Type *ret_type;
     std::vector<llvm::Type *> param_types;
-    if (sym.is_mono_instance) {
+    if (has(sym.flags, SymFlags::MonoInstance)) {
       llvm::Type *ret = cg.type_lower.lower(sym.mono_concrete_ret);
       ret_type = ret ? ret : llvm::Type::getVoidTy(cg.ctx);
       param_types.reserve(sym.mono_concrete_params.size() +
@@ -216,7 +216,7 @@ inline void declare_functions(CodegenCtx &cg) {
 inline void emit_function_bodies(CodegenCtx &cg) {
   for (auto &[sym_id, fn] : cg.fn_map) {
     const Symbol &sym = cg.sema.syms.symbols[sym_id];
-    if (sym.is_extern) continue; // extern: no body to emit
+    if (has(sym.flags, SymFlags::Extern)) continue; // extern: no body to emit
     const LoadedModule &lm = cg.modules[sym.module_idx];
     const BodySema &bsema = cg.sema.body_semas.at(sym_id);
     FuncEmitter emitter(cg, *fn, sym, lm.ir, lm.mod, bsema);
@@ -224,9 +224,7 @@ inline void emit_function_bodies(CodegenCtx &cg) {
   }
 }
 
-// ── Object file emission
-// ──────────────────────────────────────────────────────────
-// Compiles mod to a native object file at obj_path.
+// compile mod to a native object file at obj_path.
 // Call this on CodegenResult::context / CodegenResult::module after
 // run_codegen() succeeds (and only when not in --dump-ir mode).
 //
@@ -357,13 +355,13 @@ run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
     std::string err2;
     const llvm::Target *tgt =
         llvm::TargetRegistry::lookupTarget(triple, err2);
-    if (tgt) {
-      std::unique_ptr<llvm::TargetMachine> tm(tgt->createTargetMachine(
-          triple, llvm::sys::getHostCPUName(), "", {},
-          llvm::Reloc::PIC_, llvm::CodeModel::Small,
-          llvm::CodeGenOptLevel::None));
-      cg.module->setDataLayout(tm->createDataLayout());
-    }
+    if (!tgt)
+      return std::unexpected{Error{{0, 0}, "codegen: " + err2}};
+    std::unique_ptr<llvm::TargetMachine> tm(tgt->createTargetMachine(
+        triple, llvm::sys::getHostCPUName(), "", {},
+        llvm::Reloc::PIC_, llvm::CodeModel::Small,
+        llvm::CodeGenOptLevel::None));
+    cg.module->setDataLayout(tm->createDataLayout());
   }
 
   emit_function_bodies(cg);

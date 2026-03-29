@@ -1,0 +1,114 @@
+#include "pack.h"
+#include "umpack.h"
+#include <common/bin_io.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <lz4.h>
+#include <string>
+#include <vector>
+
+// return the filename component of path (after last slash).
+static std::string path_basename(const char *path) {
+  const char *slash = strrchr(path, '/');
+  return std::string(slash ? slash + 1 : path);
+}
+
+// read entire file into a vector; returns empty vector on error.
+static std::vector<uint8_t> load_file(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return {};
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  rewind(f);
+  std::vector<uint8_t> buf(sz > 0 ? (size_t)sz : 0u);
+  if (sz > 0) fread(buf.data(), 1, (size_t)sz, f);
+  fclose(f);
+  return buf;
+}
+
+int pack_build(const pack_input_t *inputs, uint32_t input_count,
+               const char *out_path, int compress) {
+  struct Entry {
+    std::string name;             // basename written into the manifest
+    std::vector<uint8_t> payload; // bytes stored on disk (compressed or raw)
+    uint32_t original_len;
+    uint32_t compressed_len; // equals original_len when not compressed
+  };
+
+  // load each file and optionally LZ4-compress it.
+  // prefer compressed only when it is strictly smaller than the original;
+  // otherwise store raw and set compressed_len == original_len.
+  std::vector<Entry> entries;
+  entries.reserve(input_count);
+
+  for (uint32_t i = 0; i < input_count; ++i) {
+    std::vector<uint8_t> raw = load_file(inputs[i].path);
+    if (raw.empty()) {
+      // distinguish a missing file (error) from a legitimately empty asset
+      FILE *probe = fopen(inputs[i].path, "rb");
+      if (!probe) {
+        fprintf(stderr, "pack_build: cannot open %s\n", inputs[i].path);
+        return -1;
+      }
+      fclose(probe);
+    }
+
+    Entry e;
+    e.name = path_basename(inputs[i].path);
+    e.original_len = static_cast<uint32_t>(raw.size());
+
+    if (compress && !raw.empty()) {
+      int bound = LZ4_compressBound(static_cast<int>(raw.size()));
+      std::vector<uint8_t> comp(static_cast<size_t>(bound));
+      int comp_sz =
+          LZ4_compress_default(reinterpret_cast<const char *>(raw.data()),
+                               reinterpret_cast<char *>(comp.data()),
+                               static_cast<int>(raw.size()), bound);
+      if (comp_sz > 0 && comp_sz < static_cast<int>(raw.size())) {
+        comp.resize(static_cast<size_t>(comp_sz));
+        e.compressed_len = static_cast<uint32_t>(comp_sz);
+        e.payload = std::move(comp);
+      } else {
+        // compression failed or expanded the data; store raw
+        e.compressed_len = e.original_len;
+        e.payload = std::move(raw);
+      }
+    } else {
+      e.compressed_len = e.original_len;
+      e.payload = std::move(raw);
+    }
+
+    entries.push_back(std::move(e));
+  }
+
+  // compute manifest size so data offsets can be computed before writing.
+  // header: 4(magic)+2(version)+2(endian)+4(flags)+4(entry_count) = 16 bytes
+  // per entry: 4(name_len) + name_len + 8(data_offset) + 4(compressed_len) +
+  // 4(original_len)
+  const uint32_t HEADER_BYTES = 16;
+  uint32_t manifest_bytes = 0;
+  for (const auto &e : entries)
+    manifest_bytes += 4 + static_cast<uint32_t>(e.name.size()) + 8 + 4 + 4;
+
+  BinWriter w;
+  w.u32(UMPACK_MAGIC);
+  w.u16(UMPACK_VERSION);
+  w.u16(UMPACK_ENDIAN_LE);
+  w.u32(compress ? UMPACK_FLAG_COMPRESSED : 0u);
+  w.u32(input_count);
+
+  uint64_t cur_offset = HEADER_BYTES + manifest_bytes;
+  for (const auto &e : entries) {
+    w.u32(static_cast<uint32_t>(e.name.size()));
+    w.bytes(reinterpret_cast<const uint8_t *>(e.name.data()), e.name.size());
+    w.u64(cur_offset);
+    w.u32(e.compressed_len);
+    w.u32(e.original_len);
+    cur_offset += e.compressed_len;
+  }
+
+  for (const auto &e : entries) w.bytes(e.payload.data(), e.payload.size());
+
+  return w.write_file(out_path) ? 0 : -1;
+}

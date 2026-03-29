@@ -42,6 +42,7 @@ template <class IdT, class KindT, class ListElemT = u32> struct NodeStore {
 using NodeId = u32;
 enum class NodeKind : u16 {
   IntLit,
+  FloatLit, // a = index into BodyIR::float_lits (f64 value)
   StrLit,
   BoolLit,
   Ident,
@@ -95,6 +96,14 @@ enum class NodeKind : u16 {
   MetaField,  // a = obj NodeId, b = field_var SymId
   FieldsOf,   // a = struct_type_name SymId — @fields(TypeName)
   MetaBlock,  // b = stmts_start, c = stmts_count (list of NodeIds: MetaAsserts/MetaIfs/bare expr)
+  // shader-only intrinsics — never compiled to LLVM IR; emitted to .umshaders sidecar
+  ShaderTexture2d,  // a = index_expr (u32) → opaque texture handle
+  ShaderSampler,    // a = index_expr (u32) → opaque sampler handle
+  ShaderSample,     // a = tex_expr, b = samp_expr, c = uv_expr → vec4
+  ShaderDrawId,     // no args → u32 (gl_InstanceIndex / draw id)
+  ShaderDrawPacket, // a = id_expr → opaque draw_packet ref
+  ShaderFrameRead,  // a = offset_expr (u32), b = TypeId for T → T
+  ShaderRef,        // a = SymId of shader struct type → shader_bundle
 };
 
 using TypeId = u32;
@@ -141,4 +150,5 @@ struct BodyIR {
   std::vector<ForPayload> fors;
   std::vector<FnLitPayload> fn_lits;
   std::vector<ArrayLitPayload> array_lits;
+  std::vector<double> float_lits; // indexed by FloatLit node's a field
 };

@@ -63,7 +63,6 @@ struct TypeLowerer {
     return std::nullopt;
   }
 
-  // --- compile-time constant expression evaluators ---
 
   // evaluate a constant integer expression using type_subst for const-generic values.
   // returns nullopt if the expression is not compile-time evaluable.
@@ -185,7 +184,6 @@ struct TypeLowerer {
     return result_nid;
   }
 
-  // --- type lowering ---
 
   Result<CTypeId> lower(TypeId tid) {
     TypeKind tk = type_ast.kind[tid];

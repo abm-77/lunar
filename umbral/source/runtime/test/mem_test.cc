@@ -22,8 +22,6 @@ struct MemTest : ::testing::Test {
   void SetUp() override { rt_reset_for_testing(); }
 };
 
-// ── Basic alloc / free ────────────────────────────────────────────────────
-
 TEST_F(MemTest, AllocReturnsNonZeroHandle) {
   um_alloc_handle_t h = rt_alloc(64, 8, 0, 0);
   EXPECT_NE(h, 0u);
@@ -49,8 +47,6 @@ TEST_F(MemTest, AllocFreeAllocReusesSameSlotWithNewGen) {
   EXPECT_NE(a, b);
   rt_free(b, 0);
 }
-
-// ── Slice access ──────────────────────────────────────────────────────────
 
 TEST_F(MemTest, SliceFromAllocWriteAndRead) {
   const uint64_t count = 16;
@@ -79,8 +75,6 @@ TEST_F(MemTest, SliceFromAllocRequestingZeroElems) {
   rt_free(h, 0);
 }
 
-// ── Table growth ──────────────────────────────────────────────────────────
-
 TEST_F(MemTest, AllocBeyondInitialCapacityGrows) {
   const int N = 2048; // > initial 1024 capacity
   std::vector<um_alloc_handle_t> handles(N);
@@ -90,8 +84,6 @@ TEST_F(MemTest, AllocBeyondInitialCapacityGrows) {
   }
   for (int i = 0; i < N; ++i) rt_free(handles[i], 0);
 }
-
-// ── Error / death paths (UM_DEBUG=1) ─────────────────────────────────────
 
 TEST_F(MemTest, FreeNullHandleAborts) {
   EXPECT_DEATH(rt_free(0, 0), "");
@@ -123,8 +115,6 @@ TEST_F(MemTest, SliceAlignExceedsAllocAborts) {
   ASSERT_NE(h, 0u);
   EXPECT_DEATH(rt_slice_from_alloc(h, 4, 16, 4, 0, 0), "");
 }
-
-// ── Tag is stored and doesn't affect correctness ──────────────────────────
 
 TEST_F(MemTest, AllocWithTagSucceeds) {
   um_alloc_handle_t h = rt_alloc(32, 8, /*tag=*/42, 0);

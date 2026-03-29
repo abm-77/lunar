@@ -3,9 +3,7 @@
 #include <compiler/frontend/lexer.h>
 #include <compiler/frontend/parser.h>
 
-// ============================================================
 // Fixture
-// ============================================================
 
 struct ParseFixture : ::testing::Test {
   Interner interner;
@@ -24,7 +22,7 @@ struct ParseFixture : ::testing::Test {
 
   Parser &parse(std::string_view src) {
     lex_result.emplace(lex_source(src, interner, kws));
-    p.emplace(lex_result->value(), intrinsics);
+    p.emplace(lex_result->value(), intrinsics, interner);
     return *p;
   }
 
@@ -53,9 +51,7 @@ struct ParseFixture : ::testing::Test {
   }
 };
 
-// ============================================================
 // Module-level declarations
-// ============================================================
 
 TEST_F(ParseFixture, EmptyModule) {
   auto &p = parse_mod("");
@@ -87,7 +83,7 @@ TEST_F(ParseFixture, StructDecl) {
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_EQ(interner.view(p.mod.decls[0].name), "Point");
-  EXPECT_FALSE(p.mod.decls[0].is_pub);
+  EXPECT_FALSE(has(p.mod.decls[0].flags, DeclFlags::Pub));
   EXPECT_EQ(p.mod.decls[0].kind, DeclKind::Const);
   NodeId init = p.mod.decls[0].init;
   EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::StructType);
@@ -98,7 +94,7 @@ TEST_F(ParseFixture, PubStructDecl) {
   auto &p = parse_mod("@pub const Foo := struct { v: i32 }");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
-  EXPECT_TRUE(p.mod.decls[0].is_pub);
+  EXPECT_TRUE(has(p.mod.decls[0].flags, DeclFlags::Pub));
   EXPECT_EQ(p.body_ir.nodes.kind[p.mod.decls[0].init], NodeKind::StructType);
 }
 
@@ -108,7 +104,7 @@ TEST_F(ParseFixture, FuncDeclNoParams) {
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
   EXPECT_EQ(interner.view(p.mod.decls[0].name), "greet");
-  EXPECT_FALSE(p.mod.decls[0].is_pub);
+  EXPECT_FALSE(has(p.mod.decls[0].flags, DeclFlags::Pub));
   NodeId init = p.mod.decls[0].init;
   EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::FnLit);
   u32 idx = p.body_ir.nodes.a[init];
@@ -119,7 +115,7 @@ TEST_F(ParseFixture, PubFuncDecl) {
   auto &p = parse_mod("@pub const add := fn(a: i32, b: i32) -> i32 {}");
   EXPECT_FALSE(p.error().has_value());
   ASSERT_EQ(p.mod.decls.size(), 1u);
-  EXPECT_TRUE(p.mod.decls[0].is_pub);
+  EXPECT_TRUE(has(p.mod.decls[0].flags, DeclFlags::Pub));
   NodeId init = p.mod.decls[0].init;
   EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::FnLit);
   u32 idx = p.body_ir.nodes.a[init];
@@ -135,12 +131,10 @@ TEST_F(ParseFixture, MultipleDecls) {
   ASSERT_EQ(p.mod.decls.size(), 3u);
   EXPECT_EQ(p.mod.decls[0].kind, DeclKind::Const);
   EXPECT_EQ(p.mod.decls[1].kind, DeclKind::Var);
-  EXPECT_TRUE(p.mod.decls[2].is_pub);
+  EXPECT_TRUE(has(p.mod.decls[2].flags, DeclFlags::Pub));
 }
 
-// ============================================================
 // Statements
-// ============================================================
 
 TEST_F(ParseFixture, LetNoTypeNoInit) {
   auto &p = parse_fn("const x;");
@@ -300,9 +294,7 @@ TEST_F(ParseFixture, ExprStmt) {
   EXPECT_EQ(p.body_ir.nodes.kind[stmts[0]], NodeKind::ExprStmt);
 }
 
-// ============================================================
 // Expressions
-// ============================================================
 
 TEST_F(ParseFixture, IntLit) {
   auto &p = parse_fn("42;");
@@ -537,9 +529,7 @@ TEST_F(ParseFixture, FnLitNoParams) {
   EXPECT_EQ(p.body_ir.fn_lits[idx].params_count, 0u);
 }
 
-// ============================================================
 // Types
-// ============================================================
 
 // Helper to get the ret_type of the fn_lit stored in decls[0].init
 static TypeId fn_lit_ret(Parser &p) {
@@ -589,9 +579,7 @@ TEST_F(ParseFixture, FnTypeAsReturnType) {
   EXPECT_EQ(p.type_ast.c[ret], 1u); // 1 param type
 }
 
-// ============================================================
 // Array types
-// ============================================================
 
 TEST_F(ParseFixture, ArrayTypeWithCount) {
   auto &p = parse_mod("const f := fn(x: [10]i32) -> void {}");
@@ -635,9 +623,7 @@ TEST_F(ParseFixture, ArrayTypeNested) {
   EXPECT_EQ(p.type_ast.a[inner], 3u);
 }
 
-// ============================================================
 // Array literals
-// ============================================================
 
 TEST_F(ParseFixture, ArrayLitInferred) {
   // []T{...} now produces SliceLit; use explicit count for ArrayLit
@@ -731,9 +717,7 @@ TEST_F(ParseFixture, ArrayLitElementsAreExprs) {
   EXPECT_EQ(p.body_ir.nodes.kind[first], NodeKind::Binary);
 }
 
-// ============================================================
 // Error cases
-// ============================================================
 
 TEST_F(ParseFixture, MissingSemicolonAfterLet) {
   auto &p = parse_fn("const x = 1");
@@ -745,9 +729,7 @@ TEST_F(ParseFixture, UnknownModuleItem) {
   EXPECT_TRUE(p.error().has_value());
 }
 
-// ============================================================
 // New unified binding model tests
-// ============================================================
 
 TEST_F(ParseFixture, ColonEqualShorthandInStmt) {
   // const x := 42;  — no explicit type
@@ -828,9 +810,7 @@ TEST_F(ParseFixture, ConstWithExplicitType) {
   EXPECT_EQ(p.body_ir.nodes.kind[init], NodeKind::IntLit);
 }
 
-// ============================================================
 // Path expressions
-// ============================================================
 
 TEST_F(ParseFixture, PathTwoSegments) {
   auto &p = parse_fn("Color::Red;");
@@ -870,9 +850,7 @@ TEST_F(ParseFixture, PathInComparison) {
   EXPECT_EQ(p.body_ir.nodes.kind[rhs], NodeKind::Path);
 }
 
-// ============================================================
 // Enum types
-// ============================================================
 
 TEST_F(ParseFixture, EnumTypeDecl) {
   auto &p = parse_mod("const Color : type = enum { Red, Green, Blue }");
@@ -912,9 +890,7 @@ TEST_F(ParseFixture, EnumTypeEmpty) {
   EXPECT_EQ(p.body_ir.nodes.c[init], 0u);
 }
 
-// ============================================================
 // impl blocks
-// ============================================================
 
 TEST_F(ParseFixture, ImplBasic) {
   auto &p = parse_mod("impl Foo { const method := fn (&self) -> void {} };");
@@ -978,9 +954,7 @@ TEST_F(ParseFixture, ImplMultipleMethods) {
   EXPECT_EQ(interner.view(p.mod.impls[0].methods[1].name), "max");
 }
 
-// ============================================================
 // Generic declarations
-// ============================================================
 
 TEST_F(ParseFixture, GenericStructOneTypeParam) {
   auto &p = parse_mod("const List<T: type> : type = struct { data: T }");

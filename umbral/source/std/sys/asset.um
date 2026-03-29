@@ -1,0 +1,34 @@
+# asset.um — general-purpose asset loading.
+# assets are immutable blobs of bytes identified by a u64 id.
+# asset ids are produced at asset-link time by the @asset_ref(path) intrinsic
+# and are embedded directly in the binary.
+# the runtime resolves ids to byte spans from the embedded asset table at startup.
+# UMRF blobs, SPIR-V, textures, audio, and any other binary data are all assets.
+
+@pub const AssetId := u64;
+@pub const ASSET_NULL: AssetId = 0;
+
+# AssetBytes — a borrowed view of an asset's bytes.
+# the slice is valid until asset_release() is called.
+# do not store the slice across asset_release; treat it as a stack borrow.
+@pub const AssetBytes := struct {
+    data: []u8,
+}
+
+@extern const rt_asset_load    : fn(id: AssetId) -> []u8;
+@extern const rt_asset_release : fn(id: AssetId) -> void;
+
+# load — acquire a view of an asset's bytes.
+#   id: the asset id; must be non-zero (produced by @asset_ref at compile time).
+#   returns AssetBytes with a non-empty slice on success; empty slice if id is unknown.
+#   the runtime keeps a reference count; call release() when done.
+@pub const load := fn(id: AssetId) -> AssetBytes {
+    return AssetBytes { data = rt_asset_load(id) };
+}
+
+# release — release a previously loaded asset.
+#   id:    the same id passed to load(); must match.
+#   after release, any AssetBytes obtained for this load call are invalid.
+@pub const release := fn(id: AssetId) {
+    rt_asset_release(id);
+}

@@ -8,7 +8,7 @@
 
 ## Building
 
-**Prerequisites:** CMake 3.22+, Ninja, Clang, Python 3, Vulkan SDK.
+**Prerequisites:** CMake 3.22+, Ninja, Clang, Python 3, GPU drivers with SPIR-V support.
 
 Clone with submodules:
 ```sh
@@ -70,7 +70,7 @@ All declarations (functions, types, globals) are unified `const`/`var` bindings.
 module_item := 'import' path ['=>' ident] ';'
              | annotation* ('const' | 'var') ident ['<' generic_params '>']
                    (':=' expr | [':' type] ['=' expr]) [';']
-             | '@extern' ident ':' type [';']
+             | '@extern' ('const' | 'var') ident ':' type [';']
              | 'impl' ident ['<' ident (',' ident)* '>'] '{' impl_method* '}'
 
 annotation     := '@pub' | '@gen'
@@ -99,8 +99,8 @@ const add := fn(a: i32, b: i32) -> i32 {
 @pub const greet := fn() -> void {}
 
 # extern declaration — symbol defined outside this module (e.g. in C runtime)
-@extern abs : fn(v: i32) -> i32;
-@extern errno : i32;
+@extern const abs : fn(v: i32) -> i32;
+@extern const errno : i32;
 
 # function type alias — FnType expression (param names optional, no body)
 const BinaryOp := fn(i32, i32) -> i32;
@@ -293,7 +293,8 @@ primary := int_lit
          | '(' ')'                                                      # unit tuple
          | '(' expr ',' expr (',' expr)* ')'                            # tuple literal
          | '(' expr ')'                                                 # grouped expr
-         | ident ['<' type (',' type)* '>'] '{' (ident '=' expr ','?)* '}'  # struct init
+         | ident ['<' type (',' type)* '>'] '{' (ident '=' expr ','?)* '}'  # struct init (named fields)
+         | ident ['<' type (',' type)* '>'] '(' (expr ','?)* ')'           # struct init (positional)
          | ident ['<' type (',' type)* '>'] '::' ident (...)            # path expression
          | ident                                                         # identifier
          | '[' (int | ident) ']' type '{' (expr ','?)* '}'             # array literal
@@ -311,9 +312,12 @@ primary := int_lit
 - After `Ident <`, if `>` is followed by `{` or `::` → generic type args. Otherwise → binary `<`.
 
 ```
-# struct initializer — fields use '='
+# struct initializer — fields assigned by name
 const p := Point { x = 10, y = 20 };
 const empty := Foo {};
+
+# struct initializer — fields assigned by position (no names, strict order)
+const p2 := Point(10, 20);
 
 # anonymous struct value (StructExpr)
 var origin := struct { x: i32 = 0, y: i32 = 0 };
@@ -397,7 +401,22 @@ All `@name` forms are intrinsics — there are no separate keywords for visibili
 |------------|-------------|
 | `@pub` | export this declaration; required for cross-module access |
 | `@gen` | enable compile-time metaprogramming in this declaration |
-| `@extern name : type` | declare an externally-defined symbol (no body emitted) |
+| `@extern const name : type` | declare an externally-defined symbol (no body emitted) |
+| `@shader` | mark a struct as a shader descriptor (holds IO field groups) |
+| `@shader_pod` | mark a struct as a plain-old-data shader IO type |
+| `@stage(vertex\|fragment)` | mark an impl method as a shader entry point (skipped in native codegen) |
+
+**Shader field annotations** (on fields inside `@shader_pod` structs):
+
+| Annotation | Description |
+|------------|-------------|
+| `@vs_in` | vertex shader input field (read-only in vertex stage) |
+| `@vs_out` | vertex shader output field (write-only in vertex stage) |
+| `@fs_in` | fragment shader input field (read-only in fragment stage) |
+| `@fs_out` | fragment shader output field (write-only in fragment stage) |
+| `@draw_data` | per-draw structured data field (read-only in all stages) |
+| `@location(n)` | bind this IO field to vertex attribute / fragment output location `n` |
+| `@builtin(position)` | bind this IO field to `gl_Position` (vertex output built-in) |
 
 **Expression intrinsics** (used inside function bodies or type positions):
 
@@ -414,6 +433,18 @@ All `@name` forms are intrinsics — there are no separate keywords for visibili
 | `@memmov(dst, src, n)` | move `n` bytes (handles overlap) |
 | `@memset(dst, val, n)` | fill `n` bytes at `dst` with `val` |
 | `@memcmp(a, b, n)` | compare `n` bytes; returns `i32` (same as C `memcmp`) |
+
+**Shader expression intrinsics** (valid only inside `@stage` methods):
+
+| Intrinsic | Description |
+|-----------|-------------|
+| `@texture2d(idx: u32)` | opaque texture handle at descriptor index `idx` |
+| `@sampler(idx: u32)` | opaque sampler handle at descriptor index `idx` |
+| `@sample(tex, samp, uv)` | sample `tex` with `samp` at UV coordinates → `vec4` |
+| `@draw_id()` | current instance index (`gl_InstanceIndex`) → `u32` |
+| `@draw_packet(id: u32)` | opaque per-draw data packet handle |
+| `@frame_read<T>(offset: u32)` | read `T` from the per-frame data buffer at byte `offset` |
+| `@shader_ref(TypeName)` | reference to a compiled shader bundle for `TypeName` |
 
 ---
 
@@ -486,6 +517,78 @@ const Vec2 := struct { x: i32, y: i32 };
 
 ---
 
+### Shader System
+
+Umbral shaders are written in the same language as regular Umbral code. The compiler
+emits a `.umshaders` sidecar file alongside the native object; the `ul` asset linker
+converts it to SPIR-V and UMRF vertex-reflection blobs.
+
+#### Struct roles
+
+- `@shader_pod` — a plain-old-data struct carrying vertex IO fields. Fields carry
+  `@location(n)` or `@builtin(position)` plus a directional annotation:
+  `@vs_in` (vertex input), `@vs_out`/`@fs_in` (vertex→fragment interpolant),
+  `@fs_out` (fragment output), or `@draw_data` (per-draw SSBO).
+- `@shader` — a descriptor struct grouping the `@shader_pod` fields used by a draw
+  call. One field per role: `vin`, `vout`, `fin`, `fout`.
+
+#### Stage methods
+
+Shader entry points are `impl` methods annotated with `@stage(vertex)` or
+`@stage(fragment)`. They take `&mut self` where `self` is the `@shader` type.
+The sema layer enforces access rules:
+
+- `@vs_in` / `@fs_in` / `@draw_data` fields: read-only (cannot be assigned).
+- `@vs_out` / `@fs_out` fields: write-only (cannot be read in an expression).
+- `@vs_in` / `@vs_out` fields are inaccessible from the fragment stage and vice versa.
+
+Stage methods are **not** compiled to native code — only to the `.umshaders` sidecar.
+
+#### Example
+
+```
+import math.types;
+import sys.gfx.shader;
+
+@shader_pod const SpriteVertex := struct {
+    @location(0) pos: types::vec2,
+    @location(1) uv:  types::vec2,
+};
+
+@shader_pod const SpriteVsOut := struct {
+    @builtin(position) clip: types::vec4,
+    @location(0)       uv:   types::vec2,
+};
+
+@shader_pod const SpriteFsOut := struct {
+    @location(0) color: types::vec4,
+};
+
+@shader const SpriteShader := struct {
+    @vs_in  vin:  SpriteVertex,
+    @vs_out vout: SpriteVsOut,
+    @fs_in  fin:  SpriteVsOut,
+    @fs_out fout: SpriteFsOut,
+};
+
+impl SpriteShader {
+    @stage(vertex)
+    const vert := fn(&mut self) -> void {
+        self.vout.clip = types::vec4(self.vin.pos.x, self.vin.pos.y, 0.0, 1.0);
+        self.vout.uv   = self.vin.uv;
+    };
+
+    @stage(fragment)
+    const frag := fn(&mut self) -> void {
+        const tex  := @texture2d(0);
+        const samp := @sampler(0);
+        self.fout.color = @sample(tex, samp, self.fin.uv);
+    };
+}
+```
+
+---
+
 ### Standard Library
 
 The standard library lives in `umbral/source/std/` and is available with `--root <path/to/std>`.
@@ -518,7 +621,7 @@ alloc.destroy();
 
 #### `sys.window` — window creation and lifecycle
 
-Requires a Vulkan-capable display. The produced binary is self-contained — no GLFW install needed on the target system.
+Requires a display with a GPU that supports SPIR-V. The produced binary is self-contained — no GLFW install needed on the target system.
 
 ```
 import sys.window => window;
@@ -590,6 +693,178 @@ Mouse position functions (take `w: &Window`):
 **`Key` variants:** `Unknown`, `A`–`Z`, `Num0`–`Num9`, `Space`, `Enter`, `Tab`, `Backspace`, `Escape`, `Left`, `Right`, `Up`, `Down`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, modifier keys (`LeftShift`, `RightShift`, `LeftControl`, `RightControl`, `LeftAlt`, `RightAlt`, `LeftSuper`, `RightSuper`), punctuation, `F1`–`F12`, keypad keys (`Kp0`–`Kp9`, `KpDecimal`, `KpDivide`, `KpMultiply`, `KpSubtract`, `KpAdd`, `KpEnter`), `Count`.
 
 **`MouseButton` variants:** `Unknown`, `Left`, `Right`, `Middle`, `Count`.
+
+#### `math.types` — GLSL-compatible vector and matrix types
+
+```
+import math.types => m;
+
+const pos: m::vec2 = m::vec2 { x = 1.0, y = 2.0 };
+const clip: m::vec4 = m::vec4(pos.x, pos.y, 0.0, 1.0);  # positional init
+```
+
+| Type | Fields | Size |
+|------|--------|------|
+| `vec2` | `x, y: f32` | 8 B |
+| `vec3` | `x, y, z: f32` | 12 B |
+| `vec4` | `x, y, z, w: f32` | 16 B |
+| `mat4` | `col0..col3: vec4` | 64 B (column-major) |
+
+---
+
+#### `sys.asset` — general asset loading
+
+Assets are immutable byte blobs identified by a `u64` ID embedded in the binary at compile time via `@asset_ref`. The runtime resolves IDs to byte spans from the embedded asset table at startup.
+
+```
+import sys.asset => asset;
+
+const id: asset::AssetId = @asset_ref("shaders/sprite_vs.spv");
+const ab := asset::load(id);    # AssetBytes; borrowed until release
+# use ab.data ([]u8) ...
+asset::release(id);
+```
+
+The `AssetBytes` slice is valid until the matching `release` call. Do not store it across frames.
+
+---
+
+#### `sys.gfx` — graphics API
+
+All GPU state is hidden behind opaque `u64` handles. Import `sys.gfx` for the full API; submodules are re-exported.
+
+**Typical per-frame sequence:**
+```
+import sys.gfx => gfx;
+import sys.window => window;
+
+const cfg := gfx::GfxConfig {
+    frames_in_flight  = 2,
+    max_textures      = 4096,
+    max_samplers      = 256,
+    frame_arena_bytes = 64 * 1024 * 1024,
+    draw_packets_max  = 65536,
+    enable_validation = false,
+    present_mode      = gfx::PresentMode::Mailbox,
+};
+
+var win := window::Window::create("My App", 1280, 720);
+const dev := gfx::init(win.handle, cfg);
+
+# load shader (asset IDs produced by @asset_ref at compile time)
+const bundle := gfx::ShaderBundle {
+    vs   = @asset_ref("shaders/sprite_vs.spv"),
+    fs   = @asset_ref("shaders/sprite_fs.spv"),
+    refl = @asset_ref("shaders/sprite.umrf"),
+};
+const pipe := gfx::pipeline_from_shader(dev, bundle);
+
+const tex  := gfx::texture2d_from_rgba8(dev, 64, 64, rgba_bytes);
+const samp := gfx::sampler_linear(dev);
+
+for (; !win.should_close();) {
+    window::Window::poll_events();
+    const cmd := gfx::begin_frame(dev);
+
+    # write per-draw constants into the frame arena
+    const fa := gfx::frame_alloc(dev, @size_of(SpriteData), 256);
+    # cast fa.ptr to &mut SpriteData and write fields ...
+
+    var ds := gfx::DrawStream::begin(dev, cmd, pipe);
+    ds.push_sprite(tex, samp, fa.offset, 1, 0);
+    ds.submit();
+
+    gfx::end_frame(dev, cmd);
+}
+
+gfx::pipeline_destroy(dev, pipe);
+gfx::texture_destroy(dev, tex);
+gfx::sampler_destroy(dev, samp);
+gfx::shutdown(dev);
+```
+
+**`gfx` module functions:**
+
+| Function | Description |
+|----------|-------------|
+| `init(window_handle: u64, cfg: GfxConfig) -> Device` | create the graphics device and swapchain |
+| `shutdown(dev: Device)` | destroy all graphics resources |
+| `begin_frame(dev: Device) -> Cmd` | acquire swapchain image; returns null Cmd on resize (skip frame) |
+| `end_frame(dev: Device, cmd: Cmd)` | submit and present |
+| `frame_alloc(dev: Device, size: u64, align: u64) -> FrameAlloc` | sub-allocate from the per-frame upload arena |
+| `pipeline_from_shader(dev: Device, bundle: ShaderBundle) -> Pipeline` | load SPIR-V + UMRF and compile a raster pipeline |
+| `pipeline_destroy(dev: Device, pipe: Pipeline)` | destroy pipeline (caller ensures not in-flight) |
+| `texture2d_from_rgba8(dev: Device, w: u32, h: u32, bytes: []u8) -> Texture2d` | synchronous RGBA8 upload |
+| `texture_destroy(dev: Device, tex: Texture2d)` | deferred destroy (safe while in-flight) |
+| `sampler_linear(dev: Device) -> Sampler` | bilinear clamp-to-edge sampler |
+| `sampler_destroy(dev: Device, samp: Sampler)` | deferred destroy |
+
+**`GfxConfig` fields:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `frames_in_flight` | `u32` | simultaneous GPU frames; [1, 3]; 2 recommended |
+| `max_textures` | `u32` | bindless texture array capacity; ≤ 4096 |
+| `max_samplers` | `u32` | bindless sampler array capacity; ≤ 256 |
+| `frame_arena_bytes` | `u64` | per-frame transient upload arena; multiple of 256 |
+| `draw_packets_max` | `u32` | max `DrawPacket`s per submit call |
+| `enable_validation` | `bool` | enables GPU validation layers; disable in release |
+| `present_mode` | `PresentMode` | `Fifo` / `Immediate` / `Mailbox`; runtime falls back to Fifo |
+
+**`DrawStream` methods (`sys.gfx.draw`):**
+
+| Method | Description |
+|--------|-------------|
+| `DrawStream::begin(dev, cmd, pipe) -> DrawStream` | open a draw stream for the current frame |
+| `push_sprite(tex, samp, draw_data_offset, instance_count, first_instance)` | append a textured procedural quad (6 non-indexed vertices) |
+| `push_draw_packet(packet: DrawPacket)` | append a fully-specified draw packet verbatim |
+| `submit()` | upload all accumulated packets and record draw calls |
+
+**`FrameAlloc` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `offset` | `u32` | byte offset into `frame_arena_ssbo` (set=0 binding=2); use as `DrawPacket.draw_data_offset` |
+| `ptr` | `u64` | opaque CPU write pointer; cast to `&mut T` before writing; valid until the frame slot recycles |
+
+**Bindless descriptor layout** (fixed; matches GPU shader bindings):
+
+| Set | Binding | Array | Contents |
+|-----|---------|-------|----------|
+| 0 | 0 | `textures_2d[]` | all uploaded 2D textures; indexed by lower 32 bits of `Texture2d.handle` |
+| 0 | 1 | `samplers[]` | all samplers; indexed by lower 32 bits of `Sampler.handle` |
+| 0 | 2 | `frame_arena_ssbo` | per-frame transient data; indexed by `draw_data_offset` |
+| 0 | 3 | `draw_packets_ssbo` | `DrawPacket[]`; indexed by `gl_DrawID` in the vertex shader |
+
+---
+
+### Asset Linker (`ul`)
+
+`ul` converts compiler sidecar files and raw assets into runtime-ready binary formats, optionally bundled into a compressed `.umpack` archive.
+
+```sh
+# convert a shader sidecar to SPIR-V + UMRF
+ul --out-dir build/assets game/sprite.umshaders
+
+# convert textures and audio
+ul --out-dir build/assets textures/tile.png sounds/hit.wav
+
+# bundle everything into a compressed pack
+ul --out-dir build/assets --pack build/game.umpack --compress \
+    game/sprite.umshaders textures/tile.png sounds/hit.wav
+```
+
+**Output formats:**
+
+| Input | Outputs | Description |
+|-------|---------|-------------|
+| `.umshaders` | `<name>_vs.spv`, `<name>_fs.spv`, `<name>.umrf` | SPIR-V per stage + vertex input reflection blob |
+| `.png` / `.jpg` / `.bmp` | `<name>.umtex` | RGBA8 mip chain |
+| `.wav` / `.ogg` | `<name>.umaudio` | PCM16 sample data |
+
+**SPIR-V emission:** `ul` walks the serialized `BodyIR` from the `.umshaders` sidecar and compiles it to SPIR-V binary via the LLVM SPIR-V backend. Bindless resources are decorated with `DescriptorSet`/`Binding` metadata. `@sample(tex, samp, uv)` lowers to the SPIR-V sampled-image intrinsics using the `spirv.Image` / `spirv.Sampler` / `spirv.SampledImage` opaque types.
+
+**`.umpack` format:** little-endian; magic `0x554D504B` ("UMPK"), version 1. 16-byte header (magic, version, endian sentinel `0x1234`, flags, entry count) followed by a manifest of variable-length entries (u32 name length, name bytes, u64 data offset, u32 compressed length, u32 original length) and then the data region. `UMPACK_FLAG_COMPRESSED` is set in the header when LZ4 compression was requested; `compressed_len == original_len` per entry means that entry is stored raw (compression did not reduce its size).
 
 ---
 

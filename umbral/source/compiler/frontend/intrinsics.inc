@@ -16,4 +16,21 @@
   X(MetaElseIf, "else_if")   \
   X(MetaFields, "fields")    \
   X(MetaField,  "field")     \
-  X(MetaAssert, "assert")
+  X(MetaAssert, "assert")       \
+  X(Shader,        "shader")        \
+  X(ShaderPod,     "shader_pod")    \
+  X(Stage,         "stage")         \
+  X(ShaderRef,     "shader_ref")    \
+  X(VsIn,          "vs_in")         \
+  X(VsOut,         "vs_out")        \
+  X(FsIn,          "fs_in")         \
+  X(FsOut,         "fs_out")        \
+  X(DrawData,      "draw_data")     \
+  X(Location,      "location")      \
+  X(ShaderBuiltin, "builtin")       \
+  X(Texture2d,     "texture2d")     \
+  X(Sampler,       "sampler")       \
+  X(Sample,        "sample")        \
+  X(DrawId,        "draw_id")       \
+  X(DrawPacket,    "draw_packet")   \
+  X(FrameRead,     "frame_read")

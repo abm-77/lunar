@@ -45,9 +45,16 @@ struct BodyChecker {
   // stores (TypeVar, NodeId) so we can report an error if the TypeVar resolves
   // to a non-numeric type (e.g., an integer literal used as a bool condition).
   std::vector<std::pair<TypeVarId, NodeId>> int_default_vars;
+  // float literal TypeVars — default to f64 if unresolved by context.
+  std::vector<std::pair<TypeVarId, NodeId>> float_default_vars;
   // for-range loop var SymId → struct SymbolId when iterating @fields(T).
   // set during ForRange check; used by MetaField and Field(field_var, "name").
   std::unordered_map<SymId, SymbolId> field_iter_struct;
+  // set when checking a @stage method; used to enforce shader field access rules.
+  std::optional<ShaderStage> current_shader_stage;
+  SymId current_shader_type_name = 0;
+  // set by AssignStmt check before checking the LHS so Field can detect writes.
+  bool in_assign_lhs = false;
 
   BodyChecker(const BodyIR &ir, const Module &mod, SymbolTable &syms,
               MethodTable &methods, TypeTable &types, TypeLowerer lowerer,
@@ -200,6 +207,22 @@ struct BodyChecker {
       sema.define(p.name, IType::from(*ct_r), false);
     }
 
+    // detect @stage annotation for this function and set up shader context.
+    for (const ShaderStageInfo &si : mod.shader_stages) {
+      if (si.shader_type == fn_sym.impl_owner && si.method_name == fn_sym.name) {
+        auto sv = interner.view(si.stage_name_sym);
+        if (sv == "vertex") {
+          current_shader_stage = ShaderStage::Vertex;
+        } else if (sv == "fragment") {
+          current_shader_stage = ShaderStage::Fragment;
+        } else {
+          emit(node_span(fn_sym.body), "@stage: expected 'vertex' or 'fragment'");
+        }
+        current_shader_type_name = si.shader_type;
+        break;
+      }
+    }
+
     if (fn_sym.body != 0) check_block(fn_sym.body, sema, ret_type);
 
     sema.pop_scope();
@@ -221,6 +244,12 @@ struct BodyChecker {
         } else if (!is_numeric(types.types[resolved.concrete].kind)) {
           emit(node_span(node), "integer literal used in non-numeric context");
         }
+      }
+      // default float literals to f64 if not bound to a more specific type.
+      IType f64_t = IType::from(types.builtin(CTypeKind::F64));
+      for (auto &[tv, node] : float_default_vars) {
+        IType resolved = unifier.resolve(IType::fresh(tv));
+        if (resolved.is_var) unifier.bindings[tv] = f64_t;
       }
     }
 
@@ -283,7 +312,9 @@ struct BodyChecker {
       break;
     }
     case NodeKind::AssignStmt: {
+      in_assign_lhs = true;
       IType lt = check_expr(ir.nodes.a[n], sema);
+      in_assign_lhs = false;
       IType rt = check_expr(ir.nodes.b[n], sema);
       if (!unifier.unify(lt, rt, types))
         emit(node_span(n), "type mismatch in assignment");
@@ -392,6 +423,12 @@ struct BodyChecker {
       result = IType::fresh(tv);
       break;
     }
+    case NodeKind::FloatLit: {
+      TypeVarId tv = unifier.fresh();
+      float_default_vars.push_back({tv, n}); // default to f64 if unresolved
+      result = IType::fresh(tv);
+      break;
+    }
     case NodeKind::StrLit: {
       CType sc; sc.kind = CTypeKind::Slice; sc.inner = types.builtin(CTypeKind::U8);
       result = IType::from(types.intern(sc));
@@ -476,6 +513,44 @@ struct BodyChecker {
       SymbolId callee_sym = sema.node_symbol[callee_n];
       if (callee_sym != kInvalidSymbol) {
         const Symbol &sym = syms.get(callee_sym);
+        // positional struct construction: TypeName(arg0, arg1, ...)
+        // fields are matched by position, not name.
+        if (sym.kind == SymbolKind::Type) {
+          SymbolId struct_sid = sym.aliased_sym != 0 ? sym.aliased_sym : callee_sym;
+          const Symbol &ssym = syms.get(struct_sid);
+          const BodyIR &ssym_ir = body_for(ssym.module_idx);
+          NodeId tn = ssym.type_node;
+          if (tn != 0 && ssym_ir.nodes.kind[tn] == NodeKind::StructType) {
+            u32 fc = ssym_ir.nodes.c[tn];
+            if (args_count != fc) {
+              emit(node_span(n), "wrong number of arguments for struct construction");
+            } else {
+              u32 fs = ssym_ir.nodes.b[tn];
+              std::optional<TypeLowerer> dep_fl;
+              if (ssym.module_idx != module_idx && module_contexts &&
+                  ssym.module_idx < module_contexts->size()) {
+                const ModuleContext &mctx = (*module_contexts)[ssym.module_idx];
+                if (mctx.type_ast) {
+                  dep_fl.emplace(*mctx.type_ast, syms, interner, types);
+                  dep_fl->module_idx = ssym.module_idx;
+                  dep_fl->module_contexts = module_contexts;
+                  dep_fl->current_ir = mctx.ir;
+                  dep_fl->import_map = mctx.import_map;
+                }
+              }
+              TypeLowerer &fl = dep_fl ? *dep_fl : lowerer;
+              for (u32 k = 0; k < fc; ++k) {
+                TypeId ftype = static_cast<TypeId>(ssym_ir.nodes.list[fs + k * 2 + 1]);
+                auto ct = fl.lower(ftype);
+                if (ct) unifier.unify(arg_types[k], IType::from(*ct), types);
+              }
+            }
+            CType sc; sc.kind = CTypeKind::Struct; sc.symbol = struct_sid;
+            result = IType::from(types.intern(sc));
+            sema.node_type[n] = result;
+            break;
+          }
+        }
         SymbolId resolved = callee_sym;
         if (sym.generics_count > 0) {
           std::vector<CTypeId> type_args;
@@ -614,6 +689,35 @@ struct BodyChecker {
         if (types.types[sct_id].kind == CTypeKind::Ref)
           sct_id = types.types[sct_id].inner;
         const CType &sct = types.types[sct_id];
+
+        // shader field access enforcement: check read/write rules for @shader structs.
+        if (current_shader_stage && current_shader_type_name != 0 &&
+            sct.kind == CTypeKind::Struct &&
+            syms.get(sct.symbol).name == current_shader_type_name) {
+          ShaderFieldKind sfk = ShaderFieldKind::None;
+          for (const ShaderFieldAnnot &a : mod.shader_field_annots) {
+            if (a.struct_name == current_shader_type_name && a.field_name == field_nm) {
+              sfk = a.kind;
+              break;
+            }
+          }
+          bool is_vertex = (*current_shader_stage == ShaderStage::Vertex);
+          if (sfk == ShaderFieldKind::VsIn || sfk == ShaderFieldKind::VsOut) {
+            if (!is_vertex)
+              emit(node_span(n), "field not accessible in fragment stage");
+          } else if (sfk == ShaderFieldKind::FsIn || sfk == ShaderFieldKind::FsOut) {
+            if (is_vertex)
+              emit(node_span(n), "field not accessible in vertex stage");
+          }
+          if (sfk == ShaderFieldKind::VsOut || sfk == ShaderFieldKind::FsOut) {
+            if (!in_assign_lhs)
+              emit(node_span(n), "write-only shader field read in expression context");
+          } else if (sfk == ShaderFieldKind::VsIn || sfk == ShaderFieldKind::FsIn ||
+                     sfk == ShaderFieldKind::DrawData) {
+            if (in_assign_lhs)
+              emit(node_span(n), "read-only shader field cannot be assigned");
+          }
+        }
 
         if (sct.kind == CTypeKind::Slice) {
           auto fname = interner.view(field_nm);
@@ -1044,6 +1148,70 @@ struct BodyChecker {
       // the actual field type varies per iteration; codegen handles the unroll.
       check_expr(ir.nodes.a[n], sema);
       result = IType::fresh(unifier.fresh());
+      break;
+    }
+    case NodeKind::ShaderTexture2d:
+    case NodeKind::ShaderSampler:
+    case NodeKind::ShaderDrawPacket: {
+      if (!current_shader_stage)
+        emit(node_span(n), "shader intrinsic used outside @stage method");
+      check_expr(ir.nodes.a[n], sema);
+      result = IType::fresh(unifier.fresh()); // opaque handle
+      break;
+    }
+    case NodeKind::ShaderSample: {
+      if (!current_shader_stage)
+        emit(node_span(n), "shader intrinsic used outside @stage method");
+      check_expr(ir.nodes.a[n], sema);
+      check_expr(ir.nodes.b[n], sema);
+      check_expr(ir.nodes.c[n], sema);
+      // return type is vec4 — scan symbols for the vec4 struct type
+      {
+        SymbolId vec4_sid = kInvalidSymbol;
+        for (u32 s = 1; s < syms.symbols.size() && vec4_sid == kInvalidSymbol; ++s) {
+          const Symbol &sv = syms.symbols[s];
+          if (sv.kind == SymbolKind::Type && interner.view(sv.name) == "vec4")
+            vec4_sid = s;
+        }
+        if (vec4_sid != kInvalidSymbol) {
+          CType sc; sc.kind = CTypeKind::Struct; sc.symbol = vec4_sid;
+          result = IType::from(types.intern(sc));
+        } else {
+          result = IType::fresh(unifier.fresh());
+        }
+      }
+      break;
+    }
+    case NodeKind::ShaderDrawId: {
+      if (!current_shader_stage)
+        emit(node_span(n), "shader intrinsic used outside @stage method");
+      result = IType::from(types.builtin(CTypeKind::U32));
+      break;
+    }
+    case NodeKind::ShaderFrameRead: {
+      if (!current_shader_stage)
+        emit(node_span(n), "shader intrinsic used outside @stage method");
+      check_expr(ir.nodes.a[n], sema); // offset
+      TypeId tid = static_cast<TypeId>(ir.nodes.b[n]);
+      auto ct = lowerer.lower(tid);
+      result = ct ? IType::from(*ct) : IType::fresh(unifier.fresh());
+      break;
+    }
+    case NodeKind::ShaderRef: {
+      if (!current_shader_stage)
+        emit(node_span(n), "shader intrinsic used outside @stage method");
+      SymbolId bundle_sid = kInvalidSymbol;
+      for (u32 s = 1; s < syms.symbols.size() && bundle_sid == kInvalidSymbol; ++s) {
+        const Symbol &sv = syms.symbols[s];
+        if (sv.kind == SymbolKind::Type && interner.view(sv.name) == "shader_bundle")
+          bundle_sid = s;
+      }
+      if (bundle_sid != kInvalidSymbol) {
+        CType sc; sc.kind = CTypeKind::Struct; sc.symbol = bundle_sid;
+        result = IType::from(types.intern(sc));
+      } else {
+        result = IType::fresh(unifier.fresh());
+      }
       break;
     }
     default: break;

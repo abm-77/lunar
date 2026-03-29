@@ -6,6 +6,7 @@
 int          glfwInit(void)                                                  { return GLFW_TRUE; }
 void         glfwTerminate(void)                                             {}
 int          glfwGetError(const char **desc)                                 { if (desc) *desc = 0; return 0; }
+void         glfwWindowHint(int hint, int value)                             { (void)hint;(void)value; }
 GLFWwindow  *glfwCreateWindow(int w, int h, const char *t,
                                GLFWmonitor *m, GLFWwindow *s)                { (void)w;(void)h;(void)t;(void)m;(void)s; return 0; }
 void         glfwDestroyWindow(GLFWwindow *w)                                { (void)w; }

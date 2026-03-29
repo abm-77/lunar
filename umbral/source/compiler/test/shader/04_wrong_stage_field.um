@@ -1,0 +1,31 @@
+# RUN: not %uc %s
+# CHECK: field not accessible in vertex stage
+
+const vec2 := struct { x: f32, y: f32 };
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const SpriteVertex := struct {
+  @location(0) pos: vec2,
+};
+
+@shader_pod const SpriteVsOut := struct {
+  @builtin(position) clip: vec4,
+};
+
+@shader_pod const SpriteFsIn := struct {
+  @location(0) uv: vec2,
+};
+
+@shader const SpriteShader := struct {
+  @vs_in  vin:  SpriteVertex,
+  @vs_out vout: SpriteVsOut,
+  @fs_in  fin:  SpriteFsIn,
+};
+
+impl SpriteShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    # accessing a @fs_in field from vertex stage — error
+    const _ := self.fin.uv;
+  };
+}

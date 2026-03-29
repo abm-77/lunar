@@ -1,0 +1,18 @@
+# RUN: not %uc %s
+# CHECK: missing @vs_out
+
+const vec2 := struct { x: f32, y: f32 };
+
+@shader_pod const SpriteVertex := struct {
+  @location(0) pos: vec2,
+};
+
+# @shader struct with only @vs_in — missing @vs_out → error
+@shader const BadShader := struct {
+  @vs_in vin: SpriteVertex,
+};
+
+impl BadShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {};
+}
