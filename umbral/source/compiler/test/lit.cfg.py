@@ -10,3 +10,6 @@ config.test_source_root = os.path.dirname(__file__)
 config.substitutions.append(("%uc", config.uc_path))
 config.substitutions.append(("%ul", config.ul_path))
 config.substitutions.append(("%FileCheck", config.filecheck_path))
+if hasattr(config, 'spirv_val_path') and config.spirv_val_path:
+    config.substitutions.append(("%spirv-val", config.spirv_val_path))
+    config.available_features.add("spirv-val")

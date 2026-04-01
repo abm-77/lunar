@@ -15,7 +15,10 @@
 #include <compiler/frontend/parser.h>
 #include <compiler/loader.h>
 #include <compiler/sema/sema.h>
-#include <compiler/shader/shader_emit.h>
+#include <um/shader/shader_compile.h>
+#include <um/shader/shader_mlir.h>
+#include <mlir/IR/MLIRContext.h>
+#include <llvm/Support/raw_ostream.h>
 
 // declared in runtime_blob.cc / glfw_blob.cc, generated at build time by
 // cmake/embed_blob.cmake
@@ -32,8 +35,9 @@ struct DriverResult {
 struct DriverOptions {
   std::string out_path = "a.out";
   std::string root_override;
-  std::string sidecar_out; // if non-empty, write .umshaders to this path and stop
-  bool dump_ir = false;    // print LLVM IR to stdout and stop
+  std::string shader_out;      // if non-empty, compile shaders to .spv/.umrf here and stop
+  bool dump_ir = false;        // print LLVM IR to stdout and stop
+  bool dump_shader_mlir = false; // print um.shader MLIR to stdout and stop
 };
 
 class Driver {
@@ -84,18 +88,33 @@ inline DriverResult Driver::run(const std::string &src_path,
     return {false, format_error(err, esrc, epath)};
   }
 
-  // emit .umshaders sidecars for any module with shader declarations
-  {
+  // dump um.shader MLIR to stdout (for lit tests)
+  if (opts.dump_shader_mlir) {
     bool has_any = false;
     for (const auto &lm : modules)
       if (!lm.mod.shader_stages.empty()) { has_any = true; break; }
     if (has_any) {
-      std::string sidecar_dir = opts.sidecar_out.empty()
-                                    ? std::filesystem::temp_directory_path().string()
-                                    : opts.sidecar_out;
-      emit_umshaders(modules, *sema_r, interner, sidecar_dir);
-      if (!opts.sidecar_out.empty()) return {true};
+      mlir::MLIRContext mlir_ctx;
+      auto mlir_mod = um::shader::lower_to_mlir(mlir_ctx, modules,
+                                                  *sema_r, interner);
+      if (!mlir_mod) return {false, "shader MLIR lowering failed"};
+      mlir_mod->print(llvm::outs());
+      llvm::outs() << "\n";
     }
+    return {true};
+  }
+
+  // MLIR-based shader compilation: BodyIR → um.shader → SPIR-V → .spv + .umrf
+  if (!opts.shader_out.empty()) {
+    bool has_any = false;
+    for (const auto &lm : modules)
+      if (!lm.mod.shader_stages.empty()) { has_any = true; break; }
+    if (has_any) {
+      if (!um::shader::shader_compile(modules, *sema_r, interner,
+                                       {opts.shader_out}))
+        return {false, "shader compilation failed"};
+    }
+    return {true};
   }
 
   // LLVM codegen

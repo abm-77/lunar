@@ -1,11 +1,10 @@
-# RUN: mkdir -p %t.d && %uc %s --sidecar-out %t.d && %ul --dump-ir %t.d/07_draw_id.umshaders 2>/dev/null | %FileCheck %s
+# RUN: %uc %s --dump-shader-mlir 2>/dev/null | %FileCheck %s
 
-# @draw_id lowers to an Input addrspace(1) global with BuiltIn 4418 (DrawIndex).
-# Global declaration, then load in the function body, then stage attribute, then decoration metadata.
-# CHECK: @draw_id = external addrspace(1) global i32
-# CHECK: load i32, ptr addrspace(1) @draw_id
-# CHECK: "hlsl.shader"="vertex"
-# CHECK: {i32 11, i32 4418}
+# @draw_id lowers to um_shader.draw_id in the vertex stage
+# CHECK: func.func private @DrawIdShader_vert
+# CHECK-SAME: stage = "vertex"
+# CHECK: um_shader.draw_id
+# CHECK: um_shader.store_output "vout", "clip"
 
 const vec2 := struct { x: f32, y: f32 };
 const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };

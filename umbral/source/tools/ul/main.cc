@@ -1,14 +1,12 @@
-// processes all asset types produced by uc into deployable runtime formats:
-//   .umshaders → <name>_vs.spv + <name>_fs.spv + <name>.umrf
+// asset linker: converts source assets into deployable runtime formats.
+//   --shader-pack <name> — pack <name>.vert.spv + .frag.spv + .umrf → .umshader
 //   .png/.jpg/.bmp → <name>.umtex
 //   .wav/.ogg     → <name>.umaudio
-//
-// usage: ul [--out-dir <dir>] [--pack <out.umpack>] [--compress] <file> [<file>
-// ...] see tools/ul/impl.md for the full implementation plan.
+//   --pack <out.umpack> — bundle processed assets into a .umpack archive
 
 #include "audio.h"
 #include "pack.h"
-#include "shader_link.h"
+#include "shader_pack.h"
 #include "tex.h"
 #include <cstdio>
 #include <cstring>
@@ -35,10 +33,6 @@ static std::string out_path(const char *out_dir, const char *name,
 // dispatch table: file extension → handler
 
 typedef int (*handler_fn)(const char *in_path, const char *out_dir);
-
-static int handle_umshaders(const char *in_path, const char *out_dir) {
-  return shader_link(in_path, out_dir);
-}
 
 static int handle_texture(const char *in_path, const char *out_dir) {
   tex_blob_t blob{};
@@ -78,16 +72,16 @@ struct DispatchEntry {
 };
 
 static const DispatchEntry k_dispatch[] = {
-    {".umshaders", handle_umshaders}, {".png", handle_texture},
-    {".jpg", handle_texture},         {".bmp", handle_texture},
-    {".wav", handle_audio},           {".ogg", handle_audio},
+    {".png", handle_texture},  {".jpg", handle_texture},
+    {".bmp", handle_texture},  {".wav", handle_audio},
+    {".ogg", handle_audio},
 };
 
 int main(int argc, char **argv) {
   const char *out_dir = ".";
   const char *pack_out = nullptr;
+  const char *shader_pack_name = nullptr; // --shader-pack <name>: pack <name>.vert.spv + .frag.spv + .umrf
   int compress = 0;
-  int dump_ir = 0;
   std::vector<const char *> inputs;
 
   for (int i = 1; i < argc; ++i) {
@@ -95,18 +89,28 @@ int main(int argc, char **argv) {
       out_dir = argv[++i];
     } else if (!strcmp(argv[i], "--pack") && i + 1 < argc) {
       pack_out = argv[++i];
+    } else if (!strcmp(argv[i], "--shader-pack") && i + 1 < argc) {
+      shader_pack_name = argv[++i];
     } else if (!strcmp(argv[i], "--compress")) {
       compress = 1;
-    } else if (!strcmp(argv[i], "--dump-ir")) {
-      dump_ir = 1;
     } else {
       inputs.push_back(argv[i]);
     }
   }
 
+  // --shader-pack mode: pack pre-built .spv + .umrf into .umshader
+  if (shader_pack_name) {
+    std::string base = std::string(out_dir) + "/" + shader_pack_name;
+    std::string vert = base + ".vert.spv";
+    std::string frag = base + ".frag.spv";
+    std::string umrf = base + ".umrf";
+    std::string out  = base + ".umshader";
+    return shader_pack(vert.c_str(), frag.c_str(), umrf.c_str(), out.c_str());
+  }
+
   if (inputs.empty()) {
     fprintf(stderr, "usage: ul [--out-dir <dir>] [--pack <out.umpack>] "
-                    "[--compress] [--dump-ir] <file> ...\n");
+                    "[--compress] [--shader-pack <name>] <file> ...\n");
     return 1;
   }
 
@@ -127,9 +131,7 @@ int main(int argc, char **argv) {
       ++errors;
       continue;
     }
-    int rc = (dump_ir && !strcmp(ext, ".umshaders"))
-                 ? shader_link_dump_ir(in)
-                 : fn(in, out_dir);
+    int rc = fn(in, out_dir);
     if (rc != 0) {
       ++errors;
       continue;

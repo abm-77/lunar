@@ -1,22 +1,17 @@
-# RUN: %uc %s --dump-shader-mlir 2>/dev/null | %FileCheck %s
-
-# helper emitted as func.func without stage attr, called from fragment stage
-# CHECK: func.func private @SpriteShader_sample_tex
-# CHECK-NOT: stage =
-# CHECK-SAME: shader_type = "SpriteShader"
-
-# CHECK: func.func private @SpriteShader_vert
-# CHECK-SAME: stage = "vertex"
-
-# CHECK: func.func private @SpriteShader_frag
-# CHECK-SAME: stage = "fragment"
-# CHECK: call @SpriteShader_sample_tex
+# RUN: mkdir -p %t.d && %uc %s --shader-out %t.d 2>/dev/null
+# RUN: ls %t.d/SpriteShader.vert.spv
+# RUN: ls %t.d/SpriteShader.frag.spv
+# RUN: ls %t.d/SpriteShader.umrf
+# RUN: %spirv-val %t.d/SpriteShader.vert.spv
+# RUN: %spirv-val %t.d/SpriteShader.frag.spv
+# REQUIRES: spirv-val
 
 const vec2 := struct { x: f32, y: f32 };
 const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
 
 @shader_pod const SpriteVertex := struct {
   @location(0) pos: vec2,
+  @location(1) uv:  vec2,
 };
 
 @shader_pod const SpriteVsOut := struct {
@@ -36,20 +31,17 @@ const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
 };
 
 impl SpriteShader {
-  @shader_fn
-  const sample_tex := fn(&self) -> void {
-    const col := @sample(@texture2d(0), @sampler(0), self.fin.uv);
-    self.fout.color = col;
-  };
-
   @stage(vertex)
   const vert := fn(&mut self) -> void {
     self.vout.clip = vec4(self.vin.pos.x, self.vin.pos.y, 0.0, 1.0);
-    self.vout.uv   = vec2(self.vin.pos.x, self.vin.pos.y);
+    self.vout.uv   = vec2(self.vin.uv.x, self.vin.uv.y);
   };
 
   @stage(fragment)
   const frag := fn(&mut self) -> void {
-    self.sample_tex();
+    const tex  := @texture2d(0);
+    const samp := @sampler(0);
+    const col  := @sample(tex, samp, self.fin.uv);
+    self.fout.color = col;
   };
 }

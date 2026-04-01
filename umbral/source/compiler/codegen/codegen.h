@@ -120,8 +120,8 @@ inline void declare_functions(CodegenCtx &cg) {
     const Symbol &sym = cg.sema.syms.symbols[i];
     if (sym.kind != SymbolKind::Func) continue;
     if (sym.generics_count > 0) continue;
-    if (has(sym.flags, SymFlags::ShaderStage)) continue; // emitted to .umshaders, not native code
-    if (has(sym.flags, SymFlags::ShaderFn)) continue;    // same: shader-side helper, not native
+    if (has(sym.flags, SymFlags::ShaderStage)) continue; // lowered via MLIR shader pipeline
+    if (has(sym.flags, SymFlags::ShaderFn)) continue;    // lowered via MLIR shader pipeline
 
     if (has(sym.flags, SymFlags::Extern)) {
       // Extern function: build LLVM type from the FnType TypeId in annotate_type.

@@ -1,16 +1,19 @@
-# RUN: mkdir -p %t.d && %uc %s --sidecar-out %t.d && %ul --dump-ir %t.d/08_draw_packet.umshaders 2>/dev/null | %FileCheck %s
+# RUN: %uc %s --dump-shader-mlir 2>/dev/null | %FileCheck %s
 
-# vertex stage comes first; fragment stage checks follow its attribute marker.
-# CHECK: "hlsl.shader"="vertex"
+# vertex stage emits IO ops
+# CHECK: func.func private @DrawPacketShader_vert
+# CHECK-SAME: stage = "vertex"
 
-# @draw_packet lowers to a GEP into the draw_packets SSBO (binding=3, set=0),
-# loading the full struct as { i64, i64, i64, i32x10 }, then extractvalue per field.
-# CHECK: @draw_packets = external addrspace(12) global [0 x
-# CHECK: getelementptr {{.*}}@draw_packets
-# CHECK: load { i64
-# CHECK: extractvalue { i64{{.*}} 10
-# CHECK: extractvalue { i64{{.*}} 11
-# CHECK: "hlsl.shader"="pixel"
+# fragment stage: @draw_packet field access feeds into texture sampling
+# CHECK: func.func private @DrawPacketShader_frag
+# CHECK-SAME: stage = "fragment"
+# CHECK: um_shader.draw_id
+# CHECK: um_shader.draw_packet
+# CHECK: um_shader.draw_packet_field {{.*}} "tex2d_index"
+# CHECK: um_shader.texture2d
+# CHECK: um_shader.draw_packet_field {{.*}} "sampler_index"
+# CHECK: um_shader.sampler
+# CHECK: um_shader.sample
 
 const vec2 := struct { x: f32, y: f32 };
 const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };

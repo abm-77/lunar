@@ -6,5 +6,6 @@ sys.path.insert(0, "@LIT_TEST_DIR@")
 config.uc_path = "@CMAKE_BINARY_DIR@/uc"
 config.ul_path = "@CMAKE_BINARY_DIR@/ul"
 config.filecheck_path = "@FILECHECK@"
+config.spirv_val_path = "@SPIRV_VAL@"
 
 lit_config.load_config(config, "@LIT_TEST_DIR@/lit.cfg.py")

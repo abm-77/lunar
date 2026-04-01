@@ -96,7 +96,7 @@ enum class NodeKind : u16 {
   MetaField,  // a = obj NodeId, b = field_var SymId
   FieldsOf,   // a = struct_type_name SymId — @fields(TypeName)
   MetaBlock,  // b = stmts_start, c = stmts_count (list of NodeIds: MetaAsserts/MetaIfs/bare expr)
-  // shader-only intrinsics — never compiled to LLVM IR; emitted to .umshaders sidecar
+  // shader-only intrinsics — never compiled to LLVM IR; lowered via MLIR shader pipeline
   ShaderTexture2d,  // a = index_expr (u32) → opaque texture handle
   ShaderSampler,    // a = index_expr (u32) → opaque sampler handle
   ShaderSample,     // a = tex_expr, b = samp_expr, c = uv_expr → vec4

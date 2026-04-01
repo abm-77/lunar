@@ -18,6 +18,21 @@ find_package(Vulkan REQUIRED)
 find_package(LLVM CONFIG REQUIRED)
 message(STATUS "LLVM_DIR: ${LLVM_DIR}")
 
+# MLIR from installed prefix (same tree as LLVM)
+find_package(MLIR REQUIRED CONFIG)
+message(STATUS "MLIR_DIR: ${MLIR_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+include(TableGen)
+include(AddLLVM)
+include(AddMLIR)
+include(HandleLLVMOptions)
+
+# match LLVM's RTTI setting — LLVM is built with -fno-rtti
+if(NOT LLVM_ENABLE_RTTI)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
+endif()
+
 # GLFW from our install
 find_path(GLFW_INCLUDE_DIR GLFW/glfw3.h HINTS "${GLFW_ROOT}/include" REQUIRED)
 find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
@@ -78,22 +93,91 @@ add_custom_command(
   COMMENT "Embedding libglfw3.a into uc"
 )
 
-# ---- compiler binary ----
-add_executable(uc
-  ./source/compiler/main.cc
-  ${CMAKE_BINARY_DIR}/runtime_blob.cc
-  ${CMAKE_BINARY_DIR}/glfw_blob.cc
+# ---- um.shader dialect tablegen ----
+# Sources live in compiler/dsl/include/um/shader/ (includes + .td)
+#             and compiler/dsl/lib/mlir/shader/   (implementations)
+set(UM_SHADER_INC_DIR "${CMAKE_SOURCE_DIR}/source/compiler/dsl/include/um/shader")
+set(UM_SHADER_LIB_DIR "${CMAKE_SOURCE_DIR}/source/compiler/dsl/lib/mlir/shader")
+
+set(LLVM_TARGET_DEFINITIONS "${UM_SHADER_INC_DIR}/UmShaderOps.td")
+list(APPEND TABLEGEN_FLAGS "-I${MLIR_INCLUDE_DIRS}")
+
+mlir_tablegen(UmShaderOps.h.inc       -gen-op-decls      ${TABLEGEN_FLAGS})
+mlir_tablegen(UmShaderOps.cpp.inc     -gen-op-defs       ${TABLEGEN_FLAGS})
+mlir_tablegen(UmShaderTypes.h.inc     -gen-typedef-decls --dialect=um_shader ${TABLEGEN_FLAGS})
+mlir_tablegen(UmShaderTypes.cpp.inc   -gen-typedef-defs  --dialect=um_shader ${TABLEGEN_FLAGS})
+mlir_tablegen(UmShaderDialect.h.inc   -gen-dialect-decls --dialect=um_shader ${TABLEGEN_FLAGS})
+mlir_tablegen(UmShaderDialect.cpp.inc -gen-dialect-defs  --dialect=um_shader ${TABLEGEN_FLAGS})
+
+add_custom_target(UmShaderTableGen DEPENDS
+  UmShaderOps.h.inc    UmShaderOps.cpp.inc
+  UmShaderTypes.h.inc  UmShaderTypes.cpp.inc
+  UmShaderDialect.h.inc UmShaderDialect.cpp.inc
 )
 
-# LLVM include/defs
-target_include_directories(uc PRIVATE ${LLVM_INCLUDE_DIRS} ${COMPILER_DIR})
-target_compile_definitions(uc PRIVATE ${LLVM_DEFINITIONS})
+set(UM_SHADER_DSL_SOURCES
+  ${UM_SHADER_LIB_DIR}/um_shader_dialect.cc
+  ${UM_SHADER_LIB_DIR}/shader_mlir.cc
+  ${UM_SHADER_LIB_DIR}/shader_spirv_lower.cc
+  ${UM_SHADER_LIB_DIR}/shader_spirv_serialize.cc
+  ${UM_SHADER_LIB_DIR}/shader_spirv_emit.cc
+  ${UM_SHADER_LIB_DIR}/umrf_emit.cc
+  ${UM_SHADER_LIB_DIR}/shader_compile.cc
+)
 
-# Map LLVM component libs you use
+# MLIR libraries needed for um.shader dialect + SPIR-V lowering
+set(MLIR_SHADER_LIBS
+  MLIRIR
+  MLIRDialect
+  MLIRPass
+  MLIRTransforms
+  MLIRFuncDialect
+  MLIRArithDialect
+  MLIRSCFDialect
+  MLIRControlFlowDialect
+  MLIRVectorDialect
+  MLIRMemRefDialect
+  MLIRSPIRVDialect
+  MLIRSPIRVConversion
+  MLIRSPIRVSerialization
+  MLIRArithToSPIRV
+  MLIRFuncToSPIRV
+  MLIRSCFToControlFlow
+  MLIRControlFlowToSPIRV
+  MLIRSCFToSPIRV
+  MLIRMemRefToSPIRV
+  MLIRVectorToSPIRV
+  MLIRRewrite
+  MLIRTransformUtils
+  MLIRInferTypeOpInterface
+  MLIRSupport
+  MLIRBytecodeOpInterface
+)
+
+# Shared include dirs for anything touching the um.shader DSL
+set(UM_SHADER_INCLUDE_DIRS
+  ${LLVM_INCLUDE_DIRS}
+  ${MLIR_INCLUDE_DIRS}
+  ${CMAKE_BINARY_DIR}                                         # generated .inc files
+  ${CMAKE_SOURCE_DIR}/source/compiler/dsl/include             # um/shader/*.h
+  ${COMPILER_DIR}                                             # compiler/ + common/
+)
+
+# ---- compiler binary ----
 llvm_map_components_to_libnames(LLVM_LIBS
   core support irreader native nativecodegen target mc passes
 )
-target_link_libraries(uc PRIVATE ${LLVM_LIBS})
+
+add_executable(uc
+  ./source/compiler/main.cc
+  ${UM_SHADER_DSL_SOURCES}
+  ${CMAKE_BINARY_DIR}/runtime_blob.cc
+  ${CMAKE_BINARY_DIR}/glfw_blob.cc
+)
+add_dependencies(uc UmShaderTableGen)
+target_include_directories(uc PRIVATE ${UM_SHADER_INCLUDE_DIRS})
+target_compile_definitions(uc PRIVATE ${LLVM_DEFINITIONS})
+target_link_libraries(uc PRIVATE ${LLVM_LIBS} ${MLIR_SHADER_LIBS})
 
 # ---- Testing ----
 enable_testing()
@@ -175,11 +259,9 @@ target_link_libraries(window_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(window_tests)
 
 # ---- asset linker ----
-# SPIR-V backend — requires LLVM built with -DLLVM_TARGETS_TO_BUILD=X86;SPIRV
-# (already set in root CMakeLists.txt; rebuild llvm_ep if not yet done).
+# ul no longer compiles shaders; only needs Core/Support for potential future use.
 llvm_map_components_to_libnames(UL_LLVM_LIBS
-  SPIRVCodeGen SPIRVDesc SPIRVInfo
-  Core Support MC TargetParser
+  Core Support
 )
 
 add_executable(ul
@@ -187,35 +269,40 @@ add_executable(ul
   ./source/tools/ul/tex.cc
   ./source/tools/ul/audio.cc
   ./source/tools/ul/pack.cc
-  ./source/tools/ul/shader_link.cc
-  ./source/tools/ul/spirv_emit.cc
-  ./source/tools/ul/umrf_emit.cc
+  ./source/tools/ul/shader_pack.cc
 )
 target_include_directories(ul PRIVATE
   ${COMPILER_DIR}
   ./source/tools/ul
-  ${LLVM_INCLUDE_DIRS}
+  ./source          # runtime/gfx/umshader.h
 )
-target_compile_definitions(ul PRIVATE ${LLVM_DEFINITIONS})
-target_link_libraries(ul PRIVATE ${UL_LLVM_LIBS} lz4_static)
+target_link_libraries(ul PRIVATE lz4_static)
 
-add_executable(shader_tests
-  ./source/tools/ul/spirv_emit.cc
-  ./source/tools/ul/shader_link.cc
-  ./source/tools/ul/umrf_emit.cc
-  ./source/tools/ul/test/shader_tests.cc
+add_executable(shader_mlir_tests
+  ${UM_SHADER_DSL_SOURCES}
+  ./source/compiler/test/unit/shader_mlir_test.cc
 )
-target_include_directories(shader_tests PRIVATE
+add_dependencies(shader_mlir_tests UmShaderTableGen)
+target_include_directories(shader_mlir_tests PRIVATE ${UM_SHADER_INCLUDE_DIRS})
+target_compile_definitions(shader_mlir_tests PRIVATE ${LLVM_DEFINITIONS})
+target_link_libraries(shader_mlir_tests PRIVATE GTest::gtest_main ${LLVM_LIBS} ${MLIR_SHADER_LIBS})
+gtest_discover_tests(shader_mlir_tests)
+
+add_executable(shader_pack_tests
+  ./source/tools/ul/shader_pack.cc
+  ./source/tools/ul/test/shader_pack_test.cc
+)
+target_include_directories(shader_pack_tests PRIVATE
   ${COMPILER_DIR}
   ./source/tools/ul
-  ${LLVM_INCLUDE_DIRS}
+  ./source          # runtime/gfx/umshader.h
 )
-target_compile_definitions(shader_tests PRIVATE ${LLVM_DEFINITIONS})
-target_link_libraries(shader_tests PRIVATE GTest::gtest_main ${UL_LLVM_LIBS})
-gtest_discover_tests(shader_tests)
+target_link_libraries(shader_pack_tests PRIVATE GTest::gtest_main)
+gtest_discover_tests(shader_pack_tests)
 
 # lit functional tests
 set(FILECHECK "${CMAKE_SOURCE_DIR}/../build/_b_llvm/bin/FileCheck" CACHE PATH "Path to FileCheck binary" FORCE)
+set(SPIRV_VAL "" CACHE PATH "Path to spirv-val binary")
 set(LIT_PY "${CMAKE_SOURCE_DIR}/../third_party/llvm-project/llvm/utils/lit/lit.py")
 set(LIT_TEST_DIR "${CMAKE_SOURCE_DIR}/source/compiler/test")
 

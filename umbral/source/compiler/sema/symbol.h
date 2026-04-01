@@ -21,8 +21,8 @@ enum class SymFlags : u8 {
   None         = 0,
   Pub          = 1 << 0, // @pub
   Extern       = 1 << 1, // @extern
-  ShaderStage  = 1 << 2, // @stage method — skip native codegen, serialized to .umshaders
-  ShaderFn     = 1 << 3, // @shader_fn method — skip native codegen, serialized to .umshaders
+  ShaderStage  = 1 << 2, // @stage method — skip native codegen, lowered via MLIR shader pipeline
+  ShaderFn     = 1 << 3, // @shader_fn method — skip native codegen, lowered via MLIR shader pipeline
   MonoInstance = 1 << 4, // monomorphized instance
   Mut          = 1 << 5, // mutable global (var)
 };
