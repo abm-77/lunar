@@ -1,0 +1,40 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# float arithmetic: f32 and f64
+
+import sys.io.fmt => fmt;
+
+const main := fn() -> i32 {
+  const a: f64 = 3.14;
+  const b: f64 = 2.0;
+
+  const sum := a + b;
+  const diff := a - b;
+  const prod := b * b;
+  const quot := 10.0 / b;
+
+  # truncate to integer for easy checking
+  const si := @as(sum, i64);
+  const di := @as(diff, i64);
+  const pi := @as(prod, i64);
+  const qi := @as(quot, i64);
+
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i64(si) });
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i64(di) });
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i64(pi) });
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i64(qi) });
+
+  # f32
+  const x: f32 = 1.5;
+  const y: f32 = 2.5;
+  const z: f32 = x + y;
+  const zi := @as(z, i32);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(zi) });
+
+  return 0;
+}
+
+# CHECK: 5
+# CHECK: 1
+# CHECK: 4
+# CHECK: 5
+# CHECK: 4

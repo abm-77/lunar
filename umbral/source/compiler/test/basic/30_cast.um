@@ -1,0 +1,35 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# @as intrinsic: numeric type conversions
+
+import sys.io.fmt => fmt;
+
+const Color := enum { Red, Green, Blue };
+
+const main := fn() -> i32 {
+  # widen i32 → i64
+  const x: i32 = 42;
+  const y: i64 = @as(x, i64);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i64(y) });
+
+  # narrow u64 → u32
+  const big: u64 = 256;
+  const small: u32 = @as(big, u32);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u32(small) });
+
+  # f32 → f64
+  const f: f32 = 3.0;
+  const d: f64 = @as(f, f64);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_f64(d) });
+
+  # enum → u32
+  const c := Color::Blue;
+  const ci: u32 = @as(c, u32);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u32(ci) });
+
+  return 0;
+}
+
+# CHECK: 42
+# CHECK: 256
+# CHECK: 3
+# CHECK: 2

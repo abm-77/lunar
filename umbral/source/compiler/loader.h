@@ -134,7 +134,13 @@ ModuleLoader::load(const std::filesystem::path &abs_path) {
       alias_id = static_cast<SymId>(
           parser.mod.sym_list[imp.path_list_start + imp.path_list_count - 1]);
     }
-    import_map[alias_id] = child_idx;
+    auto [it, inserted] = import_map.emplace(alias_id, child_idx);
+    if (!inserted && it->second != child_idx) {
+      in_progress.erase(canonical_key);
+      return std::unexpected(Error{.msg = "import alias '" +
+          std::string(interner.view(alias_id)) +
+          "' already used by another import; use `=> alias` to rename"});
+    }
   }
 
   in_progress.erase(canonical_key);

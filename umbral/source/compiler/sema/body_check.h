@@ -56,6 +56,7 @@ struct BodyChecker {
   SymId current_shader_type_name = 0;
   // set by AssignStmt check before checking the LHS so Field can detect writes.
   bool in_assign_lhs = false;
+  u32 loop_depth = 0; // >0 when inside a for/for-range body
 
   BodyChecker(const BodyIR &ir, const Module &mod, SymbolTable &syms,
               MethodTable &methods, TypeTable &types, TypeLowerer lowerer,
@@ -67,6 +68,45 @@ struct BodyChecker {
     return {ir.nodes.span_s[n], ir.nodes.span_e[n]};
   }
   void emit(Span sp, const char *msg) { errors.push_back(Error{sp, msg, module_idx}); }
+  void emit(Span sp, const std::string &msg) { errors.push_back(Error{sp, msg, module_idx}); }
+
+  // human-readable name for a concrete type
+  std::string type_name(IType t) const {
+    IType r = unifier.resolve(t);
+    if (r.is_var) return "<unresolved>";
+    return type_name_for(r.concrete);
+  }
+  std::string type_name_for(CTypeId ctid) const {
+    if (ctid == 0) return "void";
+    const CType &ct = types.types[ctid];
+    switch (ct.kind) {
+    case CTypeKind::Void: return "void";
+    case CTypeKind::Bool: return "bool";
+    case CTypeKind::I8:  return "i8";
+    case CTypeKind::I16: return "i16";
+    case CTypeKind::I32: return "i32";
+    case CTypeKind::I64: return "i64";
+    case CTypeKind::U8:  return "u8";
+    case CTypeKind::U16: return "u16";
+    case CTypeKind::U32: return "u32";
+    case CTypeKind::U64: return "u64";
+    case CTypeKind::F32: return "f32";
+    case CTypeKind::F64: return "f64";
+    case CTypeKind::Ref:
+      return (ct.is_mut ? "&mut " : "&") + type_name_for(ct.inner);
+    case CTypeKind::Array:
+      return "[" + std::to_string(ct.count) + "]" + type_name_for(ct.inner);
+    case CTypeKind::Slice:
+      return "[]" + type_name_for(ct.inner);
+    case CTypeKind::Struct:
+    case CTypeKind::Enum:
+      if (ct.symbol != 0 && ct.symbol < syms.symbols.size())
+        return std::string(interner.view(syms.symbols[ct.symbol].name));
+      return ct.kind == CTypeKind::Struct ? "<struct>" : "<enum>";
+    case CTypeKind::Fn: return "fn";
+    default: return "<type>";
+    }
+  }
 
   // overrides node_type[n] to slice ctid when expected is []T and actual is [N]T. returns true if applied.
   bool coerce_array_to_slice(NodeId n, IType expected, IType actual, BodySema &sema) {
@@ -188,13 +228,15 @@ struct BodyChecker {
 
     sema.push_scope();
 
-    // inject const generic params (e.g., N: i32) as i32-typed locals so the
-    // body can reference them in expression position (e.g., i < N).
-    IType i32_type = IType::from(types.builtin(CTypeKind::I32));
+    // inject const generic params (e.g., N: u32) as locals of their declared type
     for (u32 k = 0; k < const_generic_scope_count; ++k) {
       const GenericParam &gp =
           mod.generic_params[const_generic_scope_start + k];
-      if (!gp.is_type) sema.define(gp.name, i32_type, false);
+      if (!gp.is_type) {
+        auto ct = lowerer.lower(gp.const_kind);
+        IType t = ct ? IType::from(*ct) : IType::from(types.builtin(CTypeKind::I32));
+        sema.define(gp.name, t, false);
+      }
     }
 
     for (u32 k = 0; k < fn_sym.sig.params_count; ++k) {
@@ -307,7 +349,8 @@ struct BodyChecker {
         if (!unifier.unify(var_type, init_t, types)) {
           bool ok = ann_type != 0 &&
                     coerce_array_to_slice(init_expr, var_type, init_t, sema);
-          if (!ok) emit(node_span(n), "type mismatch in declaration");
+          if (!ok) emit(node_span(n), "type mismatch in declaration: expected " +
+                        type_name(var_type) + ", got " + type_name(init_t));
         }
       }
       sema.define(var_name, var_type, nk == NodeKind::VarStmt);
@@ -319,7 +362,8 @@ struct BodyChecker {
       IType val_t = expr != 0 ? check_expr(expr, sema)
                               : IType::from(types.builtin(CTypeKind::Void));
       if (!unifier.unify(val_t, ret_type, types))
-        emit(node_span(n), "return type mismatch");
+        emit(node_span(n), "return type mismatch: expected " +
+             type_name(ret_type) + ", got " + type_name(val_t));
       break;
     }
     case NodeKind::AssignStmt: {
@@ -328,7 +372,8 @@ struct BodyChecker {
       in_assign_lhs = false;
       IType rt = check_expr(ir.nodes.b[n], sema);
       if (!unifier.unify(lt, rt, types))
-        emit(node_span(n), "type mismatch in assignment");
+        emit(node_span(n), "type mismatch in assignment: expected " +
+             type_name(lt) + ", got " + type_name(rt));
       break;
     }
     case NodeKind::IfStmt: {
@@ -357,8 +402,18 @@ struct BodyChecker {
           emit(node_span(fp.cond), "for condition must be bool");
       }
       if (fp.step != 0) check_stmt(fp.step, sema, ret_type);
+      ++loop_depth;
       if (fp.body != 0) check_block(fp.body, sema, ret_type);
+      --loop_depth;
       sema.pop_scope();
+      break;
+    }
+    case NodeKind::BreakStmt: {
+      if (loop_depth == 0) emit(node_span(n), "break outside of loop");
+      break;
+    }
+    case NodeKind::ContinueStmt: {
+      if (loop_depth == 0) emit(node_span(n), "continue outside of loop");
       break;
     }
     case NodeKind::ExprStmt: check_expr(ir.nodes.a[n], sema); break;
@@ -391,7 +446,9 @@ struct BodyChecker {
                          ? IType::from(elem_ctid)
                          : IType::fresh(unifier.fresh());
       sema.define(var_name, elem_t, /*is_mut=*/false);
+      ++loop_depth;
       check_block(body_n, sema, ret_type);
+      --loop_depth;
       sema.pop_scope();
       if (is_field_iter) field_iter_struct.erase(var_name);
       break;
@@ -500,7 +557,8 @@ struct BodyChecker {
       IType lt = check_expr(ir.nodes.b[n], sema);
       IType rt = check_expr(ir.nodes.c[n], sema);
       if (!unifier.unify(lt, rt, types))
-        emit(node_span(n), "type mismatch in binary expression");
+        emit(node_span(n), "type mismatch in binary expression: " +
+             type_name(lt) + " vs " + type_name(rt));
       auto op = static_cast<TokenKind>(ir.nodes.a[n]);
       bool is_cmp = op == TokenKind::EqualEqual || op == TokenKind::BangEqual ||
                     op == TokenKind::Less || op == TokenKind::LessEqual ||
@@ -732,7 +790,7 @@ struct BodyChecker {
 
         if (sct.kind == CTypeKind::Slice) {
           auto fname = interner.view(field_nm);
-          if (fname == "data") {
+          if (fname == "ptr" || fname == "data") {
             CType rc; rc.kind = CTypeKind::Ref; rc.inner = sct.inner;
             result = IType::from(types.intern(rc));
           } else if (fname == "len") {
@@ -746,6 +804,18 @@ struct BodyChecker {
             result = IType::from(types.builtin(CTypeKind::U64));
           else
             emit(node_span(n), "Iter<T> has no such field");
+          break;
+        }
+        if (sct.kind == CTypeKind::Tuple && sct.symbol == 0) {
+          // regular tuple: .0, .1, etc. index into element type list
+          auto idx_str = interner.view(field_nm);
+          char *end = nullptr;
+          u32 idx = static_cast<u32>(std::strtoul(idx_str.data(), &end, 10));
+          bool valid = end == idx_str.data() + idx_str.size();
+          if (valid && idx < sct.list_count)
+            result = IType::from(types.list[sct.list_start + idx]);
+          else
+            emit(node_span(n), "tuple index out of range");
           break;
         }
         if (sct.kind == CTypeKind::Tuple && sct.symbol != 0) {
@@ -926,7 +996,13 @@ struct BodyChecker {
       std::vector<CTypeId> elems;
       for (u32 k = 0; k < cnt; ++k) {
         IType et = check_expr(static_cast<NodeId>(ir.nodes.list[ls + k]), sema);
+        // default unresolved integer/float literals so tuple element types are concrete
         IType ec = unifier.resolve(et);
+        if (ec.is_var) {
+          CTypeId def = types.builtin(CTypeKind::I32);
+          unifier.unify(et, IType::from(def), types);
+          ec = unifier.resolve(et);
+        }
         elems.push_back(ec.is_var ? 0 : ec.concrete);
       }
       auto [start, count] = types.push_list(elems.data(), elems.size());
@@ -988,6 +1064,15 @@ struct BodyChecker {
       // default: unknown type (enum variant, module path, or unresolved).
       result = IType::fresh(unifier.fresh());
       u32 ls = ir.nodes.b[n], cnt = ir.nodes.c[n];
+      // single-segment path with type args: generic function call like size<i32>
+      if (cnt == 1) {
+        SymId seg = static_cast<SymId>(ir.nodes.list[ls]);
+        SymbolId sid = syms.lookup(module_idx, seg);
+        if (sid != kInvalidSymbol && syms.get(sid).kind == SymbolKind::Func) {
+          sema.node_symbol[n] = sid;
+          // result type resolved at Call site via mono_engine with type args
+        }
+      }
       if (cnt >= 2) {
         SymId first_seg = static_cast<SymId>(ir.nodes.list[ls]);
         SymId second_seg = static_cast<SymId>(ir.nodes.list[ls + 1]);
@@ -1048,7 +1133,9 @@ struct BodyChecker {
                 // module::Type::method — cross-module static method call
                 SymId third_seg =
                     static_cast<SymId>(ir.nodes.list[ls + 2]);
-                SymbolId method_sid = methods.lookup(dep_sid, third_seg);
+                // follow alias so methods registered on the original type are found
+                SymbolId type_sid = dep_sym.aliased_sym ? dep_sym.aliased_sym : dep_sid;
+                SymbolId method_sid = methods.lookup(type_sid, third_seg);
                 if (method_sid != kInvalidSymbol) {
                   sema.node_symbol[n] = method_sid;
                   // result type resolved later in Call handling via
@@ -1199,6 +1286,12 @@ struct BodyChecker {
       result = IType::from(types.builtin(CTypeKind::U32));
       break;
     }
+    case NodeKind::ShaderVertexId: {
+      if (!current_shader_stage && !is_shader_fn)
+        emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
+      result = IType::from(types.builtin(CTypeKind::U32));
+      break;
+    }
     case NodeKind::ShaderFrameRead: {
       if (!current_shader_stage && !is_shader_fn)
         emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
@@ -1209,20 +1302,8 @@ struct BodyChecker {
       break;
     }
     case NodeKind::ShaderRef: {
-      if (!current_shader_stage && !is_shader_fn)
-        emit(node_span(n), "shader intrinsic used outside @stage or @shader_fn method");
-      SymbolId bundle_sid = kInvalidSymbol;
-      for (u32 s = 1; s < syms.symbols.size() && bundle_sid == kInvalidSymbol; ++s) {
-        const Symbol &sv = syms.symbols[s];
-        if (sv.kind == SymbolKind::Type && interner.view(sv.name) == "shader_bundle")
-          bundle_sid = s;
-      }
-      if (bundle_sid != kInvalidSymbol) {
-        CType sc; sc.kind = CTypeKind::Struct; sc.symbol = bundle_sid;
-        result = IType::from(types.intern(sc));
-      } else {
-        result = IType::fresh(unifier.fresh());
-      }
+      // usable in any context (native CPU code); returns a u64 asset ID.
+      result = IType::from(types.builtin(CTypeKind::U64));
       break;
     }
     default: break;

@@ -1,0 +1,11 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# import aliasing with => and cross-module calls
+
+import sys.io.fmt => printer;
+
+const main := fn() -> i32 {
+  printer::println("hello from alias", []printer::Arg{});
+  return 0;
+}
+
+# CHECK: hello from alias

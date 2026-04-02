@@ -1,0 +1,36 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# break and continue in nested loops
+
+import sys.io.fmt => fmt;
+
+const main := fn() -> i32 {
+  # outer break: find first pair where i*j > 10
+  var result: i32 = 0;
+  for (var i: i32 = 1; i < 10; i += 1) {
+    for (var j: i32 = 1; j < 10; j += 1) {
+      if (i * j > 10) {
+        result = i * 100 + j;
+        break;
+      }
+    }
+    if (result != 0) { break; }
+  }
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(result) });
+
+  # continue in inner, break in outer
+  var sum: i32 = 0;
+  for (var i: i32 = 0; i < 5; i += 1) {
+    for (var j: i32 = 0; j < 5; j += 1) {
+      if (j == 2) { continue; }
+      if (j == 4) { break; }
+      sum += 1;
+    }
+  }
+  # each outer iter: j=0,1,3 then break at 4 → 3 per outer → 5*3=15
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(sum) });
+
+  return 0;
+}
+
+# CHECK: 206
+# CHECK: 15

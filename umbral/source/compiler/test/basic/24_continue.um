@@ -1,0 +1,19 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+
+import sys.io.fmt => fmt;
+
+# continue skips the current iteration; sum only accumulates odd values.
+const main := fn() -> i32 {
+  var s: i32 = 0;
+  for (var i: i32 = 0; i < 6; i += 1) {
+    if (i == 0 || i == 2 || i == 4) {
+      continue;
+    }
+    s += i;
+  }
+  # s = 1+3+5 = 9
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(s) });
+  return 0;
+}
+
+# CHECK: 9

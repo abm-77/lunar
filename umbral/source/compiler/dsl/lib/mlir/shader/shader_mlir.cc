@@ -7,6 +7,8 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/SPIRV/IR/SPIRVAttributes.h>
+#include <mlir/Dialect/SPIRV/IR/SPIRVDialect.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Vector/IR/VectorOps.h>
 #include <mlir/IR/Builders.h>
@@ -163,10 +165,32 @@ struct ShaderEmitCtx {
   mlir::Value insert_alloca(mlir::OpBuilder &b, mlir::Type elem_ty,
                              std::string_view name) {
     mlir::OpBuilder alloca_b(entry_block, entry_block->begin());
-    auto memref_ty = mlir::MemRefType::get({}, elem_ty);
+    // MemRefToSPIRV requires Function storage class on alloca memrefs
+    auto fn_sc = mlir::spirv::StorageClassAttr::get(&ctx, mlir::spirv::StorageClass::Function);
+    auto memref_ty = mlir::MemRefType::get({1}, elem_ty, mlir::AffineMap(), fn_sc);
     auto op = alloca_b.create<mlir::memref::AllocaOp>(loc, memref_ty);
     op->setAttr("name", b.getStringAttr(name));
     return op.getResult();
+  }
+
+  // constant index 0 for rank-1 memref access
+  mlir::ValueRange idx0(mlir::OpBuilder &b) {
+    thread_local mlir::Value cached;
+    if (!cached || cached.getContext() != &ctx)
+      cached = b.create<mlir::arith::ConstantIndexOp>(loc, 0).getResult();
+    return cached;
+  }
+
+  // load from a rank-1 memref<1xT> var slot
+  mlir::Value var_load(mlir::OpBuilder &b, mlir::Value ptr) {
+    auto zero = b.create<mlir::arith::ConstantIndexOp>(loc, 0).getResult();
+    return b.create<mlir::memref::LoadOp>(loc, ptr, mlir::ValueRange{zero}).getResult();
+  }
+
+  // store to a rank-1 memref<1xT> var slot
+  void var_store(mlir::OpBuilder &b, mlir::Value val, mlir::Value ptr) {
+    auto zero = b.create<mlir::arith::ConstantIndexOp>(loc, 0).getResult();
+    b.create<mlir::memref::StoreOp>(loc, val, ptr, mlir::ValueRange{zero});
   }
 
   // emit node nid; returns the SSA value (null for void/statement nodes).
@@ -204,9 +228,7 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
     SymId sym = na;
     auto vp = var_ptrs.find(sym);
     if (vp != var_ptrs.end()) {
-      auto ptr = vp->second;
-      auto mref = mlir::cast<mlir::MemRefType>(ptr.getType());
-      return b.create<mlir::memref::LoadOp>(loc, ptr).getResult();
+      return var_load(b, vp->second);
     }
     auto sv = sym_vals.find(sym);
     if (sv != sym_vals.end()) return sv->second;
@@ -366,8 +388,16 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
     if (!callee_nid || callee_nid >= ir.nodes.kind.size()) return {};
 
     // vec2/vec3/vec4 construction → vector insert
+    // callee may be Ident("vec4") or Path("types::vec4"); extract the last segment.
+    std::string_view cname;
     if (ir.nodes.kind[callee_nid] == NodeKind::Ident) {
-      auto cname = sym_name(ir.nodes.a[callee_nid]);
+      cname = sym_name(ir.nodes.a[callee_nid]);
+    } else if (ir.nodes.kind[callee_nid] == NodeKind::Path) {
+      u32 segs_start = ir.nodes.b[callee_nid], segs_count = ir.nodes.c[callee_nid];
+      if (segs_count > 0)
+        cname = sym_name(ir.nodes.list[segs_start + segs_count - 1]);
+    }
+    if (!cname.empty()) {
       if (cname == "vec2" || cname == "vec3" || cname == "vec4") {
         u32 n = (cname == "vec2") ? 2 : (cname == "vec3") ? 3 : 4;
         auto f32 = b.getF32Type();
@@ -435,7 +465,7 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
     mlir::Value init_val = emit(b, nc);
     if (!init_val) return {};
     mlir::Value ptr = insert_alloca(b, init_val.getType(), sym_name(sym));
-    b.create<mlir::memref::StoreOp>(loc, init_val, ptr, mlir::ValueRange{});
+    var_store(b, init_val, ptr);
     var_ptrs[sym] = ptr;
     return {};
   }
@@ -467,11 +497,11 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
     mlir::Value ptr = get_ptr(na);
     if (!ptr) return {};
     if (op == TokenKind::Equal) {
-      b.create<mlir::memref::StoreOp>(loc, rhs, ptr, mlir::ValueRange{});
+      var_store(b, rhs, ptr);
       return {};
     }
     // compound: load cur, compute, store
-    mlir::Value cur = b.create<mlir::memref::LoadOp>(loc, ptr).getResult();
+    mlir::Value cur = var_load(b, ptr);
     bool is_float = mlir::isa<mlir::FloatType>(rhs.getType());
     mlir::Value result;
     switch (op) {
@@ -493,8 +523,7 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
       break;
     default: break;
     }
-    if (result)
-      b.create<mlir::memref::StoreOp>(loc, result, ptr, mlir::ValueRange{});
+    if (result) var_store(b, result, ptr);
     return {};
   }
 
@@ -582,28 +611,28 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
     mlir::Value i_ptr = insert_alloca(b, b.getI32Type(), "__range_i");
     mlir::Value var_ptr = insert_alloca(b, elem_ty, sym_name(loop_var));
     var_ptrs[loop_var] = var_ptr;
-    b.create<mlir::memref::StoreOp>(loc,
-        b.create<mlir::arith::ConstantOp>(loc, b.getI32IntegerAttr(0)).getResult(),
-        i_ptr, mlir::ValueRange{});
+    var_store(b, b.create<mlir::arith::ConstantOp>(loc, b.getI32IntegerAttr(0)).getResult(), i_ptr);
 
     NodeId body_nid = nc;
     b.create<mlir::scf::WhileOp>(loc, mlir::TypeRange{}, mlir::ValueRange{},
         [&](mlir::OpBuilder &nb2, mlir::Location nl, mlir::ValueRange) {
-          mlir::Value i = nb2.create<mlir::memref::LoadOp>(nl, i_ptr).getResult();
+          auto z = nb2.create<mlir::arith::ConstantIndexOp>(nl, 0).getResult();
+          mlir::Value i = nb2.create<mlir::memref::LoadOp>(nl, i_ptr, mlir::ValueRange{z}).getResult();
           mlir::Value cond = nb2.create<mlir::arith::CmpIOp>(nl,
               mlir::arith::CmpIPredicate::slt, i, len_val).getResult();
           nb2.create<mlir::scf::ConditionOp>(nl, cond, mlir::ValueRange{});
         },
         [&](mlir::OpBuilder &nb2, mlir::Location nl, mlir::ValueRange) {
-          mlir::Value i = nb2.create<mlir::memref::LoadOp>(nl, i_ptr).getResult();
+          auto z = nb2.create<mlir::arith::ConstantIndexOp>(nl, 0).getResult();
+          mlir::Value i = nb2.create<mlir::memref::LoadOp>(nl, i_ptr, mlir::ValueRange{z}).getResult();
           mlir::Value elem = nb2.create<mlir::vector::ExtractOp>(nl, src,
               mlir::OpFoldResult(i)).getResult();
-          nb2.create<mlir::memref::StoreOp>(nl, elem, var_ptr, mlir::ValueRange{});
+          nb2.create<mlir::memref::StoreOp>(nl, elem, var_ptr, mlir::ValueRange{z});
           if (body_nid) emit(nb2, body_nid);
           mlir::Value i1 = nb2.create<mlir::arith::AddIOp>(nl, i,
               nb2.create<mlir::arith::ConstantOp>(nl, nb2.getI32IntegerAttr(1)).getResult()
               ).getResult();
-          nb2.create<mlir::memref::StoreOp>(nl, i1, i_ptr, mlir::ValueRange{});
+          nb2.create<mlir::memref::StoreOp>(nl, i1, i_ptr, mlir::ValueRange{z});
           nb2.create<mlir::scf::YieldOp>(nl);
         });
     return {};
@@ -635,6 +664,9 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
 
   case NodeKind::ShaderDrawId:
     return b.create<DrawIdOp>(loc, b.getI32Type()).getResult();
+
+  case NodeKind::ShaderVertexId:
+    return b.create<VertexIdOp>(loc, b.getI32Type()).getResult();
 
   case NodeKind::ShaderDrawPacket: {
     mlir::Value id = emit(b, na);
@@ -751,7 +783,8 @@ lower_to_mlir(mlir::MLIRContext &ctx,
                   mlir::arith::ArithDialect,
                   mlir::scf::SCFDialect,
                   mlir::memref::MemRefDialect,
-                  mlir::vector::VectorDialect>();
+                  mlir::vector::VectorDialect,
+                  mlir::spirv::SPIRVDialect>();
 
   auto loc = mlir::UnknownLoc::get(&ctx);
   mlir::OpBuilder b(&ctx);

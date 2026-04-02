@@ -1,0 +1,19 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+
+import sys.io.fmt => fmt;
+
+# break exits the loop early; sum stops accumulating at i == 5.
+const main := fn() -> i32 {
+  var s: i32 = 0;
+  for (var i: i32 = 0; i < 10; i += 1) {
+    if (i == 5) {
+      break;
+    }
+    s += i;
+  }
+  # s = 0+1+2+3+4 = 10
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(s) });
+  return 0;
+}
+
+# CHECK: 10

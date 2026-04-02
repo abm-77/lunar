@@ -1,0 +1,26 @@
+# RUN: %uc %s --dump-ir 2>/dev/null | %FileCheck %s
+# CHECK: i64 {{[0-9]+}}
+
+# @shader_ref(S) outside a shader stage: must emit a u64 FNV-1a hash constant.
+# the exact hash value is fnv1a64("MyShader.umsh"); just check it's a non-zero i64.
+
+@shader_pod const MyVsOut := struct {
+  @builtin(position) clip: f32,
+};
+@shader_pod const MyFsOut := struct {
+  @location(0) color: f32,
+};
+@shader const MyShader := struct {
+  @vs_out vout: MyVsOut,
+  @fs_in  fin:  MyVsOut,
+  @fs_out fout: MyFsOut,
+};
+impl MyShader {
+  @stage(vertex)   const vert := fn(&mut self) -> void { self.vout.clip = 0.0; };
+  @stage(fragment) const frag := fn(&mut self) -> void { self.fout.color = 0.0; };
+}
+
+const main := fn() -> i32 {
+  const id: u64 = @shader_ref(MyShader);
+  return 0;
+}

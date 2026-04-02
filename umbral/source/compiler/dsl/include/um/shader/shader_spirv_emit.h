@@ -1,15 +1,20 @@
 #pragma once
 
-#include <mlir/Dialect/SPIRV/IR/SPIRVOps.h>
+#include <um/shader/umsh_emit.h>
+
 #include <mlir/IR/BuiltinOps.h>
 
-#include <string_view>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace um::shader {
 
-// serialize every spirv.module inside mlir_mod to a SPIR-V binary file.
-// output files are named <prefix>.<stage>.spv (e.g. "SpriteShader.vert.spv")
-// in out_dir. returns false on failure (prints to stderr).
-bool emit_spirv_binaries(mlir::ModuleOp mlir_mod, std::string_view out_dir);
+// collect_spirv_stages — serialize all spirv.module ops inside mlir_mod.
+// returns a map from shader_name → list of UmshStageData (one per stage).
+// each spirv.module must have "shader_type" and "stage" string attrs (set by
+// shader_spirv_lower). returns an empty map on failure (prints to stderr).
+std::unordered_map<std::string, std::vector<UmshStageData>>
+collect_spirv_stages(mlir::ModuleOp mlir_mod);
 
 } // namespace um::shader

@@ -1,0 +1,84 @@
+import sys.window;
+import sys.gfx;
+import sys.gfx.types;
+import sys.gfx.draw;
+import sys.gfx.assets;
+import sys.asset;
+import math.types => math;
+
+@shader_pod const TriVsOut := struct {
+  @builtin(position) clip: math::vec4,
+};
+
+@shader_pod const TriFsOut := struct {
+  @location(0) color: math::vec4,
+};
+
+@shader const TriShader := struct {
+  @vs_out vout: TriVsOut,
+  @fs_in  fin:  TriVsOut,
+  @fs_out fout: TriFsOut,
+};
+
+impl TriShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    const vid := @vertex_id();
+    var x: f32 = 0.0;
+    var y: f32 = 0.0;
+    # CCW winding for VK_FRONT_FACE_COUNTER_CLOCKWISE
+    if (vid == 0) {
+      x =  0.0; y = -0.5;
+    } else if (vid == 1) {
+      x = -0.5; y =  0.5;
+    } else {
+      x =  0.5; y =  0.5;
+    }
+    self.vout.clip = math::vec4(x, y, 0.0, 1.0);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    self.fout.color = math::vec4(1.0, 0.5, 0.0, 1.0);
+  };
+}
+
+const main := fn() -> i32 {
+  asset::init("assets.umpack");
+
+  var win := window::Window::create("triangle", 800, 600);
+
+  const dev := gfx::init(win.handle, gfx::GfxConfig {
+    frames_in_flight  = 2,
+    max_textures      = 64,
+    max_samplers      = 16,
+    frame_arena_bytes = 1048576,
+    draw_packets_max  = 1024,
+    enable_validation = true,
+    present_mode      = types::PresentMode::Fifo,
+  });
+
+  const pipeline := assets::pipeline_create<TriShader>(dev);
+
+  for (; !window::Window::should_close(&win);) {
+    window::Window::poll_events();
+
+    const cmd := gfx::begin_frame(dev);
+    if (cmd.handle != 0) {
+      var ds := draw::DrawStream::create(dev, cmd, pipeline);
+      ds.push_draw_packet(types::DrawPacket {
+        vertex_count   = 3,
+        instance_count = 1,
+      });
+      ds.submit();
+      ds.destroy();
+      gfx::end_frame(dev, cmd);
+    }
+  }
+
+  gfx::pipeline_destroy(dev, pipeline);
+  gfx::shutdown(dev);
+  win.destroy();
+
+  return 0;
+}

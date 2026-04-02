@@ -1,0 +1,23 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# slice .ptr and .len field access
+
+import sys.io.fmt => fmt;
+
+@extern const rt_fmt_print_line : fn([]u8, []i32) -> void;
+
+const main := fn() -> i32 {
+  const s: []u8 = "hello";
+  const len := s.len;
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u64(len) });
+
+  # .ptr should be non-null for a non-empty string
+  const p := s.ptr;
+  if (p != s.ptr) { return 1; }
+
+  # array → slice via @iter, check len
+  const arr := [3]i32{ 10, 20, 30 };
+
+  return 0;
+}
+
+# CHECK: 5

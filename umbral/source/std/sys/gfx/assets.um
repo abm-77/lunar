@@ -1,74 +1,20 @@
 import sys.asset;
 import sys.gfx.types;
 
-# gfx/assets.um — pipeline creation from pre-compiled shader assets.
-#
-# a shader bundle is the unit of asset loading for a complete raster pipeline.
-# all three blobs are UMRF-typed assets produced at asset-link time.
-# UMRF is one asset type in the general asset system; the runtime knows how to parse it.
-#
-# loading sequence in pipeline_from_shader:
-#   1. load each blob via the general asset system (asset::load)
-#   2. call rt_gfx_pipeline_create with the raw bytes
-#   3. release the assets (asset::release)
-# the runtime copies all data it needs before rt_gfx_pipeline_create returns.
-
-# ShaderBundle — the three asset ids needed to create one raster pipeline.
-# obtained at compile time via @asset_ref("path/to/shader"):
-#   const MY_SHADER := ShaderBundle {
-#     vs   = @asset_ref("shaders/sprite.vert.spv"),
-#     fs   = @asset_ref("shaders/sprite.frag.spv"),
-#     refl = @asset_ref("shaders/sprite.umrf"),
-#   };
-# vs:   vertex shader SPIR-V blob (asset id)
-# fs:   fragment shader SPIR-V blob (asset id)
-# refl: UMRF reflection blob (asset id); describes vertex input layout to the runtime
-@pub const ShaderBundle := struct {
-    vs:   asset::AssetId,
-    fs:   asset::AssetId,
-    refl: asset::AssetId,
-}
-
-# pipeline_from_shader — load shader blobs and create a compiled pipeline.
-#   dev:    the device to create the pipeline on; must be valid.
-#   bundle: asset ids for the three shader blobs; all must be non-zero.
-#   returns a Pipeline on success; Pipeline { handle = 0 } on load or create failure.
-#
-# ownership:
-#   - all three assets are loaded and released within this call; caller retains no blobs.
-#   - the returned Pipeline is owned by the caller.
-#   - call pipeline_destroy when the pipeline is no longer needed.
-#
-# threading: not thread-safe; must be called from the main thread outside a begin/end_frame pair.
-@pub const pipeline_from_shader := fn(dev: types::Device,
-                                       bundle: ShaderBundle) -> types::Pipeline {
-    const vs_asset   := asset::load(bundle.vs);
-    const fs_asset   := asset::load(bundle.fs);
-    const refl_asset := asset::load(bundle.refl);
-
-    # TODO: check vs_asset.data.len == 0 || fs_asset.data.len == 0 || refl_asset.data.len == 0
-    #       and early-return Pipeline { handle = 0 } after releasing any loaded assets
-
-    const raw_handle := types::rt_gfx_pipeline_create(
+# pipeline_create<T> — load the .umsh for @shader type T and create a raster pipeline.
+# T must be a @shader struct. the asset ID is computed at compile time via @shader_ref(T).
+@pub const pipeline_create<T: type>(dev: types::Device) -> types::Pipeline {
+    const shader_id: u64 = @shader_ref(T);
+    const bytes := asset::rt_asset_load(shader_id);
+    const h := types::rt_gfx_pipeline_create_from_umsh(
         dev.handle,
-        vs_asset.data.ptr,   vs_asset.data.len   as u64,
-        fs_asset.data.ptr,   fs_asset.data.len   as u64,
-        refl_asset.data.ptr, refl_asset.data.len as u64,
+        bytes,
+        0
     );
-
-    asset::release(bundle.vs);
-    asset::release(bundle.fs);
-    asset::release(bundle.refl);
-
-    return types::Pipeline { handle = raw_handle };
+    asset::rt_asset_release(shader_id);
+    return types::Pipeline { handle = h };
 }
 
-# pipeline_destroy — destroy a pipeline created by pipeline_from_shader.
-#   dev:  the device that owns the pipeline.
-#   pipe: must not be in use by any in-flight frame.
-#         the caller is responsible for ensuring frames_in_flight frames have elapsed,
-#         or calling a device_wait_idle helper before destroying mid-frame.
-@pub const pipeline_destroy := fn(dev: types::Device, pipe: types::Pipeline) {
-    # TODO: assert pipe.handle != 0
+@pub const pipeline_destroy := fn(dev: types::Device, pipe: types::Pipeline) -> void {
     types::rt_gfx_pipeline_destroy(dev.handle, pipe.handle);
 }

@@ -14,7 +14,7 @@
 class Parser {
 public:
   Parser(const TokenStream &ts, const IntrinsicTable &intrinsics,
-         const Interner &interner, std::string_view src = {})
+         Interner &interner, std::string_view src = {})
       : t(ts), intrinsics(intrinsics), interner(interner), src(src) {}
   std::optional<Error> error() const { return err; }
 
@@ -29,7 +29,7 @@ public:
 private:
   const TokenStream &t;
   const IntrinsicTable &intrinsics;
-  const Interner &interner;
+  Interner &interner;
   std::string_view src;
   u32 i = 0;
   std::optional<Error> err;
@@ -197,7 +197,8 @@ private:
     if (depth != 0) return false;
     if (j >= t.kind.size()) return false;
     TokenKind after = t.kind[j];
-    return after == TokenKind::LBrace || after == TokenKind::ColonColon;
+    return after == TokenKind::LBrace || after == TokenKind::ColonColon ||
+           after == TokenKind::LParen;
   }
 
   // true if current position looks like `for (var/const name := expr)` with no semicolons.
@@ -527,6 +528,11 @@ private:
         expect(TokenKind::RParen, "expected ')'");
         return body_ir.nodes.make(NodeKind::ShaderDrawId, s);
       }
+      case IntrinsicKind::VertexId: {
+        expect(TokenKind::LParen, "expected '('");
+        expect(TokenKind::RParen, "expected ')'");
+        return body_ir.nodes.make(NodeKind::ShaderVertexId, s);
+      }
       case IntrinsicKind::DrawPacket: {
         expect(TokenKind::LParen, "expected '('");
         NodeId id = parse_expr();
@@ -790,6 +796,39 @@ private:
             }
           }
         }
+        // cross-module struct init: mod::Type { field = value, ... }
+        if (match(TokenKind::LBrace)) {
+          Span tspan = {s.start, t.end[i - 2]};
+          TypeId struct_type_id;
+          if (generic_type_id != 0) {
+            struct_type_id = generic_type_id;
+          } else if (segs.size() >= 2) {
+            SymId type_name = static_cast<SymId>(segs.back());
+            SymId mod_prefix = static_cast<SymId>(segs[segs.size() - 2]);
+            std::vector<TypeId> qlist = {static_cast<TypeId>(mod_prefix)};
+            auto [qls, _q] = type_ast.push_list(qlist.data(), qlist.size());
+            struct_type_id = type_ast.make(TypeKind::QualNamed, tspan, type_name, qls, 0);
+          } else {
+            struct_type_id = type_ast.make(TypeKind::Named, tspan, sym, 0, 0);
+          }
+          std::vector<u32> packed;
+          if (!match(TokenKind::RBrace)) {
+            do {
+              SymId field = expect_ident("expected field name");
+              expect(TokenKind::Equal, "expected '=' in struct literal");
+              NodeId val = parse_expr();
+              packed.push_back(field);
+              packed.push_back(val);
+            } while (!err && match(TokenKind::Comma) && !at(TokenKind::RBrace));
+            expect(TokenKind::RBrace, "expected '}'");
+          }
+          u32 list_start = body_ir.nodes.list.size();
+          body_ir.nodes.list.insert(body_ir.nodes.list.end(), packed.begin(), packed.end());
+          u32 pairs = packed.size() / 2;
+          Span endsp = {s.start, t.end[i - 1]};
+          return body_ir.nodes.make(NodeKind::StructInit, endsp, struct_type_id, list_start, pairs);
+        }
+
         auto [ls, cnt] = body_ir.nodes.push_list(segs.data(), segs.size());
         Span endsp = {s.start, t.end[i - 1]};
         // a = TypeId of the leading generic type (0 if none), b = segs_start, c = segs_count
@@ -822,6 +861,15 @@ private:
         // a = TypeId (was SymId)
         return body_ir.nodes.make(NodeKind::StructInit, endsp, struct_type_id, list_start,
                                   pairs);
+      }
+
+      // generic function call: name<T>(args) — emit as single-segment Path
+      // so the call handler can extract type args from generic_type_id.
+      if (generic_type_id != 0) {
+        std::vector<u32> segs = {sym};
+        auto [ls, cnt] = body_ir.nodes.push_list(segs.data(), segs.size());
+        Span endsp = {s.start, t.end[i - 1]};
+        return body_ir.nodes.make(NodeKind::Path, endsp, generic_type_id, ls, cnt);
       }
 
       return body_ir.nodes.make(NodeKind::Ident, s, sym);
@@ -996,7 +1044,14 @@ private:
     NodeId base = parse_primary();
     for (;;) {
       if (match(TokenKind::Dot)) {
-        SymId field = expect_ident("expected field name");
+        SymId field;
+        if (at(TokenKind::Int)) {
+          auto idx_sv = src.substr(t.start[i], t.end[i] - t.start[i]);
+          field = interner.intern(idx_sv);
+          ++i;
+        } else {
+          field = expect_ident("expected field name");
+        }
         Span endsp = {body_ir.nodes.span_s[base], t.end[i - 1]};
         base = body_ir.nodes.make(NodeKind::Field, endsp, base, field);
         continue;
@@ -1054,7 +1109,15 @@ private:
       int pb = postfix_bp(op);
       if (pb >= 0 && pb >= min_bp) {
         if (match(TokenKind::Dot)) {
-          SymId field = expect_ident("expected field  name");
+          // field name or tuple index (e.g., .0, .1)
+          SymId field;
+          if (at(TokenKind::Int)) {
+            auto idx_sv = src.substr(t.start[i], t.end[i] - t.start[i]);
+            field = interner.intern(idx_sv);
+            ++i;
+          } else {
+            field = expect_ident("expected field name");
+          }
           Span endsp = {body_ir.nodes.span_s[lhs], t.end[i - 1]};
           lhs = body_ir.nodes.make(NodeKind::Field, endsp, lhs, field);
           continue;
@@ -1139,6 +1202,20 @@ private:
       expect(TokenKind::Semicolon, "expected ';'");
       Span endsp = {s.start, t.end[i - 1]};
       return body_ir.nodes.make(NodeKind::ReturnStmt, endsp, val);
+    }
+
+    // break ;
+    if (match(TokenKind::KwBreak)) {
+      expect(TokenKind::Semicolon, "expected ';' after 'break'");
+      Span endsp = {s.start, t.end[i - 1]};
+      return body_ir.nodes.make(NodeKind::BreakStmt, endsp);
+    }
+
+    // continue ;
+    if (match(TokenKind::KwContinue)) {
+      expect(TokenKind::Semicolon, "expected ';' after 'continue'");
+      Span endsp = {s.start, t.end[i - 1]};
+      return body_ir.nodes.make(NodeKind::ContinueStmt, endsp);
     }
 
     // if ( <expr> ) <block> [else <block>]

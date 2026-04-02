@@ -1,0 +1,39 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# references, mutable references, and deref
+
+import sys.io.fmt => fmt;
+
+const double_in_place := fn(p: &mut i32) -> void {
+  *p = *p * 2;
+}
+
+const read_ref := fn(p: &i32) -> i32 {
+  return *p;
+}
+
+const Vec2 := struct { x: i32, y: i32 };
+
+const scale := fn(v: &mut Vec2, s: i32) -> void {
+  v.x = v.x * s;
+  v.y = v.y * s;
+}
+
+const main := fn() -> i32 {
+  var x: i32 = 21;
+  double_in_place(&mut x);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(x) });
+
+  const y: i32 = 7;
+  const r := read_ref(&y);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(r) });
+
+  var v := Vec2 { x = 3, y = 4 };
+  scale(&mut v, 10);
+  fmt::println("{} {}", []fmt::Arg{ fmt::arg_i32(v.x), fmt::arg_i32(v.y) });
+
+  return 0;
+}
+
+# CHECK: 42
+# CHECK: 7
+# CHECK: 30 40

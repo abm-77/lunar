@@ -17,6 +17,7 @@ int main(int argc, char **argv) {
     std::string flag = argv[i];
     if (flag == "-o" && i + 1 < argc) {
       opts.out_path = argv[++i];
+      opts.has_out = true;
     } else if (flag == "--root" && i + 1 < argc) {
       opts.root_override = argv[++i];
     } else if (flag == "--dump-ir") {

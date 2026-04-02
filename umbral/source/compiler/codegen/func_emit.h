@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <llvm/IR/BasicBlock.h>
@@ -9,6 +10,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
 
+#include <common/hash.h>
 #include <common/types.h>
 #include <compiler/codegen/codegen_ctx.h>
 #include <compiler/frontend/ast.h>
@@ -33,6 +35,10 @@ struct FuncEmitter {
   // compile-time @for_fields state: loop var SymId → (fname, field_idx, field_ctid).
   // set during ForRange FieldIter unroll; used by emit_field and emit_meta_field.
   std::unordered_map<SymId, std::tuple<SymId, u32, CTypeId>> active_field;
+
+  // loop context for break/continue: tracks the step and exit blocks of enclosing loops.
+  struct LoopCtx { llvm::BasicBlock *step_bb; llvm::BasicBlock *exit_bb; };
+  std::vector<LoopCtx> loop_stack;
 
   FuncEmitter(CodegenCtx &cg, llvm::Function &fn, const Symbol &sym,
               const BodyIR &ir, const Module &mod, const BodySema &bsema)
@@ -133,6 +139,8 @@ struct FuncEmitter {
     case NodeKind::VarStmt: emit_const(n); break;
     case NodeKind::AssignStmt: emit_assign(n); break;
     case NodeKind::ReturnStmt: emit_return(n); break;
+    case NodeKind::BreakStmt: builder.CreateBr(loop_stack.back().exit_bb); break;
+    case NodeKind::ContinueStmt: builder.CreateBr(loop_stack.back().step_bb); break;
     case NodeKind::IfStmt: emit_if(n); break;
     case NodeKind::ForStmt: emit_for(n); break;
     case NodeKind::ForRange: emit_for_range(n); break;
@@ -285,7 +293,9 @@ struct FuncEmitter {
     }
 
     builder.SetInsertPoint(body_bb);
+    loop_stack.push_back({step_bb, exit_bb});
     emit_block(fp.body);
+    loop_stack.pop_back();
     if (!has_terminator()) builder.CreateBr(step_bb);
 
     builder.SetInsertPoint(step_bb);
@@ -332,10 +342,27 @@ struct FuncEmitter {
     case NodeKind::ShaderSampler:
     case NodeKind::ShaderSample:
     case NodeKind::ShaderDrawId:
+    case NodeKind::ShaderVertexId:
     case NodeKind::ShaderDrawPacket:
     case NodeKind::ShaderFrameRead:
-    case NodeKind::ShaderRef:
       llvm_unreachable("shader intrinsic in native codegen");
+    case NodeKind::ShaderRef: {
+      // emit FNV-1a 64-bit hash of "ShaderName.umsh" as a u64 constant.
+      // in a mono instance, resolve the type param to the concrete type name.
+      SymId raw_sym = ir.nodes.a[n];
+      std::string_view name = cg.interner.view(raw_sym);
+      auto sub = sym.mono_type_subst.find(raw_sym);
+      if (sub != sym.mono_type_subst.end()) {
+        CTypeId ctid = static_cast<CTypeId>(sub->second);
+        const CType &ct = cg.sema.types.types[ctid];
+        if (ct.symbol != 0)
+          name = cg.interner.view(cg.sema.syms.get(ct.symbol).name);
+      }
+      std::string basename(name);
+      basename += ".umsh";
+      uint64_t id = fnv1a64(basename.data(), basename.size());
+      return llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()), id);
+    }
     default: assert(false && "unhandled expression kind"); return nullptr;
     }
   }
@@ -385,6 +412,14 @@ struct FuncEmitter {
     }
     if (auto it = cg.fn_map.find(sym_id); it != cg.fn_map.end())
       return it->second;
+
+    // const-generic parameter: emit the monomorphized value as a constant
+    if (auto it = sym.mono_const_values.find(name);
+        it != sym.mono_const_values.end()) {
+      CTypeId ctid = bsema.node_type[n].concrete;
+      llvm::Type *ty = cg.type_lower.lower(ctid);
+      return llvm::ConstantInt::get(ty, it->second);
+    }
 
     assert(false && "failed to emit code for identifier");
     return nullptr;
@@ -652,6 +687,20 @@ struct FuncEmitter {
 
     u32 fields_start = ir.nodes.b[n];
     u32 fields_count = ir.nodes.c[n];
+
+    // zero-fill unspecified fields (like C designated init)
+    auto &dl = fn.getParent()->getDataLayout();
+    std::unordered_set<u32> set_fields;
+    for (u32 i = 0; i < fields_count; ++i) {
+      SymId fn_ = ir.nodes.list[fields_start + (i * 2)];
+      set_fields.insert(cg.type_lower.field_index(struct_sym, fn_, ctid));
+    }
+    for (u32 fi = 0; fi < sty_s->getNumElements(); ++fi) {
+      if (set_fields.count(fi)) continue;
+      auto *fp = builder.CreateStructGEP(sty, slot, fi);
+      llvm::Type *ft = sty_s->getElementType(fi);
+      builder.CreateMemSet(fp, builder.getInt8(0), dl.getTypeAllocSize(ft), llvm::MaybeAlign());
+    }
     for (u32 i = 0; i < fields_count; ++i) {
       SymId field_name = ir.nodes.list[fields_start + (i * 2)];
       NodeId val_nid = ir.nodes.list[fields_start + (i * 2) + 1];
@@ -1051,7 +1100,9 @@ struct FuncEmitter {
         llvm::PointerType::getUnqual(ctx), ptr_ptr, "forin.ptr");
     llvm::Value *elem_ptr = builder.CreateGEP(elem_ty, data_ptr, idx_v);
     builder.CreateStore(builder.CreateLoad(elem_ty, elem_ptr), var_slot);
+    loop_stack.push_back({step_bb, exit_bb});
     emit_block(body_n);
+    loop_stack.pop_back();
     if (!has_terminator()) builder.CreateBr(step_bb);
 
     // step: idx += 1; back to header
@@ -1205,9 +1256,18 @@ struct FuncEmitter {
 
     if (cg.sema.types.types[struct_ctid].kind == CTypeKind::Slice) {
       auto fname = cg.interner.view(field_name);
-      u32 idx = (fname == "data") ? 0u : 1u;
+      u32 idx = (fname == "ptr" || fname == "data") ? 0u : 1u;
       llvm::Type *slice_ty = cg.type_lower.lower(struct_ctid);
       return builder.CreateStructGEP(slice_ty, base_ptr, idx);
+    }
+
+    if (cg.sema.types.types[struct_ctid].kind == CTypeKind::Tuple &&
+        cg.sema.types.types[struct_ctid].symbol == 0) {
+      // regular tuple: .0, .1, etc.
+      auto fname = cg.interner.view(field_name);
+      u32 idx = static_cast<u32>(std::strtoul(fname.data(), nullptr, 10));
+      llvm::Type *tuple_ty = cg.type_lower.lower(struct_ctid);
+      return builder.CreateStructGEP(tuple_ty, base_ptr, idx);
     }
 
     if (cg.sema.types.types[struct_ctid].kind == CTypeKind::Tuple &&

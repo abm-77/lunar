@@ -1,0 +1,27 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# tuple types: creation, field access, and passing
+
+import sys.io.fmt => fmt;
+
+const swap := fn(t: (i32, i32)) -> (i32, i32) {
+  return (t.1, t.0);
+}
+
+const main := fn() -> i32 {
+  const pair := (10, 20);
+  fmt::println("{} {}", []fmt::Arg{ fmt::arg_i32(pair.0), fmt::arg_i32(pair.1) });
+
+  const swapped := swap(pair);
+  fmt::println("{} {}", []fmt::Arg{ fmt::arg_i32(swapped.0), fmt::arg_i32(swapped.1) });
+
+  # nested
+  const triple := (1, 2, 3);
+  const sum := triple.0 + triple.1 + triple.2;
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(sum) });
+
+  return 0;
+}
+
+# CHECK: 10 20
+# CHECK: 20 10
+# CHECK: 6

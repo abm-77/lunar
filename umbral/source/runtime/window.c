@@ -298,6 +298,12 @@ static um_window_entry_t *get_window_entry(um_window_handle_t h,
   return e;
 }
 
+// return the raw GLFWwindow* for the gfx layer (swapchain surface creation).
+void *window_glfw_ptr(um_window_handle_t h) {
+  um_window_entry_t *e = get_window_entry(h, "window_glfw_ptr");
+  return e ? (void *)e->win : NULL;
+}
+
 #if UM_DEBUG
 static void trap_bad_key(const char *op, um_key_t k) {
   fprintf(stderr, "WINDOW ERROR: %s: key %d out of range [0, %d)\n", op, (int)k,
@@ -338,6 +344,7 @@ um_window_handle_t rt_window_create(um_slice_u8_t title, int32_t width,
   // slot 0 is reserved as the null handle sentinel
   for (int i = 1; i < UM_MAX_WINDOWS; ++i) {
     if (!g_windows[i].live) {
+      glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
       GLFWwindow *win =
           glfwCreateWindow(width, height, (const char *)title.ptr, NULL, NULL);
 #if UM_DEBUG

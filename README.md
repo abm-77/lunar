@@ -441,10 +441,11 @@ All `@name` forms are intrinsics — there are no separate keywords for visibili
 | `@texture2d(idx: u32)` | opaque texture handle at descriptor index `idx` |
 | `@sampler(idx: u32)` | opaque sampler handle at descriptor index `idx` |
 | `@sample(tex, samp, uv)` | sample `tex` with `samp` at UV coordinates → `vec4` |
-| `@draw_id()` | current instance index (`gl_InstanceIndex`) → `u32` |
+| `@draw_id()` | current draw index (`gl_DrawID`) → `u32` |
+| `@vertex_id()` | current vertex index (`gl_VertexIndex`) → `u32`; use for procedural vertex-pull |
 | `@draw_packet(id: u32)` | opaque per-draw data packet handle |
 | `@frame_read<T>(offset: u32)` | read `T` from the per-frame data buffer at byte `offset` |
-| `@shader_ref(TypeName)` | reference to a compiled shader bundle for `TypeName` |
+| `@shader_ref(TypeName)` | CPU-side; returns `u64` FNV-1a 64-bit hash of `"TypeName.umsh"`; use with `gfx::pipeline_create` |
 
 ---
 
@@ -714,18 +715,20 @@ const clip: m::vec4 = m::vec4(pos.x, pos.y, 0.0, 1.0);  # positional init
 
 #### `sys.asset` — general asset loading
 
-Assets are immutable byte blobs identified by a `u64` ID embedded in the binary at compile time via `@asset_ref`. The runtime resolves IDs to byte spans from the embedded asset table at startup.
+Assets are immutable byte blobs identified by a `u64` ID. IDs are FNV-1a 64-bit hashes of the asset's basename (e.g., `fnv1a64("TriShader.umsh")`). Call `asset::init("my.umpack")` at startup before any loads.
 
 ```
 import sys.asset => asset;
 
-const id: asset::AssetId = @asset_ref("shaders/sprite_vs.spv");
-const ab := asset::load(id);    # AssetBytes; borrowed until release
-# use ab.data ([]u8) ...
-asset::release(id);
+asset::init("game.umpack");   # load the asset pack once at startup
+
+# ids come from @shader_ref (for shaders) or are computed manually
+const bytes := asset::rt_asset_load(some_id);  # []u8 borrowed slice
+# use bytes.ptr and bytes.len ...
+asset::rt_asset_release(some_id);
 ```
 
-The `AssetBytes` slice is valid until the matching `release` call. Do not store it across frames.
+The byte slice is valid until `rt_assets_init` is called again or the process exits.
 
 ---
 
@@ -751,13 +754,9 @@ const cfg := gfx::GfxConfig {
 var win := window::Window::create("My App", 1280, 720);
 const dev := gfx::init(win.handle, cfg);
 
-# load shader (asset IDs produced by @asset_ref at compile time)
-const bundle := gfx::ShaderBundle {
-    vs   = @asset_ref("shaders/sprite_vs.spv"),
-    fs   = @asset_ref("shaders/sprite_fs.spv"),
-    refl = @asset_ref("shaders/sprite.umrf"),
-};
-const pipe := gfx::pipeline_from_shader(dev, bundle);
+# @shader_ref(TypeName) computes fnv1a64("TypeName.umsh") at compile time
+const sh   := gfx::Shader { id = @shader_ref(SpriteShader) };
+const pipe := gfx::pipeline_create(dev, sh);
 
 const tex  := gfx::texture2d_from_rgba8(dev, 64, 64, rgba_bytes);
 const samp := gfx::sampler_linear(dev);
@@ -792,7 +791,7 @@ gfx::shutdown(dev);
 | `begin_frame(dev: Device) -> Cmd` | acquire swapchain image; returns null Cmd on resize (skip frame) |
 | `end_frame(dev: Device, cmd: Cmd)` | submit and present |
 | `frame_alloc(dev: Device, size: u64, align: u64) -> FrameAlloc` | sub-allocate from the per-frame upload arena |
-| `pipeline_from_shader(dev: Device, bundle: ShaderBundle) -> Pipeline` | load SPIR-V + UMRF and compile a raster pipeline |
+| `pipeline_create(dev: Device, sh: Shader) -> Pipeline` | load `.umsh` asset and compile a raster pipeline |
 | `pipeline_destroy(dev: Device, pipe: Pipeline)` | destroy pipeline (caller ensures not in-flight) |
 | `texture2d_from_rgba8(dev: Device, w: u32, h: u32, bytes: []u8) -> Texture2d` | synchronous RGBA8 upload |
 | `texture_destroy(dev: Device, tex: Texture2d)` | deferred destroy (safe while in-flight) |
@@ -856,13 +855,14 @@ ul --out-dir build/assets --pack build/game.umpack --compress \
 
 **Output formats:**
 
-| Input | Outputs | Description |
-|-------|---------|-------------|
-| `.umshaders` | `<name>_vs.spv`, `<name>_fs.spv`, `<name>.umrf` | SPIR-V per stage + vertex input reflection blob |
-| `.png` / `.jpg` / `.bmp` | `<name>.umtex` | RGBA8 mip chain |
-| `.wav` / `.ogg` | `<name>.umaudio` | PCM16 sample data |
+The shader pipeline runs inside `uc` (not `ul`) via `shader_compile()` in `compiler/dsl/`:
 
-**SPIR-V emission:** `ul` walks the serialized `BodyIR` from the `.umshaders` sidecar and compiles it to SPIR-V binary via the LLVM SPIR-V backend. Bindless resources are decorated with `DescriptorSet`/`Binding` metadata. `@sample(tex, samp, uv)` lowers to the SPIR-V sampled-image intrinsics using the `spirv.Image` / `spirv.Sampler` / `spirv.SampledImage` opaque types.
+1. **`lower_to_mlir()`** — BodyIR for each `@stage` / `@shader_fn` → `um.shader` MLIR dialect ops (high-level: `load_input`, `store_output`, `draw_id`, `vertex_id`, `sample`, etc.)
+2. **`run_spirv_lower()`** — `um.shader` → MLIR `spirv` dialect via `OpConversionPattern`s; IO variables and builtins are declared as `spirv.GlobalVariable` with `built_in` / `Location` decorations
+3. **`emit_spirv_binaries()`** — serialize each `spirv.module` → `<ShaderName>.vert.spv` / `.frag.spv`
+4. **`emit_umrf()`** — read `@vs_in` pod field layout from `LoadedModule` TypeAst → `<ShaderName>.umrf`
+
+`ul --shader-pack <name>` bundles pre-built `.spv` + `.umrf` files into a `.umshader` asset. `ul --pack <out.umpack>` bundles arbitrary files into a `.umpack` archive.
 
 **`.umpack` format:** little-endian; magic `0x554D504B` ("UMPK"), version 1. 16-byte header (magic, version, endian sentinel `0x1234`, flags, entry count) followed by a manifest of variable-length entries (u32 name length, name bytes, u64 data offset, u32 compressed length, u32 original length) and then the data region. `UMPACK_FLAG_COMPRESSED` is set in the header when LZ4 compression was requested; `compressed_len == original_len` per entry means that entry is stored raw (compression did not reduce its size).
 

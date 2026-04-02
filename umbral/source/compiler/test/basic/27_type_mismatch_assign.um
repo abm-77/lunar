@@ -1,0 +1,9 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+const Vec2 := struct { x: f32, y: f32 };
+const Vec3 := struct { x: f32, y: f32, z: f32 };
+const main := fn() -> i32 {
+  var a := Vec2 { x = 1.0, y = 2.0 };
+  a = Vec3 { x = 1.0, y = 2.0, z = 3.0 };
+  return 0;
+}
+# CHECK: type mismatch in assignment: expected Vec2, got Vec3

@@ -42,6 +42,7 @@ add_library(runtime STATIC
 ./source/runtime/fmt.c
 ./source/runtime/mem.c
 ./source/runtime/window.c
+./source/runtime/asset.c
 ./source/runtime/gfx/gfx_vulkan.c
 )
 target_include_directories(runtime PUBLIC
@@ -122,6 +123,7 @@ set(UM_SHADER_DSL_SOURCES
   ${UM_SHADER_LIB_DIR}/shader_spirv_serialize.cc
   ${UM_SHADER_LIB_DIR}/shader_spirv_emit.cc
   ${UM_SHADER_LIB_DIR}/umrf_emit.cc
+  ${UM_SHADER_LIB_DIR}/umsh_emit.cc
   ${UM_SHADER_LIB_DIR}/shader_compile.cc
 )
 
@@ -266,10 +268,7 @@ llvm_map_components_to_libnames(UL_LLVM_LIBS
 
 add_executable(ul
   ./source/tools/ul/main.cc
-  ./source/tools/ul/tex.cc
-  ./source/tools/ul/audio.cc
   ./source/tools/ul/pack.cc
-  ./source/tools/ul/shader_pack.cc
 )
 target_include_directories(ul PRIVATE
   ${COMPILER_DIR}

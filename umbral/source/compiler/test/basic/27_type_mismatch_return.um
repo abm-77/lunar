@@ -1,0 +1,7 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+const Vec2 := struct { x: f32, y: f32 };
+const main := fn() -> i32 {
+  const v := Vec2 { x = 1.0, y = 2.0 };
+  return v;
+}
+# CHECK: return type mismatch: expected i32, got Vec2

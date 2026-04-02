@@ -1,0 +1,8 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+const main := fn() -> i32 {
+  const x: u32 = 5;
+  const y: u64 = 10;
+  const z := x + y;
+  return 0;
+}
+# CHECK: type mismatch in binary expression: u32 vs u64

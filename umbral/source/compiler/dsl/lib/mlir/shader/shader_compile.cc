@@ -1,10 +1,11 @@
-// top-level shader compilation pipeline: BodyIR → um.shader → SPIR-V → .spv + .umrf
+// top-level shader compilation pipeline: BodyIR → um.shader → SPIR-V → .umsh
 
 #include <um/shader/shader_compile.h>
 #include <um/shader/shader_mlir.h>
 #include <um/shader/shader_spirv_lower.h>
 #include <um/shader/shader_spirv_emit.h>
 #include <um/shader/umrf_emit.h>
+#include <um/shader/umsh_emit.h>
 
 #include <mlir/IR/MLIRContext.h>
 
@@ -34,33 +35,43 @@ bool shader_compile(std::span<const LoadedModule> modules,
     return false;
   }
 
-  // phase 3: serialize SPIR-V modules to .spv files
-  if (!emit_spirv_binaries(mlir_mod.get(), opts.out_dir)) {
-    fprintf(stderr, "shader_compile: emit_spirv_binaries failed\n");
-    return false;
+  // phase 3: collect SPIR-V stages into memory (one entry per shader name)
+  auto stages_map = collect_spirv_stages(mlir_mod.get());
+  if (stages_map.empty() && !modules.empty()) {
+    // check if there really were shader stages to emit
+    bool any_stages = false;
+    for (const auto &lm : modules)
+      if (!lm.mod.shader_stages.empty()) { any_stages = true; break; }
+    if (any_stages) {
+      fprintf(stderr, "shader_compile: collect_spirv_stages failed\n");
+      return false;
+    }
   }
 
-  // phase 4: emit .umrf for each shader type that has a @vs_in field
+  // phase 4: for each shader type, collect reflection and write .umsh
   std::unordered_set<SymId> emitted;
   for (const auto &lm : modules) {
     for (const ShaderStageInfo &si : lm.mod.shader_stages) {
       if (emitted.count(si.shader_type)) continue;
       emitted.insert(si.shader_type);
-      // only emit umrf if this shader has a @vs_in annotation
-      bool has_vs_in = false;
-      for (const ShaderFieldAnnot &sfa : lm.mod.shader_field_annots) {
-        if (sfa.struct_name == si.shader_type &&
-            sfa.kind == ShaderFieldKind::VsIn) {
-          has_vs_in = true;
-          break;
-        }
+
+      std::string shader_name = std::string(interner.view(si.shader_type));
+      auto it = stages_map.find(shader_name);
+      if (it == stages_map.end()) {
+        fprintf(stderr, "shader_compile: no SPIR-V collected for '%s'\n",
+                shader_name.c_str());
+        return false;
       }
-      if (has_vs_in) {
-        if (!emit_umrf(lm, interner, si.shader_type, opts.out_dir)) {
-          fprintf(stderr, "shader_compile: emit_umrf failed for %s\n",
-                  std::string(interner.view(si.shader_type)).c_str());
-          return false;
-        }
+
+      auto refl_opt = collect_refl(lm, interner, si.shader_type);
+      // collect_refl returns nullopt both for "no @vs_in" and error; errors
+      // already print to stderr; treat both as no refl for emit purposes.
+      const UmshReflData *refl_ptr = refl_opt.has_value() ? &*refl_opt : nullptr;
+
+      if (!emit_umsh(opts.out_dir, shader_name, it->second, refl_ptr)) {
+        fprintf(stderr, "shader_compile: emit_umsh failed for '%s'\n",
+                shader_name.c_str());
+        return false;
       }
     }
   }

@@ -1,6 +1,6 @@
 # RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
 
-import core.list => list;
+import core.containers.list => list;
 import sys.io.fmt => fmt;
 
 const main := fn() -> void {

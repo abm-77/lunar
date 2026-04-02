@@ -1,0 +1,64 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# generic functions: multiple type params, const-generic params, mixed
+
+import sys.io.fmt => fmt;
+
+const larger<A: type, B: type>() -> u64 {
+  const sa := @size_of(A);
+  const sb := @size_of(B);
+  if (sa > sb) { return sa; }
+  return sb;
+}
+
+const total_size<A: type, B: type, C: type>() -> u64 {
+  return @size_of(A) + @size_of(B) + @size_of(C);
+}
+
+const fixed_sum<N: u32>() -> u32 {
+  var total: u32 = 0;
+  for (var i: u32 = 0; i < N; i += 1) {
+    total += i;
+  }
+  return total;
+}
+
+const scaled_size<T: type, N: u64>() -> u64 {
+  return @size_of(T) * N;
+}
+
+const main := fn() -> i32 {
+  # multiple type params
+  const l1 := larger<i32, i64>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u64(l1) });
+  const l2 := larger<i64, i32>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u64(l2) });
+  const l3 := larger<i32, i32>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u64(l3) });
+
+  # three type params
+  const ts := total_size<i32, i64, i32>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u64(ts) });
+
+  # const-generic
+  const fs := fixed_sum<5>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u32(fs) });
+  const fz := fixed_sum<0>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u32(fz) });
+
+  # mixed type + const-generic
+  const ss1 := scaled_size<i32, 4>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u64(ss1) });
+  const ss2 := scaled_size<i64, 3>();
+  fmt::println("{}", []fmt::Arg{ fmt::arg_u64(ss2) });
+
+  return 0;
+}
+
+# CHECK: 8
+# CHECK: 8
+# CHECK: 4
+# CHECK: 16
+# CHECK: 10
+# CHECK: 0
+# CHECK: 16
+# CHECK: 24

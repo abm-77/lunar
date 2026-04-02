@@ -1,5 +1,10 @@
 import math.types;
 
-@pub const texture2d_handle := struct { _index: u32, _pad: u32 };
-@pub const sampler_handle   := struct { _index: u32, _pad: u32 };
-@pub const shader_bundle    := struct { vs_path: []u8, fs_path: []u8, refl_path: []u8 };
+# Shader — opaque wrapper around a u64 asset ID for a compiled .umsh bundle.
+@pub const Shader<T: type> := struct { id: u64 }
+
+impl Shader<T> {
+  const create() -> Shader<T> {
+    return Shader<T>{ id = @shader_ref(T) };
+  }
+}

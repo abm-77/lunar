@@ -35,7 +35,8 @@ struct DriverResult {
 struct DriverOptions {
   std::string out_path = "a.out";
   std::string root_override;
-  std::string shader_out;      // if non-empty, compile shaders to .spv/.umrf here and stop
+  std::string shader_out;      // if non-empty, compile shaders to .umsh here
+  bool has_out = false;        // true when -o was explicitly given
   bool dump_ir = false;        // print LLVM IR to stdout and stop
   bool dump_shader_mlir = false; // print um.shader MLIR to stdout and stop
 };
@@ -104,7 +105,7 @@ inline DriverResult Driver::run(const std::string &src_path,
     return {true};
   }
 
-  // MLIR-based shader compilation: BodyIR → um.shader → SPIR-V → .spv + .umrf
+  // MLIR-based shader compilation: BodyIR → um.shader → SPIR-V → .umsh
   if (!opts.shader_out.empty()) {
     bool has_any = false;
     for (const auto &lm : modules)
@@ -114,7 +115,8 @@ inline DriverResult Driver::run(const std::string &src_path,
                                        {opts.shader_out}))
         return {false, "shader compilation failed"};
     }
-    return {true};
+    // shader-only mode: stop here unless -o was explicitly given
+    if (!opts.has_out) return {true};
   }
 
   // LLVM codegen

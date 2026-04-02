@@ -1,10 +1,5 @@
 # RUN: mkdir -p %t.d && %uc %s --shader-out %t.d 2>/dev/null
-# RUN: ls %t.d/SpriteShader.vert.spv
-# RUN: ls %t.d/SpriteShader.frag.spv
-# RUN: ls %t.d/SpriteShader.umrf
-# RUN: %spirv-val %t.d/SpriteShader.vert.spv
-# RUN: %spirv-val %t.d/SpriteShader.frag.spv
-# REQUIRES: spirv-val
+# RUN: ls %t.d/SpriteShader.umsh
 
 const vec2 := struct { x: f32, y: f32 };
 const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };

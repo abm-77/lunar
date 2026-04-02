@@ -15,4 +15,6 @@
   X(Var, "var")                                                               \
   X(Where, "where")                                                               \
   X(Enum, "enum")                                                             \
-  X(Self_, "self")
+  X(Self_, "self")                                                             \
+  X(Break, "break")                                                            \
+  X(Continue, "continue")

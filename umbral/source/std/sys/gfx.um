@@ -9,24 +9,24 @@ import sys.gfx.assets;
 #   1. gfx::init(window_handle, cfg)   → Device           (once at startup)
 #   2. gfx::begin_frame(dev)           → Cmd              (each frame)
 #   3. fa := gfx::frame_alloc(dev, @size_of(MyData), 256) (per-draw; write to fa.ptr)
-#   4. ds := draw::DrawStream::begin(dev, cmd, pipeline)
-#      ds.push_sprite(tex, samp, fa.offset, 1, 0)
+#   4. ds := draw::DrawStream::create(dev, cmd, pipeline)
+#      ds.push_draw_packet(...)
 #      ds.submit()
+#      ds.destroy()
 #   5. gfx::end_frame(dev, cmd)                           (each frame)
 #   6. gfx::shutdown(dev)                                 (once at teardown)
 #
 # resource creates/destroys may happen at any time outside a begin/end_frame pair.
 
 # re-export so callers only need `import sys.gfx`
-@pub const Device       := types::Device;
-@pub const Cmd          := types::Cmd;
-@pub const Pipeline     := types::Pipeline;
-@pub const Texture2d    := types::Texture2d;
-@pub const Sampler      := types::Sampler;
-@pub const DrawPacket   := types::DrawPacket;
-@pub const DrawStream   := draw::DrawStream;
-@pub const ShaderBundle := assets::ShaderBundle;
-@pub const PresentMode  := types::PresentMode;
+@pub const Device      := types::Device;
+@pub const Cmd         := types::Cmd;
+@pub const Pipeline    := types::Pipeline;
+@pub const Texture2d   := types::Texture2d;
+@pub const Sampler     := types::Sampler;
+@pub const DrawPacket  := types::DrawPacket;
+@pub const DrawStream  := draw::DrawStream;
+@pub const PresentMode := types::PresentMode;
 
 # GfxConfig — init parameters for the device.
 # pass to gfx::init; individual fields forwarded to the runtime.
@@ -60,7 +60,7 @@ import sys.gfx.assets;
         cfg.frame_arena_bytes,
         cfg.draw_packets_max,
         cfg.enable_validation,
-        cfg.present_mode as u32,
+        @as(cfg.present_mode, u32)
     );
     return Device { handle = h };
 }
@@ -68,7 +68,7 @@ import sys.gfx.assets;
 # shutdown — destroy all Vulkan resources and free the device.
 #   dev: must be the Device from gfx::init; invalid after this call.
 #   the GLFW window must still be live when this is called.
-@pub const shutdown := fn(dev: Device) {
+@pub const shutdown := fn(dev: Device) -> void {
     types::rt_gfx_shutdown(dev.handle);
 }
 
@@ -82,18 +82,13 @@ import sys.gfx.assets;
 
 # end_frame — submit commands and present.
 #   cmd: the Cmd from begin_frame; invalid after this call.
-@pub const end_frame := fn(dev: Device, cmd: Cmd) {
+@pub const end_frame := fn(dev: Device, cmd: Cmd) -> void {
     types::rt_gfx_end_frame(dev.handle, cmd.handle);
-}
-
-# pipeline_from_shader — load shader blobs and create a compiled raster pipeline.
-@pub const pipeline_from_shader := fn(dev: Device, bundle: ShaderBundle) -> Pipeline {
-    return assets::pipeline_from_shader(dev, bundle);
 }
 
 # pipeline_destroy — destroy a pipeline.
 #   must not be in use by any in-flight frame; caller ensures frames_in_flight frames elapsed.
-@pub const pipeline_destroy := fn(dev: Device, pipe: Pipeline) {
+@pub const pipeline_destroy := fn(dev: Device, pipe: Pipeline) -> void {
     assets::pipeline_destroy(dev, pipe);
 }
 
@@ -103,10 +98,11 @@ import sys.gfx.assets;
 #   returns Texture2d { handle = 0 } on failure.
 @pub const texture2d_from_rgba8 := fn(dev: Device, w: u32, h: u32,
                                        bytes: []u8) -> Texture2d {
+    var no_name: []u8 = "";
     const h_tex := types::rt_gfx_texture2d_create_rgba8(
         dev.handle, w, h,
-        bytes.ptr, bytes.len as u64,
-        0 as &u8,  # no debug name
+        bytes.ptr, bytes.len,
+        no_name
     );
     return Texture2d { handle = h_tex };
 }
@@ -114,19 +110,20 @@ import sys.gfx.assets;
 # texture_destroy — queue a texture for deferred destruction.
 #   safe to call while frames are in flight; runtime delays GPU destroy by frames_in_flight.
 #   the texture's descriptor index must not appear in new draw packets after this call.
-@pub const texture_destroy := fn(dev: Device, tex: Texture2d) {
+@pub const texture_destroy := fn(dev: Device, tex: Texture2d) -> void {
     types::rt_gfx_texture_destroy(dev.handle, tex.handle);
 }
 
 # sampler_linear — create a bilinear clamp-to-edge sampler.
 #   returns Sampler { handle = 0 } on failure.
 @pub const sampler_linear := fn(dev: Device) -> Sampler {
-    const h_s := types::rt_gfx_sampler_create_linear(dev.handle, 0 as &u8);
+    var no_name: []u8 = "";
+    const h_s := types::rt_gfx_sampler_create_linear(dev.handle, no_name);
     return Sampler { handle = h_s };
 }
 
 # sampler_destroy — queue a sampler for deferred destruction.
-@pub const sampler_destroy := fn(dev: Device, samp: Sampler) {
+@pub const sampler_destroy := fn(dev: Device, samp: Sampler) -> void {
     types::rt_gfx_sampler_destroy(dev.handle, samp.handle);
 }
 
@@ -147,6 +144,6 @@ import sys.gfx.assets;
 #   returns FrameAlloc { offset=0, ptr=0 } if the arena is exhausted (treat as fatal in v0).
 @pub const frame_alloc := fn(dev: Device, size: u64, align: u64) -> FrameAlloc {
     var out_offset: u32 = 0;
-    const raw_ptr := types::rt_gfx_frame_alloc(dev.handle, size, align, out_offset);
+    const raw_ptr := types::rt_gfx_frame_alloc(dev.handle, size, align, &mut out_offset);
     return FrameAlloc { offset = out_offset, ptr = raw_ptr };
 }

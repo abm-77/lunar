@@ -1,0 +1,6 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+const main := fn() -> i32 {
+  const x: f32 = "hello";
+  return 0;
+}
+# CHECK: type mismatch in declaration: expected f32, got []u8

@@ -67,6 +67,8 @@ enum class NodeKind : u16 {
   AssignStmt, // a = lhs place ExprId, b = rhs ExprId, c = op TokenKind
               // (Equal/PlusEqual/...)
   ReturnStmt, // a = expr (or 0 if empty return)
+  BreakStmt,    // no fields — jumps to enclosing loop exit
+  ContinueStmt, // no fields — jumps to enclosing loop step
   IfStmt,     // a = cond, b = then block, c = else block
   ForStmt,    // a = index into BodyIR::fors
   ForRange,   // a = SymId (loop var name), b = Iter<T> NodeId, c = body NodeId
@@ -101,6 +103,7 @@ enum class NodeKind : u16 {
   ShaderSampler,    // a = index_expr (u32) → opaque sampler handle
   ShaderSample,     // a = tex_expr, b = samp_expr, c = uv_expr → vec4
   ShaderDrawId,     // no args → u32 (gl_InstanceIndex / draw id)
+  ShaderVertexId,   // no args → u32 (gl_VertexIndex)
   ShaderDrawPacket, // a = id_expr → opaque draw_packet ref
   ShaderFrameRead,  // a = offset_expr (u32), b = TypeId for T → T
   ShaderRef,        // a = SymId of shader struct type → shader_bundle

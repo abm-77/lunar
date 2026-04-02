@@ -12,6 +12,7 @@ extern "C" {
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "../common/types.h"
 
 typedef uint64_t gfx_device_handle_t;   // logical device + swapchain + sync objects
 typedef uint64_t gfx_cmd_handle_t;      // single-frame command recording token; invalid after end_frame
@@ -110,6 +111,16 @@ rt_gfx_pipeline_create(gfx_device_handle_t dev, const uint8_t *vs_spv,
                        uint64_t vs_len, const uint8_t *fs_spv, uint64_t fs_len,
                        const uint8_t *refl, uint64_t refl_len);
 
+// rt_gfx_pipeline_create_from_umsh — create a raster pipeline from a .umsh blob.
+// umsh: raw bytes of a .umsh bundle (see runtime/gfx/umsh.h); borrowed for this call only.
+// umsh_len: byte count of umsh; must equal the total_bytes in the .umsh header.
+// variant_key: reserved; pass 0.
+// returns a pipeline handle on success; GFX_NULL_HANDLE on failure.
+gfx_pipeline_handle_t
+rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
+                                  um_slice_u8_t umsh,
+                                  uint32_t variant_key);
+
 // rt_gfx_pipeline_destroy — destroy a pipeline.
 // the pipeline must not be in use by any in-flight frame when this is called.
 void rt_gfx_pipeline_destroy(gfx_device_handle_t dev,
@@ -124,7 +135,7 @@ gfx_texture_handle_t rt_gfx_texture2d_create_rgba8(gfx_device_handle_t dev,
                                                    uint32_t w, uint32_t h,
                                                    const uint8_t *rgba,
                                                    uint64_t rgba_len,
-                                                   const char *debug_name);
+                                                   um_slice_u8_t debug_name);
 
 // rt_gfx_texture_destroy — queue a texture for deferred destruction.
 // destruction is deferred by cfg.frames_in_flight frames to avoid GPU-visible-while-in-use.
@@ -135,7 +146,7 @@ void rt_gfx_texture_destroy(gfx_device_handle_t dev, gfx_texture_handle_t tex);
 // debug_name: optional UTF-8 label; may be NULL.
 // returns a handle on success; lower 32 bits are the bindless descriptor index.
 gfx_sampler_handle_t rt_gfx_sampler_create_linear(gfx_device_handle_t dev,
-                                                  const char *debug_name);
+                                                  um_slice_u8_t debug_name);
 
 // rt_gfx_sampler_destroy — queue a sampler for deferred destruction (same rules as texture_destroy).
 void rt_gfx_sampler_destroy(gfx_device_handle_t dev, gfx_sampler_handle_t samp);

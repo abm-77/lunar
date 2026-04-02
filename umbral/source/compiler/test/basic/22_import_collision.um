@@ -1,0 +1,10 @@
+# RUN: not %uc %s --root %S/../../../std 2>&1 | %FileCheck %s
+
+# importing two modules with the same default alias must produce an error
+
+import sys.gfx.types;
+import math.types;
+
+const main := fn() -> i32 { return 0; }
+
+# CHECK: import alias 'types' already used by another import

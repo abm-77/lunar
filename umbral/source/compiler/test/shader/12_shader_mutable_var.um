@@ -1,0 +1,28 @@
+# RUN: %uc %s --dump-shader-mlir 2>/dev/null | %FileCheck %s
+
+# mutable local variables in shaders must lower to memref with Function storage class
+
+@shader_pod const VsOut := struct { @builtin(position) clip: f32 };
+@shader_pod const FsOut := struct { @location(0) color: f32 };
+@shader const MutVarShader := struct {
+  @vs_out vout: VsOut,
+  @fs_in  fin:  VsOut,
+  @fs_out fout: FsOut,
+};
+
+impl MutVarShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    var x: f32 = 1.0;
+    x = 2.0;
+    self.vout.clip = x;
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    self.fout.color = 0.0;
+  };
+}
+
+# CHECK: memref.alloca
+# CHECK-SAME: memref<1xf32, #spirv.storage_class<Function>>

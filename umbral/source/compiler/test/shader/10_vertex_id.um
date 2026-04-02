@@ -1,0 +1,36 @@
+# RUN: %uc %s --dump-shader-mlir 2>/dev/null | %FileCheck %s
+
+# @vertex_id() lowers to um_shader.vertex_id in the vertex stage
+# CHECK: func.func private @TriShader_vert
+# CHECK-SAME: stage = "vertex"
+# CHECK: um_shader.vertex_id
+# CHECK: um_shader.store_output "vout", "clip"
+
+const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+
+@shader_pod const TriVsOut := struct {
+  @builtin(position) clip: vec4,
+};
+
+@shader_pod const TriFsOut := struct {
+  @location(0) color: vec4,
+};
+
+@shader const TriShader := struct {
+  @vs_out vout: TriVsOut,
+  @fs_in  fin:  TriVsOut,
+  @fs_out fout: TriFsOut,
+};
+
+impl TriShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    const vid := @vertex_id();
+    self.vout.clip = vec4(0.0, 0.0, 0.0, 1.0);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    self.fout.color = vec4(1.0, 0.5, 0.0, 1.0);
+  };
+}

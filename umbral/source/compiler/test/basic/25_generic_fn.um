@@ -1,0 +1,26 @@
+# RUN: %uc %s -o %t && %t
+# free generic functions: name<T>(args)
+
+const size_of<T: type>() -> u64 {
+  return @size_of(T);
+}
+
+const align_of<T: type>() -> u64 {
+  return @align_of(T);
+}
+
+const Vec2 := struct { x: f32, y: f32 };
+
+const main := fn() -> i32 {
+  const s1 := size_of<i32>();
+  const s2 := size_of<i64>();
+  const a1 := align_of<f32>();
+  const sv := size_of<Vec2>();
+
+  if (s1 != 4)  { return 1; }
+  if (s2 != 8)  { return 2; }
+  if (a1 != 4)  { return 3; }
+  if (sv != 8)  { return 4; }
+
+  return 0;
+}

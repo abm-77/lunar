@@ -99,6 +99,12 @@ def DrawIdOp : UmShader_Op<"draw_id", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
+def VertexIdOp : UmShader_Op<"vertex_id", [Pure]> {
+  let summary = "@vertex_id() — returns the current BuiltIn VertexIndex as u32";
+  let results = (outs I32:$result);
+  let assemblyFormat = "attr-dict";
+}
+
 def DrawPacketOp : UmShader_Op<"draw_packet", [Pure]> {
   let summary = "@draw_packet(draw_id) — load a draw packet ref from the SSBO";
   let arguments = (ins I32:$draw_id);

@@ -34,4 +34,5 @@
   X(Sample,        "sample")        \
   X(DrawId,        "draw_id")       \
   X(DrawPacket,    "draw_packet")   \
-  X(FrameRead,     "frame_read")
+  X(FrameRead,     "frame_read")    \
+  X(VertexId,      "vertex_id")

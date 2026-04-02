@@ -13,6 +13,7 @@
 #include <mlir/Conversion/FuncToSPIRV/FuncToSPIRV.h>
 #include <mlir/Conversion/MemRefToSPIRV/MemRefToSPIRV.h>
 #include <mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h>
+#include <mlir/Conversion/SCFToSPIRV/SCFToSPIRV.h>
 #include <mlir/Conversion/VectorToSPIRV/VectorToSPIRV.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlowOps.h>
@@ -88,7 +89,8 @@ static std::string find_pod_type_name(const LoadedModule &lm,
       if (fname != field_name) continue;
       TypeId tid = lm.ir.nodes.list[fs + fi * 2 + 1];
       if (tid < lm.type_ast.kind.size() &&
-          lm.type_ast.kind[tid] == TypeKind::Named)
+          (lm.type_ast.kind[tid] == TypeKind::Named ||
+           lm.type_ast.kind[tid] == TypeKind::QualNamed))
         return std::string(interner.view(lm.type_ast.a[tid]));
     }
     break;
@@ -109,7 +111,8 @@ static std::string find_pod_field_type(const LoadedModule &lm,
       if (fname != field_name) continue;
       TypeId tid = lm.ir.nodes.list[fs + fi * 2 + 1];
       if (tid < lm.type_ast.kind.size() &&
-          lm.type_ast.kind[tid] == TypeKind::Named)
+          (lm.type_ast.kind[tid] == TypeKind::Named ||
+           lm.type_ast.kind[tid] == TypeKind::QualNamed))
         return std::string(interner.view(lm.type_ast.a[tid]));
     }
     break;
@@ -150,8 +153,7 @@ declare_io_var(mlir::OpBuilder &b, mlir::Location loc,
   auto var = b.create<mlir::spirv::GlobalVariableOp>(loc, ptr_ty, sym_name,
                                                       mlir::FlatSymbolRefAttr{});
   if (is_builtin_position)
-    var->setAttr("built_in",
-        mlir::spirv::BuiltInAttr::get(b.getContext(), mlir::spirv::BuiltIn::Position));
+    var->setAttr("built_in", b.getStringAttr("Position"));
   else if (location.has_value())
     var->setAttr("location", b.getI32IntegerAttr(*location));
   return var;
@@ -186,6 +188,7 @@ struct SpirvLowerCtx {
   std::optional<std::string> frame_arena_var;
   std::optional<std::string> draw_packets_var;
   std::optional<std::string> draw_index_var;
+  std::optional<std::string> vertex_index_var;
 
   static std::string io_key(llvm::StringRef f, llvm::StringRef s) {
     return (f + "." + s).str();
@@ -256,7 +259,9 @@ struct StoreOutputPattern : public mlir::OpConversionPattern<StoreOutputOp> {
     auto ptr_ty = mlir::cast<mlir::spirv::GlobalVariableOp>(gvar).getType();
     auto sym_ref = mlir::SymbolRefAttr::get(rw.getContext(), it->second);
     auto addr = rw.create<mlir::spirv::AddressOfOp>(op.getLoc(), ptr_ty, sym_ref);
-    rw.create<mlir::spirv::StoreOp>(op.getLoc(), addr.getPointer(), adaptor.getValue());
+    auto val = adaptor.getValue();
+    if (!val) return mlir::failure();
+    rw.create<mlir::spirv::StoreOp>(op.getLoc(), addr.getPointer(), val);
     rw.eraseOp(op);
     return mlir::success();
   }
@@ -330,11 +335,34 @@ struct DrawIdPattern : public mlir::OpConversionPattern<DrawIdOp> {
       auto ptr_ty = mlir::spirv::PointerType::get(i32_ty, mlir::spirv::StorageClass::Input);
       auto var = rw.create<mlir::spirv::GlobalVariableOp>(
           loc, ptr_ty, "__draw_index", mlir::FlatSymbolRefAttr{});
-      var->setAttr("built_in",
-          mlir::spirv::BuiltInAttr::get(rw.getContext(), mlir::spirv::BuiltIn::DrawIndex));
+      var->setAttr("built_in", rw.getStringAttr("DrawIndex"));
       lctx.draw_index_var = "__draw_index";
     }
     auto val = addr_load(rw, loc, lctx.spirv_mod, *lctx.draw_index_var);
+    if (!val) return mlir::failure();
+    rw.replaceOp(op, val);
+    return mlir::success();
+  }
+};
+
+struct VertexIdPattern : public mlir::OpConversionPattern<VertexIdOp> {
+  SpirvLowerCtx &lctx;
+  VertexIdPattern(const mlir::TypeConverter &tc, mlir::MLIRContext *ctx, SpirvLowerCtx &lctx)
+      : OpConversionPattern(tc, ctx), lctx(lctx) {}
+  mlir::LogicalResult matchAndRewrite(VertexIdOp op, OpAdaptor,
+      mlir::ConversionPatternRewriter &rw) const override {
+    auto loc = op.getLoc();
+    if (!lctx.vertex_index_var) {
+      mlir::OpBuilder::InsertionGuard guard(rw);
+      rw.setInsertionPointToStart(lctx.spirv_mod.getBody());
+      auto i32_ty = mlir::IntegerType::get(rw.getContext(), 32);
+      auto ptr_ty = mlir::spirv::PointerType::get(i32_ty, mlir::spirv::StorageClass::Input);
+      auto var = rw.create<mlir::spirv::GlobalVariableOp>(
+          loc, ptr_ty, "__vertex_index", mlir::FlatSymbolRefAttr{});
+      var->setAttr("built_in", rw.getStringAttr("VertexIndex"));
+      lctx.vertex_index_var = "__vertex_index";
+    }
+    auto val = addr_load(rw, loc, lctx.spirv_mod, *lctx.vertex_index_var);
     if (!val) return mlir::failure();
     rw.replaceOp(op, val);
     return mlir::success();
@@ -462,6 +490,7 @@ static void populateUmShaderToSPIRVPatterns(const mlir::TypeConverter &tc,
   patterns.add<SamplerPattern>(tc, ctx, lctx);
   patterns.add<SamplePattern>(tc, ctx, lctx);
   patterns.add<DrawIdPattern>(tc, ctx, lctx);
+  patterns.add<VertexIdPattern>(tc, ctx, lctx);
   patterns.add<DrawPacketPattern>(tc, ctx, lctx);
   patterns.add<DrawPacketFieldPattern>(tc, ctx, lctx);
   patterns.add<FrameReadPattern>(tc, ctx, lctx);
@@ -491,7 +520,11 @@ build_lower_ctx(mlir::OpBuilder &b, mlir::Location loc,
   lctx.spirv_mod = spirv_mod;
 
   int mi = find_module_for_shader(shader_type_name, modules, interner);
-  if (mi < 0) return lctx;
+  if (mi < 0) {
+    fprintf(stderr, "build_lower_ctx: shader '%.*s' not found in any module\n",
+            (int)shader_type_name.size(), shader_type_name.data());
+    return lctx;
+  }
   const LoadedModule &lm = modules[mi];
   bool is_vertex = (stage == "vertex");
 
@@ -604,24 +637,11 @@ bool run_spirv_lower(mlir::MLIRContext &ctx,
   ctx.loadDialect<mlir::spirv::SPIRVDialect,
                   mlir::cf::ControlFlowDialect>();
 
-  // lower scf → cf first so we only need cf→spirv patterns
-  {
-    mlir::RewritePatternSet scf_patterns(&ctx);
-    mlir::populateSCFToControlFlowConversionPatterns(scf_patterns);
-    mlir::ConversionTarget scf_target(ctx);
-    scf_target.addLegalDialect<mlir::cf::ControlFlowDialect,
-                               mlir::arith::ArithDialect,
-                               mlir::func::FuncDialect,
-                               mlir::memref::MemRefDialect,
-                               mlir::vector::VectorDialect>();
-    scf_target.addLegalDialect<UmShaderDialect>();
-    scf_target.addIllegalDialect<mlir::scf::SCFDialect>();
-    if (mlir::applyPartialConversion(mlir_mod, scf_target,
-                                      std::move(scf_patterns)).failed()) {
-      fprintf(stderr, "shader_spirv_lower: scf-to-cf conversion failed\n");
-      return false;
-    }
-  }
+  // NOTE: SCF ops (scf.if, scf.while) are lowered directly to SPIR-V
+  // structured control flow (spirv.selection, spirv.loop) by SCFToSPIRV
+  // patterns in the main conversion pass below. Do NOT run SCFToControlFlow
+  // here — that would destroy structured control flow and produce bare
+  // cf.cond_br which SPIR-V rejects ("selection must be structured").
 
   auto target_env = make_vulkan_target_env(ctx);
 
@@ -690,6 +710,7 @@ bool run_spirv_lower(mlir::MLIRContext &ctx,
       target->addIllegalDialect<mlir::func::FuncDialect,
                                 mlir::arith::ArithDialect,
                                 mlir::cf::ControlFlowDialect,
+                                mlir::scf::SCFDialect,
                                 mlir::vector::VectorDialect,
                                 mlir::memref::MemRefDialect>();
       target->addIllegalDialect<UmShaderDialect>();
@@ -721,6 +742,8 @@ bool run_spirv_lower(mlir::MLIRContext &ctx,
       mlir::populateFuncToSPIRVPatterns(type_conv, patterns);
       patterns.add<FuncOpPattern>(type_conv, &ctx);
       mlir::populateMemRefToSPIRVPatterns(type_conv, patterns);
+      mlir::ScfToSPIRVContext scf_spirv_ctx;
+      mlir::populateSCFToSPIRVPatterns(type_conv, scf_spirv_ctx, patterns);
       mlir::cf::populateControlFlowToSPIRVPatterns(type_conv, patterns);
       mlir::populateVectorToSPIRVPatterns(type_conv, patterns);
 
@@ -755,6 +778,9 @@ bool run_spirv_lower(mlir::MLIRContext &ctx,
       return false;
     }
 
+    // rename entry point to "main" so the runtime's hardcoded pName works
+    spv_fn.setName("main");
+
     mlir::OpBuilder::InsertionGuard guard(b);
     b.setInsertionPointToEnd(spirv_mod.getBody());
 
@@ -765,18 +791,19 @@ bool run_spirv_lower(mlir::MLIRContext &ctx,
       iface_refs.push_back(mlir::SymbolRefAttr::get(&ctx, vname));
     if (lctx.draw_index_var)
       iface_refs.push_back(mlir::SymbolRefAttr::get(&ctx, *lctx.draw_index_var));
+    if (lctx.vertex_index_var)
+      iface_refs.push_back(mlir::SymbolRefAttr::get(&ctx, *lctx.vertex_index_var));
 
     auto exec_model = (stage == "vertex")
                           ? mlir::spirv::ExecutionModel::Vertex
                           : mlir::spirv::ExecutionModel::Fragment;
     b.create<mlir::spirv::EntryPointOp>(
-        loc, exec_model,
-        llvm::StringRef(fn_name),
+        loc, exec_model, llvm::StringRef("main"),
         mlir::ArrayAttr::get(&ctx, iface_refs));
 
     if (stage == "fragment") {
       b.create<mlir::spirv::ExecutionModeOp>(
-          loc, llvm::StringRef(fn_name),
+          loc, llvm::StringRef("main"),
           mlir::spirv::ExecutionMode::OriginUpperLeft,
           mlir::ArrayAttr::get(&ctx, {}));
     }

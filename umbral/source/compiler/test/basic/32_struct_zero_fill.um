@@ -1,0 +1,25 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# named struct init with omitted fields should zero-fill
+
+import sys.io.fmt => fmt;
+
+const Packet := struct {
+  a: u32,
+  b: u32,
+  c: u32,
+  d: u32,
+}
+
+const main := fn() -> i32 {
+  # only set a and c; b and d should be 0
+  const p := Packet { a = 10, c = 30 };
+  fmt::println("{} {} {} {}", []fmt::Arg{
+    fmt::arg_u32(p.a),
+    fmt::arg_u32(p.b),
+    fmt::arg_u32(p.c),
+    fmt::arg_u32(p.d),
+  });
+  return 0;
+}
+
+# CHECK: 10 0 30 0

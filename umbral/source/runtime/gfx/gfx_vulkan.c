@@ -4,6 +4,7 @@
 #include "gfx_refl.h"
 #include "gfx_resources.h"
 #include "gfx_upload.h"
+#include "umsh.h"
 
 // max swapchain images. triple-buffered MAILBOX needs 3; leave headroom for
 // drivers that add an extra image.
@@ -362,20 +363,30 @@ static bool create_device(gfx_device_ctx_t *d) {
       .pQueuePriorities = &prio,
   };
 
+  // Vulkan 1.1 features: shaderDrawParameters for gl_DrawID / gl_BaseInstance
+  VkPhysicalDeviceVulkan11Features vk11_features = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+      .shaderDrawParameters = VK_TRUE,
+  };
+
   // enable descriptor indexing features required for bindless arrays
   VkPhysicalDeviceDescriptorIndexingFeatures di_features = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
+      .pNext = &vk11_features,
       .descriptorBindingPartiallyBound = VK_TRUE,
       .runtimeDescriptorArray = VK_TRUE,
       .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
       .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
       .descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE,
-      // TODO:      .descriptorBindingSamplerUpdateAfterBind = VK_TRUE,
   };
 
   VkPhysicalDeviceFeatures2 features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
       .pNext = &di_features,
+      .features = {
+          .shaderSampledImageArrayDynamicIndexing = VK_TRUE,
+          .shaderStorageBufferArrayDynamicIndexing = VK_TRUE,
+      },
   };
 
   VkDeviceCreateInfo ci = {
@@ -406,7 +417,14 @@ static bool create_device(gfx_device_ctx_t *d) {
 static bool create_swapchain(gfx_device_ctx_t *d,
                              um_window_handle_t window_handle) {
   GLFWwindow *window = window_glfw_ptr(window_handle);
-  glfwCreateWindowSurface(d->instance, window, NULL, &d->surface);
+  VkResult sr = glfwCreateWindowSurface(d->instance, window, NULL, &d->surface);
+  if (sr != VK_SUCCESS) {
+    const char *glfw_desc = NULL;
+    int glfw_err = glfwGetError(&glfw_desc);
+    fprintf(stderr, "glfwCreateWindowSurface failed: VkResult=%d glfw_err=0x%x (%s)\n",
+            sr, glfw_err, glfw_desc ? glfw_desc : "none");
+    return false;
+  }
 
   VkSurfaceCapabilitiesKHR caps;
   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(d->physical_device, d->surface,
@@ -1180,6 +1198,77 @@ rt_gfx_pipeline_create(gfx_device_handle_t dev, const uint8_t *vs_spv,
   return gfx_handle_make(slot, d->pipeline_slots[slot].gen);
 }
 
+gfx_pipeline_handle_t
+rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
+                                  um_slice_u8_t umsh,
+                                  uint32_t variant_key) {
+  (void)variant_key;
+
+  const umsh_header_t *hdr = NULL;
+  uint32_t section_count = 0;
+  if (!umsh_parse_header(umsh.ptr, umsh.len, &hdr, &section_count)) {
+    fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: invalid .umsh header\n");
+    return GFX_NULL_HANDLE;
+  }
+
+  umsh_section_view_t stages_view = {0};
+  if (!umsh_find_section(umsh.ptr, umsh.len, section_count, UMSH_SECTION_STAGES, &stages_view)) {
+    fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: STAGES section not found\n");
+    return GFX_NULL_HANDLE;
+  }
+
+  const uint32_t *vs_words = NULL; uint32_t vs_word_count = 0;
+  const uint32_t *fs_words = NULL; uint32_t fs_word_count = 0;
+  if (!umsh_find_stage(stages_view, UMSH_STAGE_VERTEX,   &vs_words, &vs_word_count) ||
+      !umsh_find_stage(stages_view, UMSH_STAGE_FRAGMENT, &fs_words, &fs_word_count)) {
+    fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: missing vertex or fragment stage\n");
+    return GFX_NULL_HANDLE;
+  }
+
+  // build a minimal UMRF blob from the optional REFL section so we can reuse
+  // rt_gfx_pipeline_create's existing pipeline creation logic.
+  // if no REFL section, synthesize an empty UMRF (stride=0, no attrs).
+  umsh_section_view_t refl_view = {0};
+  bool has_refl = umsh_find_section(umsh.ptr, umsh.len, section_count, UMSH_SECTION_REFL, &refl_view);
+
+  uint32_t stride = 0, input_rate = 0, attr_count = 0;
+  if (has_refl && refl_view.size >= 12) {
+    memcpy(&stride,     refl_view.data + 0, 4);
+    memcpy(&input_rate, refl_view.data + 4, 4);
+    memcpy(&attr_count, refl_view.data + 8, 4);
+    if (refl_view.size < 12 + (uint64_t)attr_count * 12) {
+      fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: truncated REFL section\n");
+      return GFX_NULL_HANDLE;
+    }
+  }
+
+  // synthesize an inline UMRF blob on the stack (header + binding + attrs)
+  uint32_t umrf_total = 16 + 8 + 4 + attr_count * 12;
+  uint8_t *umrf_buf = (uint8_t *)alloca(umrf_total);
+  // umrf_header_t
+  uint32_t magic_val = UMRF_MAGIC;
+  uint16_t ver = UMRF_VERSION, endian = UMRF_ENDIAN_LE;
+  uint32_t umrf_rsv = 0;
+  memcpy(umrf_buf + 0,  &magic_val,  4);
+  memcpy(umrf_buf + 4,  &ver,        2);
+  memcpy(umrf_buf + 6,  &endian,     2);
+  memcpy(umrf_buf + 8,  &umrf_total, 4);
+  memcpy(umrf_buf + 12, &umrf_rsv,   4);
+  // umrf_vertex_binding_t
+  memcpy(umrf_buf + 16, &stride,     4);
+  memcpy(umrf_buf + 20, &input_rate, 4);
+  // attr_count + attrs
+  memcpy(umrf_buf + 24, &attr_count, 4);
+  if (attr_count > 0)
+    memcpy(umrf_buf + 28, refl_view.data + 12, (size_t)attr_count * 12);
+
+  return rt_gfx_pipeline_create(
+      dev,
+      (const uint8_t *)vs_words, (uint64_t)vs_word_count * 4,
+      (const uint8_t *)fs_words, (uint64_t)fs_word_count * 4,
+      umrf_buf,                  (uint64_t)umrf_total);
+}
+
 void rt_gfx_pipeline_destroy(gfx_device_handle_t dev,
                              gfx_pipeline_handle_t pipe) {
   gfx_device_ctx_t *d = dev_from_handle(dev);
@@ -1189,6 +1278,8 @@ void rt_gfx_pipeline_destroy(gfx_device_handle_t dev,
       !d->pipeline_slots[slot].allocated ||
       d->pipeline_slots[slot].gen != gfx_handle_gen(pipe))
     return;
+  // wait for all in-flight frames to finish before destroying
+  vkDeviceWaitIdle(d->device);
   vkDestroyPipeline(d->device, d->pipeline_table[slot], NULL);
   d->pipeline_table[slot] = VK_NULL_HANDLE;
   gfx_slot_free(d->pipeline_slots, slot);
@@ -1198,7 +1289,7 @@ gfx_texture_handle_t rt_gfx_texture2d_create_rgba8(gfx_device_handle_t dev,
                                                    uint32_t w, uint32_t h,
                                                    const uint8_t *rgba,
                                                    uint64_t rgba_len,
-                                                   const char *debug_name) {
+                                                   um_slice_u8_t debug_name) {
   gfx_device_ctx_t *d = dev_from_handle(dev);
   assert(rgba != NULL);
   assert(rgba_len == (uint64_t)w * h * 4);
@@ -1338,10 +1429,9 @@ gfx_texture_handle_t rt_gfx_texture2d_create_rgba8(gfx_device_handle_t dev,
     gfx_resources_update_descriptors(&d->resources, d->device,
                                      d->descriptor_sets[i], i);
 
-  vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE, (uint64_t)image,
-                    debug_name);
-  vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE_VIEW, (uint64_t)image_view,
-                    debug_name);
+  const char *dbg = debug_name.len ? (const char *)debug_name.ptr : NULL;
+  vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE, (uint64_t)image, dbg);
+  vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE_VIEW, (uint64_t)image_view, dbg);
 
   return gfx_handle_make(slot, d->resources.tex_slots[slot].gen);
 }
@@ -1355,7 +1445,7 @@ void rt_gfx_texture_destroy(gfx_device_handle_t dev, gfx_texture_handle_t tex) {
 }
 
 gfx_sampler_handle_t rt_gfx_sampler_create_linear(gfx_device_handle_t dev,
-                                                  const char *debug_name) {
+                                                  um_slice_u8_t debug_name) {
   gfx_device_ctx_t *d = dev_from_handle(dev);
 
   uint32_t slot = gfx_samp_alloc_slot(&d->resources);
@@ -1387,8 +1477,8 @@ gfx_sampler_handle_t rt_gfx_sampler_create_linear(gfx_device_handle_t dev,
     gfx_resources_update_descriptors(&d->resources, d->device,
                                      d->descriptor_sets[i], i);
 
-  vk_set_debug_name(d->device, VK_OBJECT_TYPE_SAMPLER, (uint64_t)sampler,
-                    debug_name);
+  const char *sdbg = debug_name.len ? (const char *)debug_name.ptr : NULL;
+  vk_set_debug_name(d->device, VK_OBJECT_TYPE_SAMPLER, (uint64_t)sampler, sdbg);
 
   return gfx_handle_make(slot, d->resources.samp_slots[slot].gen);
 }
@@ -1415,7 +1505,7 @@ void rt_gfx_submit_draw_packets(gfx_cmd_handle_t cmd,
   assert(g_dev_alive && g_dev.frame_open);
   assert(packets != NULL && packet_count > 0);
   gfx_device_ctx_t *d = &g_dev;
-  uint32_t slot = (d->current_frame - 1) % d->cfg.frames_in_flight;
+  uint32_t slot = d->current_frame % d->cfg.frames_in_flight;
   (void)cmd;
 
   assert(packet_count <= d->cfg.draw_packets_max);
