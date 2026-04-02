@@ -419,12 +419,13 @@ struct FuncEmitter {
       return it->second;
 
     // const-generic parameter: emit the monomorphized value as a constant
-    if (sym.mono) if (auto it = sym.mono->const_values.find(name);
-        it != sym.mono->const_values.end()) {
-      CTypeId ctid = bsema.node_type[n].concrete;
-      llvm::Type *ty = cg.type_lower.lower(ctid);
-      return llvm::ConstantInt::get(ty, it->second);
-    }
+    if (sym.mono)
+      if (auto it = sym.mono->const_values.find(name);
+          it != sym.mono->const_values.end()) {
+        CTypeId ctid = bsema.node_type[n].concrete;
+        llvm::Type *ty = cg.type_lower.lower(ctid);
+        return llvm::ConstantInt::get(ty, it->second);
+      }
 
     assert(false && "failed to emit code for identifier");
     return nullptr;

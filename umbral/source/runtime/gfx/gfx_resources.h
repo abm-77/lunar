@@ -79,7 +79,8 @@ typedef struct {
   // one descriptor set per frame-in-flight; all share the same layout.
   // bindings: 0=textures(SAMPLED_IMAGE), 1=samplers(SAMPLER),
   //           2=frame_arena_ssbo, 3=draw_packets_ssbo, 4=material_data_ssbo.
-  // pool/layout/sets live in gfx_device_ctx_t (gfx_vulkan.c); frames_in_flight is a runtime value.
+  // pool/layout/sets live in gfx_device_ctx_t (gfx_vulkan.c); frames_in_flight
+  // is a runtime value.
 } gfx_resource_table_t;
 
 // returns a fresh slot index in [1, GFX_MAX_TEXTURES); 0 = table full.

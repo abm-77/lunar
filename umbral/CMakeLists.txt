@@ -39,15 +39,16 @@ find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 
 # ---- runtime library (GLFW + Vulkan) ----
 add_library(runtime STATIC
-./source/runtime/fmt.c
-./source/runtime/mem.c
-./source/runtime/window.c
-./source/runtime/asset.c
+./source/runtime/sys/fmt.c
+./source/runtime/sys/mem.c
+./source/runtime/sys/window.c
+./source/runtime/asset/asset.c
 ./source/runtime/gfx/gfx_vulkan.c
 )
 target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
 "${GLFW_INCLUDE_DIR}"
+${COMPILER_DIR}
 ./source/runtime
 ./source/runtime/gfx
 )
@@ -95,12 +96,9 @@ add_custom_command(
 )
 
 # ---- um.shader dialect tablegen ----
-# Sources live in compiler/dsl/include/um/shader/ (includes + .td)
-#             and compiler/dsl/lib/mlir/shader/   (implementations)
-set(UM_SHADER_INC_DIR "${CMAKE_SOURCE_DIR}/source/compiler/dsl/include/um/shader")
-set(UM_SHADER_LIB_DIR "${CMAKE_SOURCE_DIR}/source/compiler/dsl/lib/mlir/shader")
+set(UM_SHADER_DIR "${CMAKE_SOURCE_DIR}/source/compiler/shader")
 
-set(LLVM_TARGET_DEFINITIONS "${UM_SHADER_INC_DIR}/UmShaderOps.td")
+set(LLVM_TARGET_DEFINITIONS "${UM_SHADER_DIR}/UmShaderOps.td")
 list(APPEND TABLEGEN_FLAGS "-I${MLIR_INCLUDE_DIRS}")
 
 mlir_tablegen(UmShaderOps.h.inc       -gen-op-decls      ${TABLEGEN_FLAGS})
@@ -117,14 +115,14 @@ add_custom_target(UmShaderTableGen DEPENDS
 )
 
 set(UM_SHADER_DSL_SOURCES
-  ${UM_SHADER_LIB_DIR}/um_shader_dialect.cc
-  ${UM_SHADER_LIB_DIR}/shader_mlir.cc
-  ${UM_SHADER_LIB_DIR}/shader_spirv_lower.cc
-  ${UM_SHADER_LIB_DIR}/shader_spirv_serialize.cc
-  ${UM_SHADER_LIB_DIR}/shader_spirv_emit.cc
-  ${UM_SHADER_LIB_DIR}/umrf_emit.cc
-  ${UM_SHADER_LIB_DIR}/umsh_emit.cc
-  ${UM_SHADER_LIB_DIR}/shader_compile.cc
+  ${UM_SHADER_DIR}/um_shader_dialect.cc
+  ${UM_SHADER_DIR}/shader_mlir.cc
+  ${UM_SHADER_DIR}/shader_spirv_lower.cc
+  ${UM_SHADER_DIR}/shader_spirv_serialize.cc
+  ${UM_SHADER_DIR}/shader_spirv_emit.cc
+  ${UM_SHADER_DIR}/umrf_emit.cc
+  ${UM_SHADER_DIR}/umsh_emit.cc
+  ${UM_SHADER_DIR}/shader_compile.cc
 )
 
 # MLIR libraries needed for um.shader dialect + SPIR-V lowering
@@ -161,7 +159,6 @@ set(UM_SHADER_INCLUDE_DIRS
   ${LLVM_INCLUDE_DIRS}
   ${MLIR_INCLUDE_DIRS}
   ${CMAKE_BINARY_DIR}                                         # generated .inc files
-  ${CMAKE_SOURCE_DIR}/source/compiler/dsl/include             # um/shader/*.h
   ${COMPILER_DIR}                                             # compiler/ + common/
 )
 
@@ -171,7 +168,7 @@ llvm_map_components_to_libnames(LLVM_LIBS
 )
 
 add_executable(uc
-  ./source/compiler/main.cc
+  ./source/compiler/driver/main.cc
   ${UM_SHADER_DSL_SOURCES}
   ${CMAKE_BINARY_DIR}/runtime_blob.cc
   ${CMAKE_BINARY_DIR}/glfw_blob.cc
@@ -197,65 +194,67 @@ set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVE})
 
 include(GoogleTest)
 
+set(UNIT_TEST_DIR "${CMAKE_SOURCE_DIR}/source/test/unit")
+
 add_executable(interner_tests
-  ./source/compiler/test/unit/interner_test.cc
+  ${UNIT_TEST_DIR}/interner_test.cc
 )
 target_include_directories(interner_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(interner_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(interner_tests)
 
 add_executable(lexer_tests
-  ./source/compiler/test/unit/lexer_test.cc
+  ${UNIT_TEST_DIR}/lexer_test.cc
 )
 target_include_directories(lexer_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(lexer_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(lexer_tests)
 
 add_executable(parser_tests
-  ./source/compiler/test/unit/parser_test.cc
+  ${UNIT_TEST_DIR}/parser_test.cc
 )
 target_include_directories(parser_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(parser_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(parser_tests)
 
 add_executable(sema_tests
-  ./source/compiler/test/unit/sema_test.cc
+  ${UNIT_TEST_DIR}/sema_test.cc
 )
 target_include_directories(sema_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(sema_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(sema_tests)
 
 add_executable(meta_tests
-  ./source/compiler/test/unit/meta_test.cc
+  ${UNIT_TEST_DIR}/meta_test.cc
 )
 target_include_directories(meta_tests PRIVATE ${COMPILER_DIR})
 target_link_libraries(meta_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(meta_tests)
 
 add_executable(runtime_tests
-  ./source/runtime/test/mem_test.cc
-  ./source/runtime/test/mem_test_stubs.c
-  ./source/runtime/mem.c
+  ${UNIT_TEST_DIR}/mem_test.cc
+  ${UNIT_TEST_DIR}/mem_test_stubs.c
+  ./source/runtime/sys/mem.c
 )
-target_include_directories(runtime_tests PRIVATE ./source/runtime)
+target_include_directories(runtime_tests PRIVATE ./source/runtime ${COMPILER_DIR})
 target_compile_definitions(runtime_tests PRIVATE UM_TESTING=1)
 target_link_libraries(runtime_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(runtime_tests)
 
 add_executable(fmt_tests
-  ./source/runtime/test/fmt_test.cc
-  ./source/runtime/fmt.c
+  ${UNIT_TEST_DIR}/fmt_test.cc
+  ./source/runtime/sys/fmt.c
 )
-target_include_directories(fmt_tests PRIVATE ./source/runtime)
+target_include_directories(fmt_tests PRIVATE ./source/runtime ${COMPILER_DIR})
 target_link_libraries(fmt_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(fmt_tests)
 
 add_executable(window_tests
-  ./source/runtime/test/window_test.cc
-  ./source/runtime/test/window_test_stubs.c
-  ./source/runtime/window.c
+  ${UNIT_TEST_DIR}/window_test.cc
+  ${UNIT_TEST_DIR}/window_test_stubs.c
+  ./source/runtime/sys/window.c
 )
-target_include_directories(window_tests PRIVATE "${GLFW_INCLUDE_DIR}" ./source/runtime)
+target_include_directories(window_tests PRIVATE "${GLFW_INCLUDE_DIR}" ./source/runtime ${COMPILER_DIR})
 target_compile_definitions(window_tests PRIVATE UM_TESTING=1 UM_DEBUG=0)
 target_link_libraries(window_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(window_tests)
@@ -279,7 +278,7 @@ target_link_libraries(ul PRIVATE lz4_static)
 
 add_executable(shader_mlir_tests
   ${UM_SHADER_DSL_SOURCES}
-  ./source/compiler/test/unit/shader_mlir_test.cc
+  ${UNIT_TEST_DIR}/shader_mlir_test.cc
 )
 add_dependencies(shader_mlir_tests UmShaderTableGen)
 target_include_directories(shader_mlir_tests PRIVATE ${UM_SHADER_INCLUDE_DIRS})
@@ -289,7 +288,7 @@ gtest_discover_tests(shader_mlir_tests)
 
 add_executable(shader_pack_tests
   ./source/tools/ul/shader_pack.cc
-  ./source/tools/ul/test/shader_pack_test.cc
+  ${UNIT_TEST_DIR}/shader_pack_test.cc
 )
 target_include_directories(shader_pack_tests PRIVATE
   ${COMPILER_DIR}
@@ -303,7 +302,7 @@ gtest_discover_tests(shader_pack_tests)
 set(FILECHECK "${CMAKE_SOURCE_DIR}/../build/_b_llvm/bin/FileCheck" CACHE PATH "Path to FileCheck binary" FORCE)
 set(SPIRV_VAL "" CACHE PATH "Path to spirv-val binary")
 set(LIT_PY "${CMAKE_SOURCE_DIR}/../third_party/llvm-project/llvm/utils/lit/lit.py")
-set(LIT_TEST_DIR "${CMAKE_SOURCE_DIR}/source/compiler/test")
+set(LIT_TEST_DIR "${CMAKE_SOURCE_DIR}/source/test/lit")
 
 configure_file(
   ${LIT_TEST_DIR}/lit.site.cfg.py.in
@@ -317,3 +316,28 @@ add_custom_target(check-lit
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   COMMENT "Running lit functional tests"
 )
+
+# ---- examples ----
+# each subdirectory of examples/ with a main.um is an example.
+# adding a new example requires no CMake changes.
+set(EXAMPLES_DIR "${CMAKE_SOURCE_DIR}/../examples")
+file(GLOB EXAMPLE_DIRS "${EXAMPLES_DIR}/*/")
+foreach(EXAMPLE_DIR ${EXAMPLE_DIRS})
+  get_filename_component(EXAMPLE_NAME ${EXAMPLE_DIR} NAME)
+  if(EXISTS "${EXAMPLE_DIR}/main.um")
+    add_custom_command(
+      OUTPUT ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
+      COMMAND $<TARGET_FILE:uc>
+        ${EXAMPLE_DIR}/main.um
+        --root ${CMAKE_SOURCE_DIR}/source/std
+        --shader-out ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
+        -o ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME}
+      DEPENDS uc
+      COMMENT "Building example: ${EXAMPLE_NAME}"
+    )
+    list(APPEND EXAMPLE_OUTPUTS ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME})
+  endif()
+endforeach()
+
+add_custom_target(build_examples DEPENDS ${EXAMPLE_OUTPUTS})

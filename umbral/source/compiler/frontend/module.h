@@ -31,13 +31,15 @@ struct IOFieldAnnot {
 struct ShaderStageInfo {
   SymId shader_type;    // the impl type name
   SymId method_name;    // the method annotated with @stage
-  SymId stage_name_sym; // interned SymId of "vertex" or "fragment"; resolved in body_check
+  SymId stage_name_sym; // interned SymId of "vertex" or "fragment"; resolved in
+                        // body_check
 };
 
-// @shader_fn annotation on an impl method — shader-side helper callable from @stage/@shader_fn.
+// @shader_fn annotation on an impl method — shader-side helper callable from
+// @stage/@shader_fn.
 struct ShaderFnInfo {
-  SymId shader_type;  // the impl type name
-  SymId method_name;  // the method annotated with @shader_fn
+  SymId shader_type; // the impl type name
+  SymId method_name; // the method annotated with @shader_fn
 };
 
 struct GenericParam {
@@ -57,18 +59,19 @@ struct ImportDecl {
 struct FuncParam {
   SymId name{};
   TypeId type{};
-  NodeId default_init = 0; // 0 = no default; else NodeId in the owning module's BodyIR
+  NodeId default_init =
+      0; // 0 = no default; else NodeId in the owning module's BodyIR
   Span span{};
 };
 
 enum class DeclKind : u8 { Const, Var };
 
 enum class DeclFlags : u8 {
-  None      = 0,
-  Pub       = 1 << 0, // @pub
-  Extern    = 1 << 1, // @extern
-  Gen       = 1 << 2, // @gen
-  Shader    = 1 << 3, // @shader
+  None = 0,
+  Pub = 1 << 0,       // @pub
+  Extern = 1 << 1,    // @extern
+  Gen = 1 << 2,       // @gen
+  Shader = 1 << 3,    // @shader
   ShaderPod = 1 << 4, // @shader_pod
 };
 
@@ -99,7 +102,7 @@ struct Module {
   std::vector<GenericParam> generic_params;
   // populated by the parser for @shader and @shader_pod declarations
   std::vector<ShaderFieldAnnot> shader_field_annots;
-  std::vector<IOFieldAnnot>     io_field_annots;
-  std::vector<ShaderStageInfo>  shader_stages;
-  std::vector<ShaderFnInfo>     shader_fns;
+  std::vector<IOFieldAnnot> io_field_annots;
+  std::vector<ShaderStageInfo> shader_stages;
+  std::vector<ShaderFnInfo> shader_fns;
 };

@@ -19,23 +19,27 @@ struct FuncSig {
 };
 
 enum class SymFlags : u8 {
-  None         = 0,
-  Pub          = 1 << 0, // @pub
-  Extern       = 1 << 1, // @extern
-  ShaderStage  = 1 << 2, // @stage method — skip native codegen, lowered via MLIR shader pipeline
-  ShaderFn     = 1 << 3, // @shader_fn method — skip native codegen, lowered via MLIR shader pipeline
+  None = 0,
+  Pub = 1 << 0,         // @pub
+  Extern = 1 << 1,      // @extern
+  ShaderStage = 1 << 2, // @stage method — skip native codegen, lowered via MLIR
+                        // shader pipeline
+  ShaderFn = 1 << 3, // @shader_fn method — skip native codegen, lowered via
+                     // MLIR shader pipeline
   MonoInstance = 1 << 4, // monomorphized instance
-  Mut          = 1 << 5, // mutable global (var)
+  Mut = 1 << 5,          // mutable global (var)
 };
 
 // pre-lowered concrete type info for a monomorphized function instance.
 // allocated only for mono symbols; non-mono symbols have mono == nullptr.
 struct MonoInfo {
-  u32 concrete_ret = 0;               // concrete return CTypeId
-  u32 self_ctype = 0;                 // non-zero for methods (CTypeId of &self)
-  std::vector<u32> concrete_params;   // explicit params only (excludes self)
-  std::unordered_map<SymId, u32> type_subst;   // type-param name → concrete CTypeId
-  std::unordered_map<SymId, u32> const_values; // const-generic name → integer value
+  u32 concrete_ret = 0;             // concrete return CTypeId
+  u32 self_ctype = 0;               // non-zero for methods (CTypeId of &self)
+  std::vector<u32> concrete_params; // explicit params only (excludes self)
+  std::unordered_map<SymId, u32>
+      type_subst; // type-param name → concrete CTypeId
+  std::unordered_map<SymId, u32>
+      const_values; // const-generic name → integer value
 };
 
 struct Symbol {
@@ -77,7 +81,8 @@ struct SymbolTable {
     module_namespaces.push_back({}); // module 0 namespace
   }
 
-  // allocate a namespace slot for an additional module (call once per module > 0).
+  // allocate a namespace slot for an additional module (call once per module >
+  // 0).
   void add_module_namespace() { module_namespaces.push_back({}); }
 
   SymbolId add(u32 mod_idx, Symbol s) {
@@ -99,8 +104,9 @@ struct SymbolTable {
   // like lookup(mod_idx, name) but only returns if the symbol is pub.
   SymbolId lookup_pub(u32 mod_idx, SymId name) const {
     SymbolId sid = lookup(mod_idx, name);
-    return (sid != kInvalidSymbol && has(symbols[sid].flags, SymFlags::Pub)) ? sid
-                                                          : kInvalidSymbol;
+    return (sid != kInvalidSymbol && has(symbols[sid].flags, SymFlags::Pub))
+               ? sid
+               : kInvalidSymbol;
   }
 
   Symbol &get(SymbolId id) { return symbols[id]; }

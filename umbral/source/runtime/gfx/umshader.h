@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-#define UMSHADER_MAGIC   0x554D5341u // ASCII "UMSA"
+#define UMSHADER_MAGIC 0x554D5341u // ASCII "UMSA"
 #define UMSHADER_VERSION 1u
 
 typedef struct {

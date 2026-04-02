@@ -32,8 +32,7 @@ struct MethodTable {
 
 // Build the method table from impl blocks in mod.
 // module_idx selects which namespace to search for the impl target type.
-inline Result<MethodTable> build_method_table(const Module &mod,
-                                              u32 module_idx,
+inline Result<MethodTable> build_method_table(const Module &mod, u32 module_idx,
                                               SymbolTable &syms,
                                               TypeLowerer &lowerer) {
   MethodTable mt;
@@ -49,15 +48,13 @@ inline Result<MethodTable> build_method_table(const Module &mod,
       SymbolId method_sym = kInvalidSymbol;
       for (u32 i = 1; i < static_cast<u32>(syms.symbols.size()); ++i) {
         const Symbol &s = syms.symbols[i];
-        if (s.kind == SymbolKind::Func &&
-            s.name == m.name &&
+        if (s.kind == SymbolKind::Func && s.name == m.name &&
             s.impl_owner == impl.type_name) {
           method_sym = i;
           break;
         }
       }
-      if (method_sym != kInvalidSymbol)
-        mt.insert(type_sym, m.name, method_sym);
+      if (method_sym != kInvalidSymbol) mt.insert(type_sym, m.name, method_sym);
     }
   }
 

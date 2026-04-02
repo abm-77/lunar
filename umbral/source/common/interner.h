@@ -37,8 +37,7 @@ public:
 
   SymId intern(std::string_view s) {
     // check if we already had it interned
-    if (auto it = map.find(s); it != map.end())
-      return it->second;
+    if (auto it = map.find(s); it != map.end()) return it->second;
 
     // copy bytes into owned memory
     std::string_view stored = store(s);

@@ -30,7 +30,8 @@ struct CodegenCtx {
 
   // SymbolId → declared llvm::Function* (populated during the declaration pass)
   std::unordered_map<SymbolId, llvm::Function *> fn_map;
-  // SymbolId → declared llvm::GlobalVariable* (populated during the declaration pass)
+  // SymbolId → declared llvm::GlobalVariable* (populated during the declaration
+  // pass)
   std::unordered_map<SymbolId, llvm::GlobalVariable *> global_map;
 
   // type lowerer shared across all emitters.
@@ -43,26 +44,32 @@ struct CodegenCtx {
 
   CodegenCtx(SemaResult &sr, const std::vector<LoadedModule> &mods,
              const Interner &intern, std::string_view module_name)
-      : ctx_owned(std::make_unique<llvm::LLVMContext>()),
-        ctx(*ctx_owned),
+      : ctx_owned(std::make_unique<llvm::LLVMContext>()), ctx(*ctx_owned),
         module(std::make_unique<llvm::Module>(
-            llvm::StringRef{module_name.data(), module_name.size()}, *ctx_owned)),
+            llvm::StringRef{module_name.data(), module_name.size()},
+            *ctx_owned)),
         sema(sr), modules(mods), interner(intern),
         type_lower(*ctx_owned, sr.types, sr.syms, mods, interner) {
     for (auto &lm : mods)
-      module_contexts.push_back({&lm.type_ast, &lm.ir, &lm.mod, lm.src, &lm.import_map});
+      module_contexts.push_back(
+          {&lm.type_ast, &lm.ir, &lm.mod, lm.src, &lm.import_map});
   }
 
   // allocate a new call-site entry and return its index (= site ID).
   // scans src[0..byte_offset] for newlines to compute 1-based line/col.
-  u32 alloc_site(std::string_view src, u32 byte_offset, std::string_view filename) {
+  u32 alloc_site(std::string_view src, u32 byte_offset,
+                 std::string_view filename) {
     u32 line = 1, col = 1;
     u32 end = byte_offset < static_cast<u32>(src.size())
                   ? byte_offset
                   : static_cast<u32>(src.size());
     for (u32 i = 0; i < end; ++i) {
-      if (src[i] == '\n') { ++line; col = 1; }
-      else { ++col; }
+      if (src[i] == '\n') {
+        ++line;
+        col = 1;
+      } else {
+        ++col;
+      }
     }
     u32 idx = static_cast<u32>(sites.size());
     sites.push_back({std::string(filename), line, col});

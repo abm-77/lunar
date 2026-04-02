@@ -1,4 +1,4 @@
-#include "../window.h"
+#include "../sys/window.h"
 #include "gfx.h"
 #include "gfx_handles.h"
 #include "gfx_refl.h"
@@ -383,10 +383,11 @@ static bool create_device(gfx_device_ctx_t *d) {
   VkPhysicalDeviceFeatures2 features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
       .pNext = &di_features,
-      .features = {
-          .shaderSampledImageArrayDynamicIndexing = VK_TRUE,
-          .shaderStorageBufferArrayDynamicIndexing = VK_TRUE,
-      },
+      .features =
+          {
+              .shaderSampledImageArrayDynamicIndexing = VK_TRUE,
+              .shaderStorageBufferArrayDynamicIndexing = VK_TRUE,
+          },
   };
 
   VkDeviceCreateInfo ci = {
@@ -421,7 +422,8 @@ static bool create_swapchain(gfx_device_ctx_t *d,
   if (sr != VK_SUCCESS) {
     const char *glfw_desc = NULL;
     int glfw_err = glfwGetError(&glfw_desc);
-    fprintf(stderr, "glfwCreateWindowSurface failed: VkResult=%d glfw_err=0x%x (%s)\n",
+    fprintf(stderr,
+            "glfwCreateWindowSurface failed: VkResult=%d glfw_err=0x%x (%s)\n",
             sr, glfw_err, glfw_desc ? glfw_desc : "none");
     return false;
   }
@@ -1198,10 +1200,9 @@ rt_gfx_pipeline_create(gfx_device_handle_t dev, const uint8_t *vs_spv,
   return gfx_handle_make(slot, d->pipeline_slots[slot].gen);
 }
 
-gfx_pipeline_handle_t
-rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
-                                  um_slice_u8_t umsh,
-                                  uint32_t variant_key) {
+gfx_pipeline_handle_t rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
+                                                       um_slice_u8_t umsh,
+                                                       uint32_t variant_key) {
   (void)variant_key;
 
   const umsh_header_t *hdr = NULL;
@@ -1212,16 +1213,24 @@ rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
   }
 
   umsh_section_view_t stages_view = {0};
-  if (!umsh_find_section(umsh.ptr, umsh.len, section_count, UMSH_SECTION_STAGES, &stages_view)) {
-    fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: STAGES section not found\n");
+  if (!umsh_find_section(umsh.ptr, umsh.len, section_count, UMSH_SECTION_STAGES,
+                         &stages_view)) {
+    fprintf(stderr,
+            "rt_gfx_pipeline_create_from_umsh: STAGES section not found\n");
     return GFX_NULL_HANDLE;
   }
 
-  const uint32_t *vs_words = NULL; uint32_t vs_word_count = 0;
-  const uint32_t *fs_words = NULL; uint32_t fs_word_count = 0;
-  if (!umsh_find_stage(stages_view, UMSH_STAGE_VERTEX,   &vs_words, &vs_word_count) ||
-      !umsh_find_stage(stages_view, UMSH_STAGE_FRAGMENT, &fs_words, &fs_word_count)) {
-    fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: missing vertex or fragment stage\n");
+  const uint32_t *vs_words = NULL;
+  uint32_t vs_word_count = 0;
+  const uint32_t *fs_words = NULL;
+  uint32_t fs_word_count = 0;
+  if (!umsh_find_stage(stages_view, UMSH_STAGE_VERTEX, &vs_words,
+                       &vs_word_count) ||
+      !umsh_find_stage(stages_view, UMSH_STAGE_FRAGMENT, &fs_words,
+                       &fs_word_count)) {
+    fprintf(
+        stderr,
+        "rt_gfx_pipeline_create_from_umsh: missing vertex or fragment stage\n");
     return GFX_NULL_HANDLE;
   }
 
@@ -1229,15 +1238,17 @@ rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
   // rt_gfx_pipeline_create's existing pipeline creation logic.
   // if no REFL section, synthesize an empty UMRF (stride=0, no attrs).
   umsh_section_view_t refl_view = {0};
-  bool has_refl = umsh_find_section(umsh.ptr, umsh.len, section_count, UMSH_SECTION_REFL, &refl_view);
+  bool has_refl = umsh_find_section(umsh.ptr, umsh.len, section_count,
+                                    UMSH_SECTION_REFL, &refl_view);
 
   uint32_t stride = 0, input_rate = 0, attr_count = 0;
   if (has_refl && refl_view.size >= 12) {
-    memcpy(&stride,     refl_view.data + 0, 4);
+    memcpy(&stride, refl_view.data + 0, 4);
     memcpy(&input_rate, refl_view.data + 4, 4);
     memcpy(&attr_count, refl_view.data + 8, 4);
     if (refl_view.size < 12 + (uint64_t)attr_count * 12) {
-      fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: truncated REFL section\n");
+      fprintf(stderr,
+              "rt_gfx_pipeline_create_from_umsh: truncated REFL section\n");
       return GFX_NULL_HANDLE;
     }
   }
@@ -1249,13 +1260,13 @@ rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
   uint32_t magic_val = UMRF_MAGIC;
   uint16_t ver = UMRF_VERSION, endian = UMRF_ENDIAN_LE;
   uint32_t umrf_rsv = 0;
-  memcpy(umrf_buf + 0,  &magic_val,  4);
-  memcpy(umrf_buf + 4,  &ver,        2);
-  memcpy(umrf_buf + 6,  &endian,     2);
-  memcpy(umrf_buf + 8,  &umrf_total, 4);
-  memcpy(umrf_buf + 12, &umrf_rsv,   4);
+  memcpy(umrf_buf + 0, &magic_val, 4);
+  memcpy(umrf_buf + 4, &ver, 2);
+  memcpy(umrf_buf + 6, &endian, 2);
+  memcpy(umrf_buf + 8, &umrf_total, 4);
+  memcpy(umrf_buf + 12, &umrf_rsv, 4);
   // umrf_vertex_binding_t
-  memcpy(umrf_buf + 16, &stride,     4);
+  memcpy(umrf_buf + 16, &stride, 4);
   memcpy(umrf_buf + 20, &input_rate, 4);
   // attr_count + attrs
   memcpy(umrf_buf + 24, &attr_count, 4);
@@ -1263,10 +1274,9 @@ rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
     memcpy(umrf_buf + 28, refl_view.data + 12, (size_t)attr_count * 12);
 
   return rt_gfx_pipeline_create(
-      dev,
-      (const uint8_t *)vs_words, (uint64_t)vs_word_count * 4,
-      (const uint8_t *)fs_words, (uint64_t)fs_word_count * 4,
-      umrf_buf,                  (uint64_t)umrf_total);
+      dev, (const uint8_t *)vs_words, (uint64_t)vs_word_count * 4,
+      (const uint8_t *)fs_words, (uint64_t)fs_word_count * 4, umrf_buf,
+      (uint64_t)umrf_total);
 }
 
 void rt_gfx_pipeline_destroy(gfx_device_handle_t dev,
@@ -1431,7 +1441,8 @@ gfx_texture_handle_t rt_gfx_texture2d_create_rgba8(gfx_device_handle_t dev,
 
   const char *dbg = debug_name.len ? (const char *)debug_name.ptr : NULL;
   vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE, (uint64_t)image, dbg);
-  vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE_VIEW, (uint64_t)image_view, dbg);
+  vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE_VIEW, (uint64_t)image_view,
+                    dbg);
 
   return gfx_handle_make(slot, d->resources.tex_slots[slot].gen);
 }

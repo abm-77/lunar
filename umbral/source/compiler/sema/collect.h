@@ -49,7 +49,8 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       case NodeKind::Ident:
       case NodeKind::MetaBlock: {
         // ident node covers simple type aliases: const AllocHandle := u64
-        // MetaBlock: @gen type with @if/@assert — evaluated at type-lowering time
+        // MetaBlock: @gen type with @if/@assert — evaluated at type-lowering
+        // time
         s.kind = SymbolKind::Type;
         s.type_node = d.init;
       } break;
@@ -71,7 +72,8 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
     } else {
       // no initializer. for extern declarations, the type annotation determines
       // whether this is an extern function (FnType) or an extern global.
-      if (has(d.flags, DeclFlags::Extern) && d.type != 0 && type_ast.kind[d.type] == TypeKind::Fn) {
+      if (has(d.flags, DeclFlags::Extern) && d.type != 0 &&
+          type_ast.kind[d.type] == TypeKind::Fn) {
         s.kind = SymbolKind::Func;
         s.annotate_type = d.type; // FnType TypeId — used by codegen
         // populate ret_type so body_check can type-check calls.

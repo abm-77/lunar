@@ -27,7 +27,7 @@
 #include <common/error.h>
 #include <common/interner.h>
 #include <compiler/codegen/codegen_ctx.h>
-#include <compiler/loader.h>
+#include <compiler/driver/loader.h>
 #include <compiler/sema/body_check.h>
 #include <compiler/sema/sema.h>
 

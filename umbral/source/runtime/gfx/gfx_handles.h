@@ -1,6 +1,7 @@
 #pragma once
 // slot 0 is never allocated; index 0 always means "no resource".
-// stale handles (freed slot with bumped generation) are caught by gfx_handle_check().
+// stale handles (freed slot with bumped generation) are caught by
+// gfx_handle_check().
 
 #include <stdbool.h>
 #include <stdint.h>

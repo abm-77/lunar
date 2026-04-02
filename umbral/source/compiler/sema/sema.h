@@ -5,9 +5,9 @@
 #include "ctypes.h"
 #include "lower_types.h"
 #include "method_table.h"
+#include "mono.h"
 #include "symbol.h"
-#include <compiler/loader.h>
-#include <compiler/meta/mono.h>
+#include <compiler/driver/loader.h>
 
 struct SemaResult {
   SymbolTable syms;
@@ -58,7 +58,8 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
     body_semas[i] = std::move(*body_r);
   }
 
-  // drain mono work queue — new instantiations may enqueue more pending entries.
+  // drain mono work queue — new instantiations may enqueue more pending
+  // entries.
   while (!mono_engine.pending.empty()) {
     auto batch = std::move(mono_engine.pending);
     mono_engine.pending.clear();
@@ -71,7 +72,8 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
       ml.module_contexts = &single_ctx;
       ml.current_ir = &ir;
 
-      BodyChecker sub(ir, mod, syms, methods, types, std::move(ml), interner, src);
+      BodyChecker sub(ir, mod, syms, methods, types, std::move(ml), interner,
+                      src);
       sub.mono_engine = &mono_engine;
       sub.body_semas_out = &body_semas;
       sub.const_generic_scope_start = pm.const_generic_scope_start;
@@ -148,7 +150,8 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
   std::vector<ModuleContext> module_contexts;
   module_contexts.reserve(modules.size());
   for (auto &lm : modules)
-    module_contexts.push_back({&lm.type_ast, &lm.ir, &lm.mod, lm.src, &lm.import_map});
+    module_contexts.push_back(
+        {&lm.type_ast, &lm.ir, &lm.mod, lm.src, &lm.import_map});
 
   // phase 5: type-check each non-generic function body.
   // each symbol carries module_idx; use it to select the right module data.
@@ -182,7 +185,8 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     body_semas[i] = std::move(*body_r);
   }
 
-  // drain mono work queue — new instantiations may enqueue more pending entries.
+  // drain mono work queue — new instantiations may enqueue more pending
+  // entries.
   while (!mono_engine.pending.empty()) {
     auto batch = std::move(mono_engine.pending);
     mono_engine.pending.clear();

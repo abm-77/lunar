@@ -17,19 +17,19 @@ struct DrawPacketField {
 
 // field 0-2 are u64; fields 3-12 are u32
 inline constexpr DrawPacketField kDrawPacketFields[] = {
-    {"pipeline_handle",      0, 8},
+    {"pipeline_handle", 0, 8},
     {"vertex_buffer_handle", 1, 8},
-    {"index_buffer_handle",  2, 8},
-    {"first_index",          3, 4},
-    {"index_count",          4, 4},
-    {"vertex_count",         5, 4},
-    {"instance_count",       6, 4},
-    {"first_instance",       7, 4},
-    {"draw_data_offset",     8, 4},
+    {"index_buffer_handle", 2, 8},
+    {"first_index", 3, 4},
+    {"index_count", 4, 4},
+    {"vertex_count", 5, 4},
+    {"instance_count", 6, 4},
+    {"first_instance", 7, 4},
+    {"draw_data_offset", 8, 4},
     {"material_data_offset", 9, 4},
-    {"tex2d_index",         10, 4},
-    {"sampler_index",       11, 4},
-    {"flags",               12, 4},
+    {"tex2d_index", 10, 4},
+    {"sampler_index", 11, 4},
+    {"flags", 12, 4},
 };
 
 inline constexpr uint32_t kDrawPacketFieldCount = 13;

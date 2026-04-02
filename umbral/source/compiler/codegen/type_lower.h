@@ -8,8 +8,8 @@
 #include <llvm/IR/Type.h>
 
 #include <common/types.h>
+#include <compiler/driver/loader.h>
 #include <compiler/frontend/ast.h>
-#include <compiler/loader.h>
 #include <compiler/sema/ctypes.h>
 #include <compiler/sema/lower_types.h>
 #include <compiler/sema/symbol.h>
@@ -24,7 +24,8 @@ struct CTypeLowerer {
   // CTypeId → cached LLVM type (null means lowering failed / type is void)
   std::unordered_map<CTypeId, llvm::Type *> cache;
 
-  // CTypeId → cached LLVM function type (null means lowering failed / type is void)
+  // CTypeId → cached LLVM function type (null means lowering failed / type is
+  // void)
   std::unordered_map<CTypeId, llvm::FunctionType *> fn_type_cache;
 
   CTypeLowerer(llvm::LLVMContext &c, TypeTable &t, const SymbolTable &s,
@@ -60,13 +61,15 @@ struct CTypeLowerer {
 
 private:
   // resolve sym.type_node to effective StructType NodeId.
-  // for @gen types (MetaBlock), evaluates the block using type args from struct_ctid.
+  // for @gen types (MetaBlock), evaluates the block using type args from
+  // struct_ctid.
   NodeId resolve_struct_type_node(const Symbol &sym, const BodyIR &ir,
                                   CTypeId struct_ctid) {
     NodeId type_node = sym.type_node;
     if (ir.nodes.kind[type_node] != NodeKind::MetaBlock) return type_node;
 
-    const CType &sct = types.types[struct_ctid]; // may be Void if struct_ctid==0
+    const CType &sct =
+        types.types[struct_ctid]; // may be Void if struct_ctid==0
     const Module &mod = modules[sym.module_idx].mod;
     const TypeAst &ta = modules[sym.module_idx].type_ast;
 
@@ -129,7 +132,8 @@ private:
       return llvm::StructType::get(ctx, elems);
     }
 
-    // fn(params) -> ret → pointer to FunctionType; list = [ret_type, param0, param1, ...]
+    // fn(params) -> ret → pointer to FunctionType; list = [ret_type, param0,
+    // param1, ...]
     case CTypeKind::Fn: {
       llvm::Type *ret = lower(types.list[ct.list_start]);
       llvm::Type *ret_type = ret ? ret : llvm::Type::getVoidTy(ctx);
@@ -150,17 +154,15 @@ private:
 
     // slice → { ptr, i64 }
     case CTypeKind::Slice: {
-      std::vector<llvm::Type *> fields = { llvm::PointerType::getUnqual(ctx),
-                                           llvm::Type::getInt64Ty(ctx) };
+      std::vector<llvm::Type *> fields = {llvm::PointerType::getUnqual(ctx),
+                                          llvm::Type::getInt64Ty(ctx)};
       return llvm::StructType::get(ctx, fields);
     }
 
     case CTypeKind::Iter: { // { ptr*, i64 len, i64 idx }
-      std::vector<llvm::Type *> fields = {
-        llvm::PointerType::getUnqual(ctx),
-        llvm::Type::getInt64Ty(ctx),
-        llvm::Type::getInt64Ty(ctx)
-      };
+      std::vector<llvm::Type *> fields = {llvm::PointerType::getUnqual(ctx),
+                                          llvm::Type::getInt64Ty(ctx),
+                                          llvm::Type::getInt64Ty(ctx)};
       return llvm::StructType::get(ctx, fields);
     }
     }
@@ -201,7 +203,8 @@ private:
     tl.current_ir = &ir;
     tl.import_map = &modules[sym.module_idx].import_map;
 
-    // resolve the effective StructType NodeId (@gen types have a MetaBlock type_node)
+    // resolve the effective StructType NodeId (@gen types have a MetaBlock
+    // type_node)
     NodeId stype_nid = sym.type_node;
     if (ir.nodes.kind[stype_nid] == NodeKind::MetaBlock) {
       stype_nid = tl.eval_meta_block(stype_nid, ir, nullptr);

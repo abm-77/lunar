@@ -57,20 +57,21 @@ enum class NodeKind : u16 {
   ArrayLit,   // a = index into BodyIR::array_lits
   StructInit, // a = type SymId, b = fields_start, c = fields_count (fields are
               //   pairs [SymId, NodeId] in list pool)
-  StructExpr,     // b = fields_start, c = fields_count (fields are
-                  //   pairs [SymId, NodeId] in list pool)
-  AnonStructInit, // a = StructType NodeId, b = init_fields_start, c = init_fields_count
+  StructExpr, // b = fields_start, c = fields_count (fields are
+              //   pairs [SymId, NodeId] in list pool)
+  AnonStructInit, // a = StructType NodeId, b = init_fields_start, c =
+                  // init_fields_count
                   //   init fields: [SymId, NodeId] pairs in list pool
-  Block,      // b = stmt_start, c = stmt_count
-  ConstStmt,  // a = SymId, b = TypeId or 0, c = init ExprId (or 0 if none)
-  VarStmt,    // same as ConstStmt
-  AssignStmt, // a = lhs place ExprId, b = rhs ExprId, c = op TokenKind
-              // (Equal/PlusEqual/...)
-  ReturnStmt, // a = expr (or 0 if empty return)
-  BreakStmt,    // no fields — jumps to enclosing loop exit
-  ContinueStmt, // no fields — jumps to enclosing loop step
-  IfStmt,     // a = cond, b = then block, c = else block
-  ForStmt,    // a = index into BodyIR::fors
+  Block,          // b = stmt_start, c = stmt_count
+  ConstStmt,      // a = SymId, b = TypeId or 0, c = init ExprId (or 0 if none)
+  VarStmt,        // same as ConstStmt
+  AssignStmt,     // a = lhs place ExprId, b = rhs ExprId, c = op TokenKind
+                  // (Equal/PlusEqual/...)
+  ReturnStmt,     // a = expr (or 0 if empty return)
+  BreakStmt,      // no fields — jumps to enclosing loop exit
+  ContinueStmt,   // no fields — jumps to enclosing loop step
+  IfStmt,         // a = cond, b = then block, c = else block
+  ForStmt,        // a = index into BodyIR::fors
   ForRange,   // a = SymId (loop var name), b = Iter<T> NodeId, c = body NodeId
   ExprStmt,   // a = expr
   FnLit,      // a = index into BodyIR::fn_lits
@@ -81,24 +82,28 @@ enum class NodeKind : u16 {
   EnumType,   // b = variants_start, c = variants_count (SymIds in list)
   Path,       // b = segments_start, c = segments_count (SymIds in list, e.g.
               // Color::Red)
-  SliceLit,  // a = elem TypeId, b = vals_start (list pool), c = vals_count
-  CastAs,    // a = source NodeId, b = target TypeId  (@as)
-  Bitcast,   // a = source NodeId, b = target TypeId  (@bitcast)
-  SiteId,    // no args — compile-time call-site u32
-  SizeOf,    // a = TypeId — sizeof(T) as u64
-  AlignOf,   // a = TypeId — alignof(T) as u64
-  SliceCast, // a = source NodeId ([]u8), b = elem TypeId → []T
+  SliceLit,   // a = elem TypeId, b = vals_start (list pool), c = vals_count
+  CastAs,     // a = source NodeId, b = target TypeId  (@as)
+  Bitcast,    // a = source NodeId, b = target TypeId  (@bitcast)
+  SiteId,     // no args — compile-time call-site u32
+  SizeOf,     // a = TypeId — sizeof(T) as u64
+  AlignOf,    // a = TypeId — alignof(T) as u64
+  SliceCast,  // a = source NodeId ([]u8), b = elem TypeId → []T
   IterCreate, // a = source NodeId (Array or Slice expr) → produces Iter<T>
-  MemCpy,    // a = dest NodeId, b = src NodeId, c = byte_count NodeId → void
-  MemMov,    // a = dest NodeId, b = src NodeId, c = byte_count NodeId → void
-  MemSet,    // a = dest NodeId, b = value NodeId (u8), c = byte_count NodeId → void
-  MemCmp,    // a = lhs NodeId, b = rhs NodeId, c = byte_count NodeId → i32
-  MetaIf,     // a = cond NodeId, b = then NodeId (Block or type expr), c = else NodeId (0 or next MetaIf or body)
+  MemCpy,     // a = dest NodeId, b = src NodeId, c = byte_count NodeId → void
+  MemMov,     // a = dest NodeId, b = src NodeId, c = byte_count NodeId → void
+  MemSet, // a = dest NodeId, b = value NodeId (u8), c = byte_count NodeId →
+          // void
+  MemCmp, // a = lhs NodeId, b = rhs NodeId, c = byte_count NodeId → i32
+  MetaIf, // a = cond NodeId, b = then NodeId (Block or type expr), c = else
+          // NodeId (0 or next MetaIf or body)
   MetaAssert, // a = cond NodeId, b = msg NodeId (StrLit or 0)
   MetaField,  // a = obj NodeId, b = field_var SymId
   FieldsOf,   // a = struct_type_name SymId — @fields(TypeName)
-  MetaBlock,  // b = stmts_start, c = stmts_count (list of NodeIds: MetaAsserts/MetaIfs/bare expr)
-  // shader-only intrinsics — never compiled to LLVM IR; lowered via MLIR shader pipeline
+  MetaBlock,  // b = stmts_start, c = stmts_count (list of NodeIds:
+              // MetaAsserts/MetaIfs/bare expr)
+  // shader-only intrinsics — never compiled to LLVM IR; lowered via MLIR shader
+  // pipeline
   ShaderTexture2d,  // a = index_expr (u32) → opaque texture handle
   ShaderSampler,    // a = index_expr (u32) → opaque sampler handle
   ShaderSample,     // a = tex_expr, b = samp_expr, c = uv_expr → vec4
@@ -118,8 +123,10 @@ enum class TypeKind : u16 {
   Tuple,     // b = list_start, c = list_count
   Fn,        // a = ret TypeId, b = list_start, c = list_count
   Array,     // a = count (static_cast<u32>(-1) if unsized), b = elem TypeId,
-             //   c = count_ident SymId (non-zero when count is a const-generic param like [N]T)
-  ConstInt,  // a = integer value — const-generic value type arg (e.g. the 10 in List<i32, 10>)
+             //   c = count_ident SymId (non-zero when count is a const-generic
+             //   param like [N]T)
+  ConstInt, // a = integer value — const-generic value type arg (e.g. the 10 in
+            // List<i32, 10>)
 };
 
 using ExprAst = NodeStore<NodeId, NodeKind, NodeId>;

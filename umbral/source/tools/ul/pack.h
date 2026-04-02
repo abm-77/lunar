@@ -3,10 +3,11 @@
 #include <stdint.h>
 
 // build a .umpack bundle from a list of already-processed asset files.
-// inputs must be in their final runtime form (.umtex, .umaudio, .spv, .umrf, etc.).
+// inputs must be in their final runtime form (.umtex, .umaudio, .spv, .umrf,
+// etc.).
 
 typedef struct {
-  const char *path;   // null-terminated path to source asset file
+  const char *path; // null-terminated path to source asset file
 } pack_input_t;
 
 // pack_build — assemble a .umpack file.

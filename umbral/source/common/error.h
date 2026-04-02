@@ -7,7 +7,8 @@
 struct Error {
   Span span{};
   std::string msg = "";
-  u32 module_idx = UINT32_MAX; // set for cross-module errors; UINT32_MAX = entry module
+  u32 module_idx =
+      UINT32_MAX; // set for cross-module errors; UINT32_MAX = entry module
 };
 
 template <typename T> using Result = std::expected<T, Error>;

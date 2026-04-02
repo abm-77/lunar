@@ -58,7 +58,8 @@ private:
 
   // parse struct init field list: { field = expr, field = expr, ... }
   // opening '{' already consumed. consumes the closing '}'.
-  // returns {list_start, field_count} for SymId/NodeId pairs in body_ir.nodes.list.
+  // returns {list_start, field_count} for SymId/NodeId pairs in
+  // body_ir.nodes.list.
   std::pair<u32, u32> parse_struct_init_fields() {
     std::vector<u32> packed;
     if (!match(TokenKind::RBrace)) {
@@ -72,12 +73,14 @@ private:
       expect(TokenKind::RBrace, "expected '}'");
     }
     u32 list_start = static_cast<u32>(body_ir.nodes.list.size());
-    body_ir.nodes.list.insert(body_ir.nodes.list.end(), packed.begin(), packed.end());
+    body_ir.nodes.list.insert(body_ir.nodes.list.end(), packed.begin(),
+                              packed.end());
     u32 field_count = static_cast<u32>(packed.size()) / 2;
     return {list_start, field_count};
   }
 
-  // after consuming '.', reads a tuple index (Int token) or ident for the field name.
+  // after consuming '.', reads a tuple index (Int token) or ident for the field
+  // name.
   SymId parse_field_or_tuple_index() {
     if (at(TokenKind::Int)) {
       auto idx_sv = src.substr(t.start[i], t.end[i] - t.start[i]);
@@ -189,16 +192,33 @@ private:
       if (!ikind) break;
       bool consumed = true;
       switch (*ikind) {
-      case IntrinsicKind::VsIn:     i += 2; sfk = ShaderFieldKind::VsIn;     break;
-      case IntrinsicKind::VsOut:    i += 2; sfk = ShaderFieldKind::VsOut;    break;
-      case IntrinsicKind::FsIn:     i += 2; sfk = ShaderFieldKind::FsIn;     break;
-      case IntrinsicKind::FsOut:    i += 2; sfk = ShaderFieldKind::FsOut;    break;
-      case IntrinsicKind::DrawData: i += 2; sfk = ShaderFieldKind::DrawData; break;
+      case IntrinsicKind::VsIn:
+        i += 2;
+        sfk = ShaderFieldKind::VsIn;
+        break;
+      case IntrinsicKind::VsOut:
+        i += 2;
+        sfk = ShaderFieldKind::VsOut;
+        break;
+      case IntrinsicKind::FsIn:
+        i += 2;
+        sfk = ShaderFieldKind::FsIn;
+        break;
+      case IntrinsicKind::FsOut:
+        i += 2;
+        sfk = ShaderFieldKind::FsOut;
+        break;
+      case IntrinsicKind::DrawData:
+        i += 2;
+        sfk = ShaderFieldKind::DrawData;
+        break;
       case IntrinsicKind::Location: {
         i += 2;
         expect(TokenKind::LParen, "expected '(' after @location");
-        if (at(TokenKind::Int)) { loc_idx = t.payload[i]; ++i; }
-        else set_error(sp(), "expected integer location index");
+        if (at(TokenKind::Int)) {
+          loc_idx = t.payload[i];
+          ++i;
+        } else set_error(sp(), "expected integer location index");
         expect(TokenKind::RParen, "expected ')'");
         iok = IOAnnotKind::Location;
         break;
@@ -237,10 +257,19 @@ private:
     int depth = 1;
     while (j < t.kind.size() && depth > 0) {
       TokenKind kj = t.kind[j];
-      if (kj == TokenKind::Less)  { ++depth; ++j; continue; }
-      if (kj == TokenKind::Greater) { --depth; ++j; continue; }
+      if (kj == TokenKind::Less) {
+        ++depth;
+        ++j;
+        continue;
+      }
+      if (kj == TokenKind::Greater) {
+        --depth;
+        ++j;
+        continue;
+      }
       if (kj == TokenKind::Eof || kj == TokenKind::Semicolon ||
-          kj == TokenKind::LBrace || kj == TokenKind::LParen) break;
+          kj == TokenKind::LBrace || kj == TokenKind::LParen)
+        break;
       ++j;
     }
     if (depth != 0) return false;
@@ -250,7 +279,8 @@ private:
            after == TokenKind::LParen;
   }
 
-  // true if current position looks like `for (var/const name := expr)` with no semicolons.
+  // true if current position looks like `for (var/const name := expr)` with no
+  // semicolons.
   bool looks_like_for_range() const {
     if (k(0) != TokenKind::KwVar && k(0) != TokenKind::KwConst) return false;
     if (k(1) != TokenKind::Ident) return false;
@@ -258,10 +288,11 @@ private:
     u32 depth = 1;
     for (u32 j = i + 3; j < static_cast<u32>(t.kind.size()); ++j) {
       TokenKind tk = t.kind[j];
-      if (tk == TokenKind::LParen)    ++depth;
-      else if (tk == TokenKind::RParen) { if (--depth == 0) return true; }
-      else if (tk == TokenKind::Semicolon && depth == 1) return false;
-      else if (tk == TokenKind::Eof)    return false;
+      if (tk == TokenKind::LParen) ++depth;
+      else if (tk == TokenKind::RParen) {
+        if (--depth == 0) return true;
+      } else if (tk == TokenKind::Semicolon && depth == 1) return false;
+      else if (tk == TokenKind::Eof) return false;
     }
     return false;
   }
@@ -377,11 +408,14 @@ private:
       // list layout: [mod_prefix, targ0, targ1, ...]
       std::vector<TypeId> list_items{static_cast<TypeId>(mod_prefix)};
       if (match(TokenKind::Less)) {
-        do { list_items.push_back(parse_type()); } while (match(TokenKind::Comma));
+        do {
+          list_items.push_back(parse_type());
+        } while (match(TokenKind::Comma));
         expect(TokenKind::Greater, "expected '>' after type arguments");
       }
       u32 targs_count = static_cast<u32>(list_items.size()) - 1;
-      auto [ls, _cnt] = type_ast.push_list(list_items.data(), list_items.size());
+      auto [ls, _cnt] =
+          type_ast.push_list(list_items.data(), list_items.size());
       Span endsp = {start.start, t.end[i - 1]};
       return type_ast.make(TypeKind::QualNamed, endsp, name, ls, targs_count);
     }
@@ -441,7 +475,7 @@ private:
     case TokenKind::GreaterEqual: return BP{50, 51};
     case TokenKind::EqualEqual:
     case TokenKind::BangEqual: return BP{40, 41};
-    case TokenKind::AmpAmp:  return BP{35, 36};
+    case TokenKind::AmpAmp: return BP{35, 36};
     case TokenKind::PipePipe: return BP{30, 31};
     default: return std::nullopt;
     }
@@ -509,35 +543,57 @@ private:
 
     // @intrinsic(...) — dispatch by argument shape
     if (match(TokenKind::At)) {
-      if (!at(TokenKind::Ident)) { set_error(sp(), "expected intrinsic name after '@'"); return 0; }
+      if (!at(TokenKind::Ident)) {
+        set_error(sp(), "expected intrinsic name after '@'");
+        return 0;
+      }
       SymId name = static_cast<SymId>(t.payload[i]);
       auto kind = intrinsics.lookup(name);
-      if (!kind) { set_error(sp(), "unknown intrinsic"); return 0; }
+      if (!kind) {
+        set_error(sp(), "unknown intrinsic");
+        return 0;
+      }
       ++i; // consume name
       switch (*kind) {
       // nullary: ()
-      case IntrinsicKind::SiteId:   return parse_intrinsic_nullary(s, NodeKind::SiteId);
-      case IntrinsicKind::DrawId:   return parse_intrinsic_nullary(s, NodeKind::ShaderDrawId);
-      case IntrinsicKind::VertexId: return parse_intrinsic_nullary(s, NodeKind::ShaderVertexId);
+      case IntrinsicKind::SiteId:
+        return parse_intrinsic_nullary(s, NodeKind::SiteId);
+      case IntrinsicKind::DrawId:
+        return parse_intrinsic_nullary(s, NodeKind::ShaderDrawId);
+      case IntrinsicKind::VertexId:
+        return parse_intrinsic_nullary(s, NodeKind::ShaderVertexId);
 
       // unary expr: (expr)
-      case IntrinsicKind::Iter:       return parse_intrinsic_unary_expr(s, NodeKind::IterCreate);
-      case IntrinsicKind::Texture2d:  return parse_intrinsic_unary_expr(s, NodeKind::ShaderTexture2d);
-      case IntrinsicKind::Sampler:    return parse_intrinsic_unary_expr(s, NodeKind::ShaderSampler);
-      case IntrinsicKind::DrawPacket: return parse_intrinsic_unary_expr(s, NodeKind::ShaderDrawPacket);
+      case IntrinsicKind::Iter:
+        return parse_intrinsic_unary_expr(s, NodeKind::IterCreate);
+      case IntrinsicKind::Texture2d:
+        return parse_intrinsic_unary_expr(s, NodeKind::ShaderTexture2d);
+      case IntrinsicKind::Sampler:
+        return parse_intrinsic_unary_expr(s, NodeKind::ShaderSampler);
+      case IntrinsicKind::DrawPacket:
+        return parse_intrinsic_unary_expr(s, NodeKind::ShaderDrawPacket);
 
       // unary type: (type)
-      case IntrinsicKind::SizeOf:  return parse_intrinsic_unary_type(s, NodeKind::SizeOf);
-      case IntrinsicKind::AlignOf: return parse_intrinsic_unary_type(s, NodeKind::AlignOf);
+      case IntrinsicKind::SizeOf:
+        return parse_intrinsic_unary_type(s, NodeKind::SizeOf);
+      case IntrinsicKind::AlignOf:
+        return parse_intrinsic_unary_type(s, NodeKind::AlignOf);
 
       // unary ident: (ident)
-      case IntrinsicKind::MetaFields: return parse_intrinsic_unary_ident(s, NodeKind::FieldsOf, "expected struct type name");
-      case IntrinsicKind::ShaderRef:  return parse_intrinsic_unary_ident(s, NodeKind::ShaderRef, "expected shader struct type name");
+      case IntrinsicKind::MetaFields:
+        return parse_intrinsic_unary_ident(s, NodeKind::FieldsOf,
+                                           "expected struct type name");
+      case IntrinsicKind::ShaderRef:
+        return parse_intrinsic_unary_ident(s, NodeKind::ShaderRef,
+                                           "expected shader struct type name");
 
       // expr + type: (expr, type)
-      case IntrinsicKind::As:        return parse_intrinsic_expr_type(s, NodeKind::CastAs);
-      case IntrinsicKind::Bitcast:   return parse_intrinsic_expr_type(s, NodeKind::Bitcast);
-      case IntrinsicKind::SliceCast: return parse_intrinsic_expr_type(s, NodeKind::SliceCast);
+      case IntrinsicKind::As:
+        return parse_intrinsic_expr_type(s, NodeKind::CastAs);
+      case IntrinsicKind::Bitcast:
+        return parse_intrinsic_expr_type(s, NodeKind::Bitcast);
+      case IntrinsicKind::SliceCast:
+        return parse_intrinsic_expr_type(s, NodeKind::SliceCast);
 
       // expr + ident: (expr, ident)
       case IntrinsicKind::MetaField: {
@@ -550,11 +606,16 @@ private:
       }
 
       // triple expr: (expr, expr, expr)
-      case IntrinsicKind::MemCpy:  return parse_intrinsic_triple_expr(s, NodeKind::MemCpy);
-      case IntrinsicKind::MemMov:  return parse_intrinsic_triple_expr(s, NodeKind::MemMov);
-      case IntrinsicKind::MemSet:  return parse_intrinsic_triple_expr(s, NodeKind::MemSet);
-      case IntrinsicKind::MemCmp:  return parse_intrinsic_triple_expr(s, NodeKind::MemCmp);
-      case IntrinsicKind::Sample:  return parse_intrinsic_triple_expr(s, NodeKind::ShaderSample);
+      case IntrinsicKind::MemCpy:
+        return parse_intrinsic_triple_expr(s, NodeKind::MemCpy);
+      case IntrinsicKind::MemMov:
+        return parse_intrinsic_triple_expr(s, NodeKind::MemMov);
+      case IntrinsicKind::MemSet:
+        return parse_intrinsic_triple_expr(s, NodeKind::MemSet);
+      case IntrinsicKind::MemCmp:
+        return parse_intrinsic_triple_expr(s, NodeKind::MemCmp);
+      case IntrinsicKind::Sample:
+        return parse_intrinsic_triple_expr(s, NodeKind::ShaderSample);
 
       // special: @frame_read<T>(offset)
       case IntrinsicKind::FrameRead: {
@@ -564,7 +625,8 @@ private:
         expect(TokenKind::LParen, "expected '('");
         NodeId offset = parse_expr();
         expect(TokenKind::RParen, "expected ')'");
-        return body_ir.nodes.make(NodeKind::ShaderFrameRead, s, offset, elem_ty);
+        return body_ir.nodes.make(NodeKind::ShaderFrameRead, s, offset,
+                                  elem_ty);
       }
 
       // annotation-only intrinsics: not valid in expression context
@@ -638,18 +700,21 @@ private:
     // struct { ... }
     //   StructExpr: field = expr,  ...  (pairs [SymId, NodeId])
     //   StructType: field: Type,   ...  (pairs [SymId, TypeId])
-    // disambiguation: after the first field name, '=' → StructExpr, ':' → StructType.
+    // disambiguation: after the first field name, '=' → StructExpr, ':' →
+    // StructType.
     if (match(TokenKind::KwStruct)) {
       expect(TokenKind::LBrace, "expected '{'");
 
       // empty struct type, or AnonStructInit if followed by {
       if (match(TokenKind::RBrace)) {
         Span stspan = {s.start, t.end[i - 1]};
-        NodeId stype_nid = body_ir.nodes.make(NodeKind::StructType, stspan, 0, 0, 0);
+        NodeId stype_nid =
+            body_ir.nodes.make(NodeKind::StructType, stspan, 0, 0, 0);
         if (!match(TokenKind::LBrace)) return stype_nid;
         expect(TokenKind::RBrace, "expected '}'");
         Span aspan = {s.start, t.end[i - 1]};
-        return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid, 0, 0);
+        return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid, 0,
+                                  0);
       }
 
       SymId fname = parse_struct_field_name(current_struct_name);
@@ -658,8 +723,9 @@ private:
         // StructExpr: field = expr pairs
         NodeId fval = parse_expr();
         std::vector<u32> packed = {fname, fval};
-        while (!err && (match(TokenKind::Comma) || match(TokenKind::Semicolon))
-               && !at(TokenKind::RBrace)) {
+        while (!err &&
+               (match(TokenKind::Comma) || match(TokenKind::Semicolon)) &&
+               !at(TokenKind::RBrace)) {
           SymId fn2 = parse_struct_field_name(current_struct_name);
           expect(TokenKind::Equal, "expected '='");
           NodeId fv2 = parse_expr();
@@ -677,8 +743,9 @@ private:
         expect(TokenKind::Colon, "expected ':' or '='");
         TypeId ftype = parse_type();
         std::vector<u32> packed = {fname, ftype};
-        while (!err && (match(TokenKind::Comma) || match(TokenKind::Semicolon))
-               && !at(TokenKind::RBrace)) {
+        while (!err &&
+               (match(TokenKind::Comma) || match(TokenKind::Semicolon)) &&
+               !at(TokenKind::RBrace)) {
           SymId fn2 = parse_struct_field_name(current_struct_name);
           expect(TokenKind::Colon, "expected ':'");
           TypeId ft2 = parse_type();
@@ -689,14 +756,14 @@ private:
         u32 field_count = static_cast<u32>(packed.size()) / 2;
         auto [ls, _sf] = body_ir.nodes.push_list(packed.data(), packed.size());
         Span stspan = {s.start, t.end[i - 1]};
-        NodeId stype_nid = body_ir.nodes.make(NodeKind::StructType, stspan, 0, ls,
-                                              field_count);
+        NodeId stype_nid = body_ir.nodes.make(NodeKind::StructType, stspan, 0,
+                                              ls, field_count);
         // struct { ... }{ field = expr } — anonymous struct init
         if (!match(TokenKind::LBrace)) return stype_nid;
         auto [istart, ifields_count] = parse_struct_init_fields();
         Span aspan = {s.start, t.end[i - 1]};
-        return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid, istart,
-                                  ifields_count);
+        return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid,
+                                  istart, ifields_count);
       }
     }
 
@@ -715,14 +782,19 @@ private:
       return body_ir.nodes.make(NodeKind::EnumType, endsp, 0, ls, cnt);
     }
 
-    if (match(TokenKind::Int)) return body_ir.nodes.make(NodeKind::IntLit, s, t.payload[i - 1]);
+    if (match(TokenKind::Int))
+      return body_ir.nodes.make(NodeKind::IntLit, s, t.payload[i - 1]);
     if (match(TokenKind::Float)) {
       u32 idx = static_cast<u32>(body_ir.float_lits.size());
       Span fs = {t.start[i - 1], t.end[i - 1]};
       double val = 0.0;
       if (!src.empty()) {
         std::string raw(src.data() + fs.start, fs.end - fs.start);
-        try { val = std::stod(raw); } catch (...) { val = 0.0; }
+        try {
+          val = std::stod(raw);
+        } catch (...) {
+          val = 0.0;
+        }
       }
       body_ir.float_lits.push_back(val);
       return body_ir.nodes.make(NodeKind::FloatLit, s, idx);
@@ -755,10 +827,12 @@ private:
         targs_start = ls;
         targs_count = static_cast<u32>(cnt);
         Span tspan = {s.start, t.end[i - 1]};
-        generic_type_id = type_ast.make(TypeKind::Named, tspan, sym, targs_start, targs_count);
+        generic_type_id = type_ast.make(TypeKind::Named, tspan, sym,
+                                        targs_start, targs_count);
       }
 
-      // path expression: Ident[<T,...>]:: Ident  e.g. Color::Red, mod::Type<T>::create
+      // path expression: Ident[<T,...>]:: Ident  e.g. Color::Red,
+      // mod::Type<T>::create
       if (at(TokenKind::ColonColon)) {
         std::vector<u32> segs = {sym};
         while (match(TokenKind::ColonColon)) {
@@ -771,7 +845,9 @@ private:
           if (peek_generic_args_for(i)) {
             ++i; // consume '<'
             std::vector<TypeId> mid_args;
-            do { mid_args.push_back(parse_type()); } while (match(TokenKind::Comma));
+            do {
+              mid_args.push_back(parse_type());
+            } while (match(TokenKind::Comma));
             expect(TokenKind::Greater, "expected '>' after type arguments");
             Span tspan = {s.start, t.end[i - 1]};
             if (segs.size() >= 2) {
@@ -785,12 +861,15 @@ private:
               qlist.push_back(static_cast<TypeId>(mod_prefix));
               for (TypeId ta : mid_args) qlist.push_back(ta);
               auto [qls, _q] = type_ast.push_list(qlist.data(), qlist.size());
-              generic_type_id = type_ast.make(TypeKind::QualNamed, tspan, seg,
-                                              qls, static_cast<u32>(mid_args.size()));
+              generic_type_id =
+                  type_ast.make(TypeKind::QualNamed, tspan, seg, qls,
+                                static_cast<u32>(mid_args.size()));
             } else {
               // no module prefix yet (e.g. List<T>::method) — keep Named.
-              auto [mls, mcnt] = type_ast.push_list(mid_args.data(), mid_args.size());
-              generic_type_id = type_ast.make(TypeKind::Named, tspan, seg, mls, mcnt);
+              auto [mls, mcnt] =
+                  type_ast.push_list(mid_args.data(), mid_args.size());
+              generic_type_id =
+                  type_ast.make(TypeKind::Named, tspan, seg, mls, mcnt);
             }
           }
         }
@@ -805,32 +884,37 @@ private:
             SymId mod_prefix = static_cast<SymId>(segs[segs.size() - 2]);
             std::vector<TypeId> qlist = {static_cast<TypeId>(mod_prefix)};
             auto [qls, _q] = type_ast.push_list(qlist.data(), qlist.size());
-            struct_type_id = type_ast.make(TypeKind::QualNamed, tspan, type_name, qls, 0);
+            struct_type_id =
+                type_ast.make(TypeKind::QualNamed, tspan, type_name, qls, 0);
           } else {
             struct_type_id = type_ast.make(TypeKind::Named, tspan, sym, 0, 0);
           }
           auto [list_start, pairs] = parse_struct_init_fields();
           Span endsp = {s.start, t.end[i - 1]};
-          return body_ir.nodes.make(NodeKind::StructInit, endsp, struct_type_id, list_start, pairs);
+          return body_ir.nodes.make(NodeKind::StructInit, endsp, struct_type_id,
+                                    list_start, pairs);
         }
 
         auto [ls, cnt] = body_ir.nodes.push_list(segs.data(), segs.size());
         Span endsp = {s.start, t.end[i - 1]};
-        // a = TypeId of the leading generic type (0 if none), b = segs_start, c = segs_count
-        return body_ir.nodes.make(NodeKind::Path, endsp, generic_type_id, ls, cnt);
+        // a = TypeId of the leading generic type (0 if none), b = segs_start, c
+        // = segs_count
+        return body_ir.nodes.make(NodeKind::Path, endsp, generic_type_id, ls,
+                                  cnt);
       }
 
       // struct literal: TypeName[<T,...>] { field: expr, ... }
       if (match(TokenKind::LBrace)) {
         Span tspan = {s.start, t.end[i - 2]}; // before the '{'
-        TypeId struct_type_id = (generic_type_id != 0)
-            ? generic_type_id
-            : type_ast.make(TypeKind::Named, tspan, sym, 0, 0);
+        TypeId struct_type_id =
+            (generic_type_id != 0)
+                ? generic_type_id
+                : type_ast.make(TypeKind::Named, tspan, sym, 0, 0);
 
         auto [list_start, pairs] = parse_struct_init_fields();
         Span endsp = {s.start, t.end[i - 1]};
-        return body_ir.nodes.make(NodeKind::StructInit, endsp, struct_type_id, list_start,
-                                  pairs);
+        return body_ir.nodes.make(NodeKind::StructInit, endsp, struct_type_id,
+                                  list_start, pairs);
       }
 
       // generic function call: name<T>(args) — emit as single-segment Path
@@ -839,7 +923,8 @@ private:
         std::vector<u32> segs = {sym};
         auto [ls, cnt] = body_ir.nodes.push_list(segs.data(), segs.size());
         Span endsp = {s.start, t.end[i - 1]};
-        return body_ir.nodes.make(NodeKind::Path, endsp, generic_type_id, ls, cnt);
+        return body_ir.nodes.make(NodeKind::Path, endsp, generic_type_id, ls,
+                                  cnt);
       }
 
       return body_ir.nodes.make(NodeKind::Ident, s, sym);
@@ -876,10 +961,13 @@ private:
           explicit_count = t.payload[i];
           ++i;
         } else if (at(TokenKind::Ident)) {
-          // const generic parameter (e.g. [N]T{}) — count unknown until instantiation
+          // const generic parameter (e.g. [N]T{}) — count unknown until
+          // instantiation
           ++i;
         } else {
-          set_error(sp(), "expected integer count or identifier or ']' in array literal");
+          set_error(
+              sp(),
+              "expected integer count or identifier or ']' in array literal");
           return body_ir.nodes.make(NodeKind::Ident, s, 0);
         }
       }
@@ -928,7 +1016,8 @@ private:
   }
 
   // parse @if(cond) { expr } [@else { expr }] — in type-body context.
-  // then/else branches are single expressions (e.g. StructType), not full blocks.
+  // then/else branches are single expressions (e.g. StructType), not full
+  // blocks.
   NodeId parse_meta_type_if(Span s) {
     expect(TokenKind::LParen, "expected '('");
     NodeId cond = parse_expr();
@@ -961,7 +1050,8 @@ private:
   // parse one statement inside a @gen type body (MetaBlock content).
   NodeId parse_meta_type_stmt() {
     auto s = sp();
-    if (!at(TokenKind::At)) return parse_expr(); // bare expression (e.g. struct { ... })
+    if (!at(TokenKind::At))
+      return parse_expr(); // bare expression (e.g. struct { ... })
     if (k(1) == TokenKind::KwIf) {
       i += 2; // consume '@' 'if'
       return parse_meta_type_if(s);
@@ -985,8 +1075,8 @@ private:
     return parse_expr();
   }
 
-  // parse @if(cond) { block } [@else_if(cond) { block }]* [@else { block }] — function body.
-  // called after '@' and 'if'/'else_if' have been consumed.
+  // parse @if(cond) { block } [@else_if(cond) { block }]* [@else { block }] —
+  // function body. called after '@' and 'if'/'else_if' have been consumed.
   NodeId parse_meta_if_stmt(Span s) {
     expect(TokenKind::LParen, "expected '('");
     NodeId cond = parse_expr();
@@ -1198,22 +1288,21 @@ private:
         expect(TokenKind::RParen, "expected ')'");
         NodeId body_n = parse_block();
         Span endsp = {s.start, t.end[i - 1]};
-        return body_ir.nodes.make(NodeKind::ForRange, endsp, var_name, iter_n, body_n);
+        return body_ir.nodes.make(NodeKind::ForRange, endsp, var_name, iter_n,
+                                  body_n);
       }
       NodeId init = 0;
       if (at(TokenKind::KwVar) || at(TokenKind::KwConst)) {
         // var/const declaration as for-init; parse_stmt also consumes the ';'
         init = parse_stmt();
       } else {
-        if (!at(TokenKind::Semicolon))
-          init = parse_assign_or_expr_stmt();
+        if (!at(TokenKind::Semicolon)) init = parse_assign_or_expr_stmt();
         expect(TokenKind::Semicolon, "expected ';' after for-init");
       }
       NodeId cond = at(TokenKind::Semicolon) ? 0 : parse_expr();
       expect(TokenKind::Semicolon, "expected ';' after for-cond");
       NodeId step = 0;
-      if (!at(TokenKind::RParen))
-        step = parse_assign_or_expr_stmt();
+      if (!at(TokenKind::RParen)) step = parse_assign_or_expr_stmt();
       expect(TokenKind::RParen, "expected ')' after for-step");
       NodeId body = parse_block();
       u32 idx = static_cast<u32>(body_ir.fors.size());
@@ -1304,20 +1393,27 @@ private:
           SymId iname = static_cast<SymId>(t.payload[i + 1]);
           auto ikind = intrinsics.lookup(iname);
           if (!ikind) break;
-          if (*ikind == IntrinsicKind::MetaGen) { is_gen_method = true; i += 2; }
-          else if (*ikind == IntrinsicKind::Stage) {
+          if (*ikind == IntrinsicKind::MetaGen) {
+            is_gen_method = true;
+            i += 2;
+          } else if (*ikind == IntrinsicKind::Stage) {
             i += 2;
             expect(TokenKind::LParen, "expected '(' after @stage");
             stage_name_sym = expect_ident("expected 'vertex' or 'fragment'");
             expect(TokenKind::RParen, "expected ')' after stage name");
-          }
-          else if (*ikind == IntrinsicKind::ShaderFn) { is_shader_fn = true; i += 2; }
-          else break;
+          } else if (*ikind == IntrinsicKind::ShaderFn) {
+            is_shader_fn = true;
+            i += 2;
+          } else break;
         }
         DeclKind mkind;
         if (match(TokenKind::KwConst)) mkind = DeclKind::Const;
         else if (match(TokenKind::KwVar)) mkind = DeclKind::Var;
-        else { set_error(ms, "expected method declaration in impl block"); ++i; continue; }
+        else {
+          set_error(ms, "expected method declaration in impl block");
+          ++i;
+          continue;
+        }
         SymId mname = expect_ident("expected method name");
         TypeId mty = 0;
         NodeId minit = 0;
@@ -1343,11 +1439,11 @@ private:
         }
         Span endsp = {ms.start, t.end[i - 1]};
         impl_block.methods.push_back(
-          {mname, mty, minit, 0, 0, is_gen_method ? DeclFlags::Gen : DeclFlags::None, mkind, endsp});
+            {mname, mty, minit, 0, 0,
+             is_gen_method ? DeclFlags::Gen : DeclFlags::None, mkind, endsp});
         if (stage_name_sym != 0)
           mod.shader_stages.push_back({type_name, mname, stage_name_sym});
-        if (is_shader_fn)
-          mod.shader_fns.push_back({type_name, mname});
+        if (is_shader_fn) mod.shader_fns.push_back({type_name, mname});
       }
       expect(TokenKind::RBrace, "expected '}'");
       match(TokenKind::Semicolon); // optional trailing ';'
@@ -1362,11 +1458,19 @@ private:
       SymId iname = static_cast<SymId>(t.payload[i + 1]);
       auto ikind = intrinsics.lookup(iname);
       if (!ikind) break;
-      if (*ikind == IntrinsicKind::Pub)            { decl_flags = decl_flags | DeclFlags::Pub;       i += 2; }
-      else if (*ikind == IntrinsicKind::MetaGen)   { decl_flags = decl_flags | DeclFlags::Gen;       i += 2; }
-      else if (*ikind == IntrinsicKind::Shader)    { decl_flags = decl_flags | DeclFlags::Shader;    i += 2; }
-      else if (*ikind == IntrinsicKind::ShaderPod) { decl_flags = decl_flags | DeclFlags::ShaderPod; i += 2; }
-      else if (*ikind == IntrinsicKind::Extern) {
+      if (*ikind == IntrinsicKind::Pub) {
+        decl_flags = decl_flags | DeclFlags::Pub;
+        i += 2;
+      } else if (*ikind == IntrinsicKind::MetaGen) {
+        decl_flags = decl_flags | DeclFlags::Gen;
+        i += 2;
+      } else if (*ikind == IntrinsicKind::Shader) {
+        decl_flags = decl_flags | DeclFlags::Shader;
+        i += 2;
+      } else if (*ikind == IntrinsicKind::ShaderPod) {
+        decl_flags = decl_flags | DeclFlags::ShaderPod;
+        i += 2;
+      } else if (*ikind == IntrinsicKind::Extern) {
         i += 2; // consume '@extern'
         if (!match(TokenKind::KwConst) && !match(TokenKind::KwVar))
           set_error(s, "expected 'const' or 'var' after @extern");
@@ -1376,11 +1480,10 @@ private:
         TypeId ty = parse_type();
         match(TokenKind::Semicolon);
         Span endsp = {s.start, t.end[i - 1]};
-        mod.decls.push_back({ename, ty, 0, 0, 0,
-                              decl_flags | DeclFlags::Extern, DeclKind::Const, endsp});
+        mod.decls.push_back({ename, ty, 0, 0, 0, decl_flags | DeclFlags::Extern,
+                             DeclKind::Const, endsp});
         return;
-      }
-      else break;
+      } else break;
     }
 
     // import <path> [=> <ident>] ;
@@ -1414,7 +1517,8 @@ private:
     }
     TypeId ty = 0;
     NodeId init = 0;
-    // module-level function shorthand: const/var name[<...>](params) [-> ret] { body }
+    // module-level function shorthand: const/var name[<...>](params) [-> ret] {
+    // body }
     if (at(TokenKind::LParen)) {
       expect(TokenKind::LParen, "expected '('");
       auto [ps, pc] = parse_fn_params();
@@ -1430,7 +1534,8 @@ private:
                            decl_flags, kind, endsp});
       return;
     }
-    // set current_struct_name so the struct body parser can key field annotations
+    // set current_struct_name so the struct body parser can key field
+    // annotations
     current_struct_name = name;
     if (match(TokenKind::ColonEqual)) {
       init = parse_expr();
