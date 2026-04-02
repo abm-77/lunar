@@ -101,15 +101,15 @@ inline void declare_globals(CodegenCtx &cg) {
     if (has(sym.flags, SymFlags::Extern)) {
       // extern global: external linkage, no initializer, unmangled name.
       auto sv = cg.interner.view(sym.name);
-      gv = new llvm::GlobalVariable(*cg.module, ty, !has(sym.flags, SymFlags::Mut),
-                                    llvm::GlobalValue::ExternalLinkage,
-                                    nullptr,
+      gv = new llvm::GlobalVariable(*cg.module, ty,
+                                    !has(sym.flags, SymFlags::Mut),
+                                    llvm::GlobalValue::ExternalLinkage, nullptr,
                                     llvm::StringRef{sv.data(), sv.size()});
     } else {
       llvm::Constant *init = llvm::Constant::getNullValue(ty);
-      gv = new llvm::GlobalVariable(*cg.module, ty, !has(sym.flags, SymFlags::Mut),
-                                    llvm::GlobalValue::ExternalLinkage,
-                                    init, mangle(i, cg));
+      gv = new llvm::GlobalVariable(
+          *cg.module, ty, !has(sym.flags, SymFlags::Mut),
+          llvm::GlobalValue::ExternalLinkage, init, mangle(i, cg));
     }
     cg.global_map[i] = gv;
   }
@@ -120,12 +120,16 @@ inline void declare_functions(CodegenCtx &cg) {
     const Symbol &sym = cg.sema.syms.symbols[i];
     if (sym.kind != SymbolKind::Func) continue;
     if (sym.generics_count > 0) continue;
-    if (has(sym.flags, SymFlags::ShaderStage)) continue; // lowered via MLIR shader pipeline
-    if (has(sym.flags, SymFlags::ShaderFn)) continue;    // lowered via MLIR shader pipeline
+    if (has(sym.flags, SymFlags::ShaderStage))
+      continue; // lowered via MLIR shader pipeline
+    if (has(sym.flags, SymFlags::ShaderFn))
+      continue; // lowered via MLIR shader pipeline
 
     if (has(sym.flags, SymFlags::Extern)) {
-      // Extern function: build LLVM type from the FnType TypeId in annotate_type.
-      assert(sym.annotate_type != 0 && "extern func must have a type annotation");
+      // Extern function: build LLVM type from the FnType TypeId in
+      // annotate_type.
+      assert(sym.annotate_type != 0 &&
+             "extern func must have a type annotation");
       const TypeAst &ta = cg.modules[sym.module_idx].type_ast;
       assert(ta.kind[sym.annotate_type] == TypeKind::Fn &&
              "extern func type annotation must be a function type");
@@ -148,11 +152,12 @@ inline void declare_functions(CodegenCtx &cg) {
         param_types.push_back(cg.type_lower.lower(*pt_r));
       }
 
-      auto *ft = llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
+      auto *ft =
+          llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
       auto sv = cg.interner.view(sym.name);
-      auto *fn = llvm::Function::Create(
-          ft, llvm::Function::ExternalLinkage,
-          llvm::StringRef{sv.data(), sv.size()}, *cg.module);
+      auto *fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                        llvm::StringRef{sv.data(), sv.size()},
+                                        *cg.module);
       cg.fn_map[i] = fn;
       continue;
     }
@@ -163,15 +168,15 @@ inline void declare_functions(CodegenCtx &cg) {
     // lowering.
     llvm::Type *ret_type;
     std::vector<llvm::Type *> param_types;
-    if (has(sym.flags, SymFlags::MonoInstance)) {
-      llvm::Type *ret = cg.type_lower.lower(sym.mono_concrete_ret);
+    if (sym.is_mono()) {
+      const MonoInfo &mi = *sym.mono;
+      llvm::Type *ret = cg.type_lower.lower(mi.concrete_ret);
       ret_type = ret ? ret : llvm::Type::getVoidTy(cg.ctx);
-      param_types.reserve(sym.mono_concrete_params.size() +
-                          (sym.mono_self_ctype != 0 ? 1u : 0u));
-      // Prepend self type (a pointer) when this is a mono instance method.
-      if (sym.mono_self_ctype != 0)
-        param_types.push_back(cg.type_lower.lower(sym.mono_self_ctype));
-      for (CTypeId ctid : sym.mono_concrete_params)
+      param_types.reserve(mi.concrete_params.size() +
+                          (mi.self_ctype != 0 ? 1u : 0u));
+      if (mi.self_ctype != 0)
+        param_types.push_back(cg.type_lower.lower(mi.self_ctype));
+      for (CTypeId ctid : mi.concrete_params)
         param_types.push_back(cg.type_lower.lower(ctid));
     } else {
       TypeLowerer tl = cg.make_type_lowerer(sym.module_idx);
@@ -228,39 +233,8 @@ inline void emit_function_bodies(CodegenCtx &cg) {
 // compile mod to a native object file at obj_path.
 // Call this on CodegenResult::context / CodegenResult::module after
 // run_codegen() succeeds (and only when not in --dump-ir mode).
-//
-// LLVM API surface used:
-//   llvm::InitializeNativeTarget()            — registers native arch backend
-//   llvm::InitializeNativeTargetAsmPrinter()  — registers asm printer
-//   llvm::sys::getDefaultTargetTriple()       — host triple string
-//   llvm::TargetRegistry::lookupTarget(triple, err) → const llvm::Target *
-//   target->createTargetMachine(triple, cpu, features, opts,
-//                                reloc, cmodel, level) → llvm::TargetMachine *
-//   TM->createDataLayout()                    — must be set on module
-//   llvm::raw_fd_ostream(path, ec, OF_None)  — output file
-//   llvm::legacy::PassManager                 — pass pipeline
-//   TM->addPassesToEmitFile(pm, dest, nullptr,
-//                            llvm::CodeGenFileType::ObjectFile)
-//   pm.run(mod)                               — execute
-//
 inline Result<void> emit_object(llvm::LLVMContext & /*ctx*/, llvm::Module &mod,
                                 const std::string &obj_path) {
-  // TODO: implement
-  //
-  // 1. llvm::InitializeNativeTarget() +
-  // llvm::InitializeNativeTargetAsmPrinter()
-  // 2. triple = llvm::sys::getDefaultTargetTriple();
-  // mod.setTargetTriple(triple)
-  // 3. llvm::TargetRegistry::lookupTarget(triple, err) → const llvm::Target *
-  // 4. target->createTargetMachine(triple, cpu, features, TargetOptions{},
-  //      reloc, cmodel, CodeGenOptLevel::Default) → llvm::TargetMachine *
-  // 5. mod.setDataLayout(TM->createDataLayout())
-  // 6. llvm::raw_fd_ostream dest(obj_path, ec, llvm::sys::fs::OF_None)
-  // 7. llvm::legacy::PassManager pm
-  //    TM->addPassesToEmitFile(pm, dest, nullptr, CodeGenFileType::ObjectFile)
-  //    pm.run(mod); dest.flush()
-  // 8. delete TM; return {}
-
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
 
@@ -321,15 +295,13 @@ inline void emit_site_table(CodegenCtx &cg) {
         file_str->getType(), gv, gep_idx);
     entries.push_back(llvm::ConstantStruct::get(
         site_ty,
-        {file_ptr,
-         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), se.line),
+        {file_ptr, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), se.line),
          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), se.col)}));
   }
 
   llvm::ArrayType *arr_ty = llvm::ArrayType::get(site_ty, n);
-  llvm::Constant *arr_init = n > 0
-                                 ? llvm::ConstantArray::get(arr_ty, entries)
-                                 : llvm::ConstantAggregateZero::get(arr_ty);
+  llvm::Constant *arr_init = n > 0 ? llvm::ConstantArray::get(arr_ty, entries)
+                                   : llvm::ConstantAggregateZero::get(arr_ty);
   new llvm::GlobalVariable(*cg.module, arr_ty, true,
                            llvm::GlobalValue::ExternalLinkage, arr_init,
                            "__um_sites");
@@ -339,7 +311,6 @@ inline void emit_site_table(CodegenCtx &cg) {
       llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), n),
       "__um_sites_count");
 }
-
 
 inline Result<CodegenResult>
 run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
@@ -354,14 +325,11 @@ run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
     llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
     cg.module->setTargetTriple(triple);
     std::string err2;
-    const llvm::Target *tgt =
-        llvm::TargetRegistry::lookupTarget(triple, err2);
-    if (!tgt)
-      return std::unexpected{Error{{0, 0}, "codegen: " + err2}};
+    const llvm::Target *tgt = llvm::TargetRegistry::lookupTarget(triple, err2);
+    if (!tgt) return std::unexpected{Error{{0, 0}, "codegen: " + err2}};
     std::unique_ptr<llvm::TargetMachine> tm(tgt->createTargetMachine(
-        triple, llvm::sys::getHostCPUName(), "", {},
-        llvm::Reloc::PIC_, llvm::CodeModel::Small,
-        llvm::CodeGenOptLevel::None));
+        triple, llvm::sys::getHostCPUName(), "", {}, llvm::Reloc::PIC_,
+        llvm::CodeModel::Small, llvm::CodeGenOptLevel::None));
     cg.module->setDataLayout(tm->createDataLayout());
   }
 

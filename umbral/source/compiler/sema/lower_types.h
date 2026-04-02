@@ -26,6 +26,7 @@ struct ModuleContext {
   const std::unordered_map<SymId, u32> *import_map = nullptr;
 };
 
+// construct a TypeLowerer configured for a specific module's context.
 struct TypeLowerer {
   const TypeAst &type_ast;
   const SymbolTable &syms;
@@ -185,6 +186,52 @@ struct TypeLowerer {
   }
 
 
+  // shared lowering for a resolved SymbolId with type args.
+  // handles alias resolution, enum/struct/MetaBlock detection, and type arg lowering.
+  Result<CTypeId> lower_user_type(SymbolId sid, const TypeId *targs, u32 targs_count, Span sp) {
+    if (syms.get(sid).aliased_sym != 0) sid = syms.get(sid).aliased_sym;
+    CTypeKind ct_kind = CTypeKind::Struct;
+    {
+      const Symbol &resolved = syms.get(sid);
+      const BodyIR *ir = nullptr;
+      if (module_contexts) {
+        u32 mod = resolved.module_idx;
+        if (mod < static_cast<u32>(module_contexts->size()))
+          ir = (*module_contexts)[mod].ir;
+      }
+      if (!ir) ir = current_ir;
+      if (ir && resolved.type_node != 0) {
+        NodeKind tnk = ir->nodes.kind[resolved.type_node];
+        if (tnk == NodeKind::EnumType) {
+          ct_kind = CTypeKind::Enum;
+        } else if (tnk == NodeKind::Ident) {
+          SymId alias_name = ir->nodes.a[resolved.type_node];
+          if (auto b = builtin_from_name(interner.view(alias_name), out)) return *b;
+        } else if (tnk == NodeKind::MetaBlock) {
+          NodeId effective_nid = eval_meta_block(resolved.type_node, *ir, nullptr);
+          if (effective_nid == 0)
+            return std::unexpected(Error{sp, "meta type evaluation failed"});
+          ct_kind = CTypeKind::Struct;
+        }
+      }
+    }
+    CType ct;
+    ct.kind = ct_kind;
+    ct.symbol = sid;
+    if (targs_count > 0) {
+      std::vector<CTypeId> lowered;
+      for (u32 k = 0; k < targs_count; ++k) {
+        auto a = lower(targs[k]);
+        if (!a) return a;
+        lowered.push_back(*a);
+      }
+      auto [ls, cnt] = out.push_list(lowered.data(), lowered.size());
+      ct.list_start = ls;
+      ct.list_count = cnt;
+    }
+    return out.intern(ct);
+  }
+
   Result<CTypeId> lower(TypeId tid) {
     TypeKind tk = type_ast.kind[tid];
 
@@ -201,66 +248,14 @@ struct TypeLowerer {
       // user-defined type
       SymbolId sid = syms.lookup(module_idx, name);
       if (sid == kInvalidSymbol) {
-        if (lenient) return out.builtin(CTypeKind::Void);
+        if (lenient) return kUnresolved;
         Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
         return std::unexpected(Error{sp, "unknown type name"});
       }
-      // follow cross-module type alias to the actual struct/enum symbol
-      if (syms.get(sid).aliased_sym != 0) sid = syms.get(sid).aliased_sym;
-      CType ct;
-      CTypeKind ct_kind = CTypeKind::Struct;
-      {
-        const Symbol &resolved = syms.get(sid);
-        const BodyIR *ir = nullptr;
-        if (module_contexts) {
-          u32 mod = resolved.module_idx;
-          if (mod < static_cast<u32>(module_contexts->size()))
-            ir = (*module_contexts)[mod].ir;
-        }
-        if (!ir) ir = current_ir;
-        if (ir && resolved.type_node != 0) {
-          NodeKind tnk = ir->nodes.kind[resolved.type_node];
-          if (tnk == NodeKind::EnumType) {
-            ct_kind = CTypeKind::Enum;
-          } else if (tnk == NodeKind::Ident) {
-            // simple builtin type alias: const AllocHandle := u64
-            SymId alias_name = ir->nodes.a[resolved.type_node];
-            std::string_view asv = interner.view(alias_name);
-            if (auto b = builtin_from_name(asv, out)) return *b;
-            // non-builtin ident alias: fall through to struct resolution
-          } else if (tnk == NodeKind::MetaBlock) {
-            // @gen type: evaluate meta block to select the concrete StructType
-            // apply type args as type_subst before evaluating
-            // (type_subst is already populated by the caller for mono instances;
-            //  for direct resolution we build a temporary subst from the type args)
-            NodeId effective_nid = eval_meta_block(resolved.type_node, *ir, nullptr);
-            if (effective_nid == 0) {
-              Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
-              return std::unexpected(Error{sp, "meta type evaluation failed"});
-            }
-            // the effective node should be a StructType — build a Struct CType with it
-            ct_kind = CTypeKind::Struct;
-          }
-        }
-      }
-      ct.kind = ct_kind;
-      ct.symbol = sid;
-
-      // lower generic type args (e.g., List<i32, 5>) and store in ct.list
       u32 targs_ls = type_ast.b[tid], targs_cnt = type_ast.c[tid];
-      if (targs_cnt > 0) {
-        std::vector<CTypeId> lowered;
-        for (u32 k = 0; k < targs_cnt; ++k) {
-          auto a = lower(type_ast.list[targs_ls + k]);
-          if (!a) return a;
-          lowered.push_back(*a);
-        }
-        auto [ls, cnt] = out.push_list(lowered.data(), lowered.size());
-        ct.list_start = ls;
-        ct.list_count = cnt;
-      }
-
-      return out.intern(ct);
+      Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
+      return lower_user_type(sid, targs_cnt > 0 ? &type_ast.list[targs_ls] : nullptr,
+                              targs_cnt, sp);
     } break;
 
     case TypeKind::QualNamed: {
@@ -272,68 +267,25 @@ struct TypeLowerer {
       SymId mod_prefix = static_cast<SymId>(type_ast.list[list_start]);
       Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
       if (!import_map) {
-        if (lenient) return out.builtin(CTypeKind::Void);
+        if (lenient) return kUnresolved;
         return std::unexpected(Error{sp, "no import map for qualified type"});
       }
       auto mit = import_map->find(mod_prefix);
       if (mit == import_map->end()) {
-        if (lenient) return out.builtin(CTypeKind::Void);
+        if (lenient) return kUnresolved;
         return std::unexpected(Error{sp, "unknown module prefix in qualified type"});
       }
       u32 dep_mod_idx = mit->second;
       SymbolId sid = syms.lookup_pub(dep_mod_idx, type_name);
       if (sid == kInvalidSymbol) {
-        if (lenient) return out.builtin(CTypeKind::Void);
+        if (lenient) return kUnresolved;
         // distinguish between "not found" and "not exported".
         if (syms.lookup(dep_mod_idx, type_name) != kInvalidSymbol)
           return std::unexpected(Error{sp, "type is not exported from module"});
         return std::unexpected(Error{sp, "unknown type in qualified reference"});
       }
-      if (syms.get(sid).aliased_sym != 0) sid = syms.get(sid).aliased_sym;
-      CType ct;
-      CTypeKind ct_kind = CTypeKind::Struct;
-      {
-        const Symbol &resolved = syms.get(sid);
-        const BodyIR *ir = nullptr;
-        if (module_contexts && dep_mod_idx < static_cast<u32>(module_contexts->size()))
-          ir = (*module_contexts)[dep_mod_idx].ir;
-        if (!ir) ir = current_ir;
-        if (ir && resolved.type_node != 0) {
-          NodeKind tnk = ir->nodes.kind[resolved.type_node];
-          if (tnk == NodeKind::EnumType) {
-            ct_kind = CTypeKind::Enum;
-          } else if (tnk == NodeKind::Ident) {
-            // simple builtin type alias: pub const AllocHandle := u64
-            SymId alias_name = ir->nodes.a[resolved.type_node];
-            std::string_view asv = interner.view(alias_name);
-            if (auto b = builtin_from_name(asv, out)) return *b;
-          } else if (tnk == NodeKind::MetaBlock) {
-            NodeId effective_nid = eval_meta_block(resolved.type_node, *ir, nullptr);
-            if (effective_nid == 0) {
-              Span sp{type_ast.span_s[tid], type_ast.span_e[tid]};
-              return std::unexpected(Error{sp, "meta type evaluation failed"});
-            }
-            ct_kind = CTypeKind::Struct;
-          }
-        }
-      }
-      ct.kind = ct_kind;
-      ct.symbol = sid;
-
-      // lower generic type args (e.g., mem::Alloc<i32>) and store in ct.list.
-      if (targs_count > 0) {
-        std::vector<CTypeId> lowered;
-        for (u32 k = 0; k < targs_count; ++k) {
-          auto a = lower(type_ast.list[list_start + 1 + k]);
-          if (!a) return a;
-          lowered.push_back(*a);
-        }
-        auto [ls, cnt] = out.push_list(lowered.data(), lowered.size());
-        ct.list_start = ls;
-        ct.list_count = cnt;
-      }
-
-      return out.intern(ct);
+      const TypeId *targ_ids = targs_count > 0 ? &type_ast.list[list_start + 1] : nullptr;
+      return lower_user_type(sid, targ_ids, targs_count, sp);
     } break;
 
     case TypeKind::Ref: {
@@ -428,3 +380,15 @@ struct TypeLowerer {
     return std::unexpected(Error{sp, "unhandled type kind in lowering"});
   }
 };
+
+inline TypeLowerer make_module_type_lowerer(
+    u32 mod_idx, const ModuleContext &ctx, const SymbolTable &syms,
+    const Interner &interner, TypeTable &types,
+    const std::vector<ModuleContext> *all_contexts) {
+  TypeLowerer tl(*ctx.type_ast, syms, interner, types);
+  tl.module_idx = mod_idx;
+  tl.module_contexts = all_contexts;
+  tl.current_ir = ctx.ir;
+  tl.import_map = ctx.import_map;
+  return tl;
+}

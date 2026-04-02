@@ -1,0 +1,9 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+# local type declarations should produce a clear error, not crash
+
+const main := fn() -> i32 {
+  const Color := enum { Red, Green, Blue };
+  return 0;
+}
+
+# CHECK: type declarations are not allowed inside function bodies

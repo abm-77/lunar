@@ -86,7 +86,8 @@ struct CodegenCtx {
 // inject the mono-instance type substitution (T→i32 etc.) into the TypeLowerer.
 // required for @size_of(T) / @align_of(T) emitted inside mono function bodies.
 inline void inject_mono_subst(const Symbol &sym, TypeLowerer &tl) {
-  for (auto &[k, v] : sym.mono_type_subst) tl.type_subst[k] = v;
+  if (sym.mono)
+    for (auto &[k, v] : sym.mono->type_subst) tl.type_subst[k] = v;
 }
 
 // for impl methods, inject "self" → owner struct CTypeId into the TypeLowerer's

@@ -1,0 +1,29 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# generic struct with positional construction and instance method call
+
+import sys.io.fmt => fmt;
+
+const Pair<A: type, B: type> := struct { a: A, b: B }
+
+impl Pair<A, B> {
+  const first := fn (&self) -> A { return self.a; }
+  const second := fn (&self) -> B { return self.b; }
+}
+
+const Box<T: type> := struct { val: T }
+
+const main := fn() -> i32 {
+  const p := Pair<i32, u32>(42, 99);
+  const a := p.first();
+  const b := p.second();
+  fmt::println("{} {}", []fmt::Arg{ fmt::arg_i32(a), fmt::arg_u32(b) });
+
+  # nested generic
+  const bp := Box<Pair<i32, u32>>(p);
+  fmt::println("{}", []fmt::Arg{ fmt::arg_i32(bp.val.a) });
+
+  return 0;
+}
+
+# CHECK: 42 99
+# CHECK: 42

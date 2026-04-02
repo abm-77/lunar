@@ -32,12 +32,17 @@ struct FuncEmitter {
   // scope stack: each entry maps SymId → alloca slot.
   std::vector<std::unordered_map<SymId, llvm::AllocaInst *>> scopes;
 
-  // compile-time @for_fields state: loop var SymId → (fname, field_idx, field_ctid).
-  // set during ForRange FieldIter unroll; used by emit_field and emit_meta_field.
+  // compile-time @for_fields state: loop var SymId → (fname, field_idx,
+  // field_ctid). set during ForRange FieldIter unroll; used by emit_field and
+  // emit_meta_field.
   std::unordered_map<SymId, std::tuple<SymId, u32, CTypeId>> active_field;
 
-  // loop context for break/continue: tracks the step and exit blocks of enclosing loops.
-  struct LoopCtx { llvm::BasicBlock *step_bb; llvm::BasicBlock *exit_bb; };
+  // loop context for break/continue: tracks the step and exit blocks of
+  // enclosing loops.
+  struct LoopCtx {
+    llvm::BasicBlock *step_bb;
+    llvm::BasicBlock *exit_bb;
+  };
   std::vector<LoopCtx> loop_stack;
 
   FuncEmitter(CodegenCtx &cg, llvm::Function &fn, const Symbol &sym,
@@ -56,14 +61,13 @@ struct FuncEmitter {
     for (u32 i = 0; i < sym.sig.params_count; ++i) {
       const FuncParam &fp = mod.params[sym.sig.params_start + i];
       llvm::Type *ty = nullptr;
-      if (has(sym.flags, SymFlags::MonoInstance)) {
-        // mono_concrete_params excludes self; mono_self_ctype holds it separately.
-        if (i == 0 && sym.mono_self_ctype != 0) {
-          ty = cg.type_lower.lower(sym.mono_self_ctype);
+      if (sym.is_mono()) {
+        if (i == 0 && sym.mono->self_ctype != 0) {
+          ty = cg.type_lower.lower(sym.mono->self_ctype);
         } else {
-          u32 pi = i - (sym.mono_self_ctype != 0 ? 1u : 0u);
-          if (pi < sym.mono_concrete_params.size())
-            ty = cg.type_lower.lower(sym.mono_concrete_params[pi]);
+          u32 pi = i - (sym.mono->self_ctype != 0 ? 1u : 0u);
+          if (pi < sym.mono->concrete_params.size())
+            ty = cg.type_lower.lower(sym.mono->concrete_params[pi]);
         }
       }
       if (!ty) {
@@ -115,7 +119,8 @@ struct FuncEmitter {
   llvm::AllocaInst *create_entry_alloca(llvm::Type *ty, std::string_view name) {
     auto &entry = fn.getEntryBlock();
     llvm::IRBuilder<> tmp(&entry, entry.begin());
-    return tmp.CreateAlloca(ty, nullptr, llvm::StringRef{name.data(), name.size()});
+    return tmp.CreateAlloca(ty, nullptr,
+                            llvm::StringRef{name.data(), name.size()});
   }
 
   // true if the current insert block ends with a terminator.
@@ -139,8 +144,12 @@ struct FuncEmitter {
     case NodeKind::VarStmt: emit_const(n); break;
     case NodeKind::AssignStmt: emit_assign(n); break;
     case NodeKind::ReturnStmt: emit_return(n); break;
-    case NodeKind::BreakStmt: builder.CreateBr(loop_stack.back().exit_bb); break;
-    case NodeKind::ContinueStmt: builder.CreateBr(loop_stack.back().step_bb); break;
+    case NodeKind::BreakStmt:
+      builder.CreateBr(loop_stack.back().exit_bb);
+      break;
+    case NodeKind::ContinueStmt:
+      builder.CreateBr(loop_stack.back().step_bb);
+      break;
     case NodeKind::IfStmt: emit_if(n); break;
     case NodeKind::ForStmt: emit_for(n); break;
     case NodeKind::ForRange: emit_for_range(n); break;
@@ -170,8 +179,7 @@ struct FuncEmitter {
     llvm::Type *ty = cg.type_lower.lower(ctid);
 
     auto *slot = create_entry_alloca(ty, cg.interner.view(var_name));
-    if (init_nid != 0)
-      builder.CreateStore(emit_expr(init_nid), slot);
+    if (init_nid != 0) builder.CreateStore(emit_expr(init_nid), slot);
     define_local(var_name, slot);
   }
 
@@ -189,30 +197,21 @@ struct FuncEmitter {
     // compound assignment: load, apply op, store.
     CTypeId lhs_ctid = bsema.node_type[ir.nodes.a[n]].concrete;
     CTypeKind lk = cg.sema.types.types[lhs_ctid].kind;
-    bool fp = is_float(lk);
-    bool sign = is_signed(lk);
     llvm::Type *lhs_ty = cg.type_lower.lower(lhs_ctid);
     llvm::Value *cur = builder.CreateLoad(lhs_ty, place);
 
-    llvm::Value *result = nullptr;
+    // map compound op to base op: += → +, -= → -, etc.
+    TokenKind base_op;
     switch (op) {
-    case TokenKind::PlusEqual:
-      result = fp ? builder.CreateFAdd(cur, rhs) : builder.CreateAdd(cur, rhs);
-      break;
-    case TokenKind::MinusEqual:
-      result = fp ? builder.CreateFSub(cur, rhs) : builder.CreateSub(cur, rhs);
-      break;
-    case TokenKind::StarEqual:
-      result = fp ? builder.CreateFMul(cur, rhs) : builder.CreateMul(cur, rhs);
-      break;
-    case TokenKind::SlashEqual:
-      result = fp     ? builder.CreateFDiv(cur, rhs)
-               : sign ? builder.CreateSDiv(cur, rhs)
-                      : builder.CreateUDiv(cur, rhs);
-      break;
-    default: assert(false && "unhandled compound assignment operator"); break;
+    case TokenKind::PlusEqual: base_op = TokenKind::Plus; break;
+    case TokenKind::MinusEqual: base_op = TokenKind::Minus; break;
+    case TokenKind::StarEqual: base_op = TokenKind::Star; break;
+    case TokenKind::SlashEqual: base_op = TokenKind::Slash; break;
+    default: assert(false && "unhandled compound assignment operator"); return;
     }
-    if (result) builder.CreateStore(result, place);
+    llvm::Value *result =
+        emit_arith_op(base_op, cur, rhs, is_float(lk), is_signed(lk));
+    builder.CreateStore(result, place);
   }
 
   void emit_return(NodeId n) {
@@ -250,9 +249,9 @@ struct FuncEmitter {
 
   void emit_meta_if(NodeId n) {
     // a = cond NodeId, b = then NodeId, c = else NodeId (0 or next MetaIf)
-    NodeId cond_n  = ir.nodes.a[n];
-    NodeId then_n  = ir.nodes.b[n];
-    NodeId else_n  = ir.nodes.c[n];
+    NodeId cond_n = ir.nodes.a[n];
+    NodeId then_n = ir.nodes.b[n];
+    NodeId else_n = ir.nodes.c[n];
     TypeLowerer tl = make_body_tl();
     auto result = tl.eval_const_bool(cond_n, ir);
     if (!result || *result) {
@@ -324,20 +323,20 @@ struct FuncEmitter {
     case NodeKind::ArrayLit: return emit_array_lit(n);
     case NodeKind::TupleLit: return emit_tuple_lit(n);
     case NodeKind::Path: return emit_path(n);
-    case NodeKind::CastAs:   return emit_cast_as(n);
-    case NodeKind::Bitcast:  return emit_bitcast(n);
+    case NodeKind::CastAs: return emit_cast_as(n);
+    case NodeKind::Bitcast: return emit_bitcast(n);
     case NodeKind::SliceLit: return emit_slice_lit(n);
-    case NodeKind::SiteId:   return emit_site_id(n);
-    case NodeKind::SizeOf:   return emit_size_of(n);
-    case NodeKind::AlignOf:  return emit_align_of(n);
+    case NodeKind::SiteId: return emit_site_id(n);
+    case NodeKind::SizeOf: return emit_size_of(n);
+    case NodeKind::AlignOf: return emit_align_of(n);
     case NodeKind::SliceCast: return emit_slice_cast(n);
     case NodeKind::AnonStructInit: return emit_anon_struct_init(n);
     case NodeKind::IterCreate: return emit_iter_create(n);
     case NodeKind::MetaField: return emit_meta_field(n);
-    case NodeKind::MemCpy:   return emit_memcpy(n);
-    case NodeKind::MemMov:   return emit_memmov(n);
-    case NodeKind::MemSet:   return emit_memset(n);
-    case NodeKind::MemCmp:   return emit_memcmp(n);
+    case NodeKind::MemCpy: return emit_memcpy(n);
+    case NodeKind::MemMov: return emit_memmov(n);
+    case NodeKind::MemSet: return emit_memset(n);
+    case NodeKind::MemCmp: return emit_memcmp(n);
     case NodeKind::ShaderTexture2d:
     case NodeKind::ShaderSampler:
     case NodeKind::ShaderSample:
@@ -351,17 +350,20 @@ struct FuncEmitter {
       // in a mono instance, resolve the type param to the concrete type name.
       SymId raw_sym = ir.nodes.a[n];
       std::string_view name = cg.interner.view(raw_sym);
-      auto sub = sym.mono_type_subst.find(raw_sym);
-      if (sub != sym.mono_type_subst.end()) {
-        CTypeId ctid = static_cast<CTypeId>(sub->second);
-        const CType &ct = cg.sema.types.types[ctid];
-        if (ct.symbol != 0)
-          name = cg.interner.view(cg.sema.syms.get(ct.symbol).name);
+      if (sym.mono) {
+        auto sub = sym.mono->type_subst.find(raw_sym);
+        if (sub != sym.mono->type_subst.end()) {
+          CTypeId ctid = static_cast<CTypeId>(sub->second);
+          const CType &ct = cg.sema.types.types[ctid];
+          if (ct.symbol != 0)
+            name = cg.interner.view(cg.sema.syms.get(ct.symbol).name);
+        }
       }
       std::string basename(name);
       basename += ".umsh";
       uint64_t id = fnv1a64(basename.data(), basename.size());
-      return llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()), id);
+      return llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
+                                    id);
     }
     default: assert(false && "unhandled expression kind"); return nullptr;
     }
@@ -389,13 +391,16 @@ struct FuncEmitter {
 
   llvm::Value *emit_str_lit(NodeId n) {
     auto sv = cg.interner.view(ir.nodes.a[n]);
-    llvm::Value *ptr = builder.CreateGlobalString(llvm::StringRef{sv.data(), sv.size()});
+    llvm::Value *ptr =
+        builder.CreateGlobalString(llvm::StringRef{sv.data(), sv.size()});
     llvm::Type *slice_ty = cg.type_lower.lower(bsema.node_type[n].concrete);
     llvm::Value *s = llvm::UndefValue::get(slice_ty);
     s = builder.CreateInsertValue(s, ptr, 0);
     s = builder.CreateInsertValue(
-          s, llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
-                                    sv.size()), 1);
+        s,
+        llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
+                               sv.size()),
+        1);
     return s;
   }
 
@@ -414,8 +419,8 @@ struct FuncEmitter {
       return it->second;
 
     // const-generic parameter: emit the monomorphized value as a constant
-    if (auto it = sym.mono_const_values.find(name);
-        it != sym.mono_const_values.end()) {
+    if (sym.mono) if (auto it = sym.mono->const_values.find(name);
+        it != sym.mono->const_values.end()) {
       CTypeId ctid = bsema.node_type[n].concrete;
       llvm::Type *ty = cg.type_lower.lower(ctid);
       return llvm::ConstantInt::get(ty, it->second);
@@ -425,20 +430,11 @@ struct FuncEmitter {
     return nullptr;
   }
 
-  llvm::Value *emit_binary(NodeId n) {
-    auto op = static_cast<TokenKind>(ir.nodes.a[n]);
-
-    if (op == TokenKind::AmpAmp) return emit_and(n);
-    if (op == TokenKind::PipePipe) return emit_or(n);
-
-    llvm::Value *lv = emit_expr(ir.nodes.b[n]);
-    llvm::Value *rv = emit_expr(ir.nodes.c[n]);
-
-    CTypeKind lk =
-        cg.sema.types.types[bsema.node_type[ir.nodes.b[n]].concrete].kind;
-    bool fp = is_float(lk);
-    bool sign = is_signed(lk);
-
+  // dispatch a single arithmetic/comparison op on two operands.
+  // op should be a base operator (Plus, Minus, etc.), not a compound
+  // (PlusEqual).
+  llvm::Value *emit_arith_op(TokenKind op, llvm::Value *lv, llvm::Value *rv,
+                             bool fp, bool sign) {
     switch (op) {
     case TokenKind::Plus:
       return fp ? builder.CreateFAdd(lv, rv) : builder.CreateAdd(lv, rv);
@@ -470,8 +466,22 @@ struct FuncEmitter {
       return fp     ? builder.CreateFCmpOGE(lv, rv)
              : sign ? builder.CreateICmpSGE(lv, rv)
                     : builder.CreateICmpUGE(lv, rv);
-    default: assert(false && "unhandled binary operator"); return nullptr;
+    default: assert(false && "unhandled arithmetic operator"); return nullptr;
     }
+  }
+
+  llvm::Value *emit_binary(NodeId n) {
+    auto op = static_cast<TokenKind>(ir.nodes.a[n]);
+
+    if (op == TokenKind::AmpAmp) return emit_and(n);
+    if (op == TokenKind::PipePipe) return emit_or(n);
+
+    llvm::Value *lv = emit_expr(ir.nodes.b[n]);
+    llvm::Value *rv = emit_expr(ir.nodes.c[n]);
+
+    CTypeKind lk =
+        cg.sema.types.types[bsema.node_type[ir.nodes.b[n]].concrete].kind;
+    return emit_arith_op(op, lv, rv, is_float(lk), is_signed(lk));
   }
 
   // short-circuit &&: if lhs is false, result is false without evaluating rhs.
@@ -562,7 +572,8 @@ struct FuncEmitter {
       auto *slot = create_entry_alloca(sty, "sctor");
       for (u32 i = 0; i < args_count; ++i) {
         NodeId val_nid = ir.nodes.list[args_start + i];
-        llvm::Value *val = coerce_int(emit_expr(val_nid), sty_s->getElementType(i), val_nid);
+        llvm::Value *val =
+            coerce_int(emit_expr(val_nid), sty_s->getElementType(i), val_nid);
         auto *fp = builder.CreateStructGEP(sty, slot, i);
         builder.CreateStore(val, fp);
       }
@@ -578,7 +589,8 @@ struct FuncEmitter {
     }
 
     if (!callee_val) {
-      // function pointer call: emit callee as a value and look up its FunctionType.
+      // function pointer call: emit callee as a value and look up its
+      // FunctionType.
       callee_val = emit_expr(callee_nid);
       CTypeId callee_ctid = bsema.node_type[callee_nid].concrete;
       auto fti = cg.type_lower.fn_type_cache.find(callee_ctid);
@@ -593,10 +605,10 @@ struct FuncEmitter {
     if (ir.nodes.kind[callee_nid] == NodeKind::Field) {
       NodeId base_nid = ir.nodes.a[callee_nid];
       u32 self_idx = 0;
-      if (self_idx < ft->getNumParams() && ft->getParamType(self_idx)->isPointerTy())
+      if (self_idx < ft->getNumParams() &&
+          ft->getParamType(self_idx)->isPointerTy())
         args.push_back(emit_place(base_nid));
-      else
-        args.push_back(emit_expr(base_nid));
+      else args.push_back(emit_expr(base_nid));
     }
 
     for (u32 i = 0; i < args_count; ++i)
@@ -609,8 +621,8 @@ struct FuncEmitter {
       const Module &callee_mod_data = cg.modules[callee_sym.module_idx].mod;
       const BodyIR &callee_ir = cg.modules[callee_sym.module_idx].ir;
       u32 ps = callee_sym.sig.params_start;
-      for (u32 ai = static_cast<u32>(args.size());
-           ai < ft->getNumParams(); ++ai) {
+      for (u32 ai = static_cast<u32>(args.size()); ai < ft->getNumParams();
+           ++ai) {
         const FuncParam &fp = callee_mod_data.params[ps + ai];
         assert(fp.default_init != 0 && "missing argument with no default");
         args.push_back(emit_default(fp.default_init, callee_ir, callee_sym,
@@ -632,14 +644,17 @@ struct FuncEmitter {
       if (ait != active_field.end()) {
         SymId fname = std::get<0>(ait->second);
         auto sv = cg.interner.view(fname);
-        llvm::Value *ptr = builder.CreateGlobalString(llvm::StringRef{sv.data(), sv.size()});
+        llvm::Value *ptr =
+            builder.CreateGlobalString(llvm::StringRef{sv.data(), sv.size()});
         CTypeId slice_ctid = bsema.node_type[n].concrete;
         llvm::Type *slice_ty = cg.type_lower.lower(slice_ctid);
         llvm::Value *s = llvm::UndefValue::get(slice_ty);
         s = builder.CreateInsertValue(s, ptr, 0);
         s = builder.CreateInsertValue(
-              s, llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
-                                        sv.size()), 1);
+            s,
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()),
+                                   sv.size()),
+            1);
         return s;
       }
     }
@@ -656,7 +671,8 @@ struct FuncEmitter {
     CTypeId base_ctid = bsema.node_type[ir.nodes.a[n]].concrete;
     // peel Ref to get array CTypeId and its element type.
     const CType &base_ct = cg.sema.types.types[base_ctid];
-    CTypeId arr_ctid = base_ct.kind == CTypeKind::Ref ? base_ct.inner : base_ctid;
+    CTypeId arr_ctid =
+        base_ct.kind == CTypeKind::Ref ? base_ct.inner : base_ctid;
     CTypeId elem_ctid = cg.sema.types.types[arr_ctid].inner;
     llvm::Type *elem_ty = cg.type_lower.lower(elem_ctid);
     return builder.CreateLoad(elem_ty, elem_ptr);
@@ -699,14 +715,16 @@ struct FuncEmitter {
       if (set_fields.count(fi)) continue;
       auto *fp = builder.CreateStructGEP(sty, slot, fi);
       llvm::Type *ft = sty_s->getElementType(fi);
-      builder.CreateMemSet(fp, builder.getInt8(0), dl.getTypeAllocSize(ft), llvm::MaybeAlign());
+      builder.CreateMemSet(fp, builder.getInt8(0), dl.getTypeAllocSize(ft),
+                           llvm::MaybeAlign());
     }
     for (u32 i = 0; i < fields_count; ++i) {
       SymId field_name = ir.nodes.list[fields_start + (i * 2)];
       NodeId val_nid = ir.nodes.list[fields_start + (i * 2) + 1];
       u32 idx = cg.type_lower.field_index(struct_sym, field_name, ctid);
       auto *field_ptr = builder.CreateStructGEP(sty, slot, idx);
-      llvm::Value *val = coerce_int(emit_expr(val_nid), sty_s->getElementType(idx), val_nid);
+      llvm::Value *val =
+          coerce_int(emit_expr(val_nid), sty_s->getElementType(idx), val_nid);
       builder.CreateStore(val, field_ptr);
     }
 
@@ -719,25 +737,26 @@ struct FuncEmitter {
     CTypeId ctid = bsema.node_type[n].concrete;
     const CType &ct = cg.sema.types.types[ctid];
 
-    // node_type overridden to slice by sema; store array in temp alloca and return { ptr, len }.
+    // node_type overridden to slice by sema; store array in temp alloca and
+    // return { ptr, len }.
     if (ct.kind == CTypeKind::Slice) {
       CTypeId elem_ctid = ct.inner;
-      llvm::Type *ety  = cg.type_lower.lower(elem_ctid);
-      u64 count        = al.explicit_count;
-      llvm::Type *aty  = llvm::ArrayType::get(ety, count);
-      llvm::Type *i64  = llvm::Type::getInt64Ty(fn.getContext());
+      llvm::Type *ety = cg.type_lower.lower(elem_ctid);
+      u64 count = al.explicit_count;
+      llvm::Type *aty = llvm::ArrayType::get(ety, count);
+      llvm::Type *i64 = llvm::Type::getInt64Ty(fn.getContext());
       auto *slot = create_entry_alloca(aty, "a2s.arr");
       fill_array_slot(slot, aty, ety, al);
-      llvm::Value *ptr = builder.CreateGEP(aty, slot,
-          {builder.getInt32(0), builder.getInt32(0)});
+      llvm::Value *ptr = builder.CreateGEP(
+          aty, slot, {builder.getInt32(0), builder.getInt32(0)});
       llvm::Value *s = llvm::UndefValue::get(cg.type_lower.lower(ctid));
       s = builder.CreateInsertValue(s, ptr, 0);
       s = builder.CreateInsertValue(s, llvm::ConstantInt::get(i64, count), 1);
       return s;
     }
 
-    llvm::Type *aty      = cg.type_lower.lower(ctid);
-    llvm::Type *ety      = cg.type_lower.lower(ct.inner);
+    llvm::Type *aty = cg.type_lower.lower(ctid);
+    llvm::Type *ety = cg.type_lower.lower(ct.inner);
     auto *slot = create_entry_alloca(aty, "arrinit");
     fill_array_slot(slot, aty, ety, al);
     return builder.CreateLoad(aty, slot);
@@ -750,8 +769,8 @@ struct FuncEmitter {
     } else {
       for (u32 i = 0; i < al.values_count; ++i) {
         NodeId val_nid = ir.nodes.list[al.values_start + i];
-        auto *ep = builder.CreateGEP(aty, slot,
-            {builder.getInt32(0), builder.getInt32(i)});
+        auto *ep = builder.CreateGEP(
+            aty, slot, {builder.getInt32(0), builder.getInt32(i)});
         builder.CreateStore(coerce_int(emit_expr(val_nid), ety, val_nid), ep);
       }
     }
@@ -770,7 +789,8 @@ struct FuncEmitter {
     for (u32 i = 0; i < elems_count; ++i) {
       NodeId val_nid = ir.nodes.list[elems_start + i];
       auto *fp = builder.CreateStructGEP(tty, slot, i);
-      llvm::Value *val = coerce_int(emit_expr(val_nid), tty_s->getElementType(i), val_nid);
+      llvm::Value *val =
+          coerce_int(emit_expr(val_nid), tty_s->getElementType(i), val_nid);
       builder.CreateStore(val, fp);
     }
     return builder.CreateLoad(tty, slot);
@@ -823,8 +843,8 @@ struct FuncEmitter {
     // store each element
     for (u32 k = 0; k < cnt; ++k) {
       NodeId val_nid = ir.nodes.list[ir.nodes.b[n] + k];
-      auto *ep = builder.CreateGEP(
-          arr_ty, arr_slot, {builder.getInt32(0), builder.getInt32(k)});
+      auto *ep = builder.CreateGEP(arr_ty, arr_slot,
+                                   {builder.getInt32(0), builder.getInt32(k)});
       builder.CreateStore(emit_expr(val_nid), ep);
     }
 
@@ -836,7 +856,8 @@ struct FuncEmitter {
     llvm::Value *s = llvm::UndefValue::get(slice_ty);
     s = builder.CreateInsertValue(s, ptr, 0);
     s = builder.CreateInsertValue(
-          s, llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()), cnt), 1);
+        s, llvm::ConstantInt::get(llvm::Type::getInt64Ty(fn.getContext()), cnt),
+        1);
     return s;
   }
 
@@ -848,7 +869,8 @@ struct FuncEmitter {
                                   site_idx);
   }
 
-  // create a TypeLowerer for the current function body with all substitutions applied (self + mono type params).
+  // create a TypeLowerer for the current function body with all substitutions
+  // applied (self + mono type params).
   TypeLowerer make_body_tl() const {
     TypeLowerer tl = cg.make_type_lowerer(sym.module_idx);
     inject_self_subst(sym, tl, cg);
@@ -882,7 +904,8 @@ struct FuncEmitter {
   }
 
   llvm::Value *emit_slice_cast(NodeId n) {
-    // pure type-level reinterpret: same {ptr, len} values, different element type.
+    // pure type-level reinterpret: same {ptr, len} values, different element
+    // type.
     llvm::Value *src = emit_expr(ir.nodes.a[n]);
     llvm::Value *ptr = builder.CreateExtractValue(src, 0);
     llvm::Value *len = builder.CreateExtractValue(src, 1);
@@ -897,8 +920,8 @@ struct FuncEmitter {
   llvm::Value *emit_memcpy(NodeId n) {
     // @memcpy(dest, src, byte_count) — no-overlap copy
     llvm::Value *dest = emit_expr(ir.nodes.a[n]);
-    llvm::Value *src  = emit_expr(ir.nodes.b[n]);
-    llvm::Value *cnt  = emit_expr(ir.nodes.c[n]);
+    llvm::Value *src = emit_expr(ir.nodes.b[n]);
+    llvm::Value *cnt = emit_expr(ir.nodes.c[n]);
     builder.CreateMemCpy(dest, llvm::Align(1), src, llvm::Align(1), cnt);
     return llvm::UndefValue::get(llvm::Type::getVoidTy(fn.getContext()));
   }
@@ -906,8 +929,8 @@ struct FuncEmitter {
   llvm::Value *emit_memmov(NodeId n) {
     // @memmov(dest, src, byte_count) — overlap-safe move
     llvm::Value *dest = emit_expr(ir.nodes.a[n]);
-    llvm::Value *src  = emit_expr(ir.nodes.b[n]);
-    llvm::Value *cnt  = emit_expr(ir.nodes.c[n]);
+    llvm::Value *src = emit_expr(ir.nodes.b[n]);
+    llvm::Value *cnt = emit_expr(ir.nodes.c[n]);
     builder.CreateMemMove(dest, llvm::Align(1), src, llvm::Align(1), cnt);
     return llvm::UndefValue::get(llvm::Type::getVoidTy(fn.getContext()));
   }
@@ -915,12 +938,11 @@ struct FuncEmitter {
   llvm::Value *emit_memset(NodeId n) {
     // @memset(dest, value_u8, byte_count) — fill bytes
     llvm::Value *dest = emit_expr(ir.nodes.a[n]);
-    llvm::Value *val  = emit_expr(ir.nodes.b[n]);
-    llvm::Value *cnt  = emit_expr(ir.nodes.c[n]);
+    llvm::Value *val = emit_expr(ir.nodes.b[n]);
+    llvm::Value *cnt = emit_expr(ir.nodes.c[n]);
     // memset value must be i8; truncate if the user passed a wider int
     llvm::Type *i8 = llvm::Type::getInt8Ty(fn.getContext());
-    if (val->getType() != i8)
-      val = builder.CreateTrunc(val, i8);
+    if (val->getType() != i8) val = builder.CreateTrunc(val, i8);
     builder.CreateMemSet(dest, val, cnt, llvm::Align(1));
     return llvm::UndefValue::get(llvm::Type::getVoidTy(fn.getContext()));
   }
@@ -934,8 +956,7 @@ struct FuncEmitter {
     llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
     llvm::Type *i64 = llvm::Type::getInt64Ty(ctx);
     llvm::Type *ptr = llvm::PointerType::getUnqual(ctx);
-    if (cnt->getType() != i64)
-      cnt = builder.CreateZExtOrTrunc(cnt, i64);
+    if (cnt->getType() != i64) cnt = builder.CreateZExtOrTrunc(cnt, i64);
     auto *fty = llvm::FunctionType::get(i32, {ptr, ptr, i64}, false);
     auto callee = cg.module->getOrInsertFunction("memcmp", fty);
     return builder.CreateCall(fty, callee.getCallee(), {lhs, rhs, cnt});
@@ -959,10 +980,11 @@ struct FuncEmitter {
     u32 ifs = ir.nodes.b[n], ifc = ir.nodes.c[n];
     for (u32 i = 0; i < ifc; ++i) {
       SymId iname = static_cast<SymId>(ir.nodes.list[ifs + i * 2]);
-      NodeId ival  = static_cast<NodeId>(ir.nodes.list[ifs + i * 2 + 1]);
+      NodeId ival = static_cast<NodeId>(ir.nodes.list[ifs + i * 2 + 1]);
       u32 idx = field_pos.at(iname);
       auto *fp = builder.CreateStructGEP(tty, slot, idx);
-      llvm::Value *val = coerce_int(emit_expr(ival), tty_s->getElementType(idx), ival);
+      llvm::Value *val =
+          coerce_int(emit_expr(ival), tty_s->getElementType(idx), ival);
       builder.CreateStore(val, fp);
     }
     return builder.CreateLoad(tty, slot);
@@ -970,10 +992,10 @@ struct FuncEmitter {
 
   llvm::Value *emit_iter_create(NodeId n) {
     NodeId src_n = ir.nodes.a[n];
-    CTypeId src_ctid  = bsema.node_type[src_n].concrete;
+    CTypeId src_ctid = bsema.node_type[src_n].concrete;
     CTypeId iter_ctid = bsema.node_type[n].concrete;
     llvm::Type *iter_ty = cg.type_lower.lower(iter_ctid);
-    llvm::Type *i64     = llvm::Type::getInt64Ty(fn.getContext());
+    llvm::Type *i64 = llvm::Type::getInt64Ty(fn.getContext());
 
     llvm::Value *data_ptr, *len_val;
     const CType &sct = cg.sema.types.types[src_ctid];
@@ -981,25 +1003,26 @@ struct FuncEmitter {
       llvm::Type *arr_ty = cg.type_lower.lower(src_ctid);
       auto *arr_slot = create_entry_alloca(arr_ty, "iter.arr");
       builder.CreateStore(emit_expr(src_n), arr_slot);
-      data_ptr = builder.CreateGEP(arr_ty, arr_slot,
+      data_ptr = builder.CreateGEP(
+          arr_ty, arr_slot,
           {llvm::ConstantInt::get(i64, 0), llvm::ConstantInt::get(i64, 0)});
       len_val = llvm::ConstantInt::get(i64, sct.count);
     } else { // Slice
       llvm::Value *sv = emit_expr(src_n);
       data_ptr = builder.CreateExtractValue(sv, 0);
-      len_val  = builder.CreateExtractValue(sv, 1);
+      len_val = builder.CreateExtractValue(sv, 1);
     }
 
     llvm::Value *it = llvm::UndefValue::get(iter_ty);
     it = builder.CreateInsertValue(it, data_ptr, 0);
-    it = builder.CreateInsertValue(it, len_val,  1);
+    it = builder.CreateInsertValue(it, len_val, 1);
     it = builder.CreateInsertValue(it, llvm::ConstantInt::get(i64, 0), 2);
     return it;
   }
 
   llvm::Value *emit_meta_field(NodeId n) {
     // a = obj NodeId, b = field_var SymId
-    NodeId obj_nid  = ir.nodes.a[n];
+    NodeId obj_nid = ir.nodes.a[n];
     SymId field_var = ir.nodes.b[n];
 
     auto ait = active_field.find(field_var);
@@ -1024,8 +1047,10 @@ struct FuncEmitter {
     return builder.CreateLoad(field_ty, field_ptr);
   }
 
-  // compile-time unroll of @for_fields — iterates struct fields and emits body once per field.
-  void emit_for_fields_unroll(SymId var_name, NodeId body_n, SymbolId struct_sym_id) {
+  // compile-time unroll of @for_fields — iterates struct fields and emits body
+  // once per field.
+  void emit_for_fields_unroll(SymId var_name, NodeId body_n,
+                              SymbolId struct_sym_id) {
     const Symbol &struct_sym = cg.sema.syms.symbols[struct_sym_id];
     const BodyIR &struct_ir = cg.modules[struct_sym.module_idx].ir;
     NodeId stype_nid = struct_sym.type_node;
@@ -1040,7 +1065,7 @@ struct FuncEmitter {
     push_scope();
     for (u32 fi = 0; fi < field_count; ++fi) {
       SymId fname = struct_ir.nodes.list[ls + fi * 2];
-      TypeId ftid  = struct_ir.nodes.list[ls + fi * 2 + 1];
+      TypeId ftid = struct_ir.nodes.list[ls + fi * 2 + 1];
       auto fctid_r = field_tl.lower(ftid);
       CTypeId fctid = fctid_r ? *fctid_r : 0;
       active_field[var_name] = std::make_tuple(fname, fi, fctid);
@@ -1052,8 +1077,8 @@ struct FuncEmitter {
 
   void emit_for_range(NodeId n) {
     SymId var_name = static_cast<SymId>(ir.nodes.a[n]);
-    NodeId iter_n  = ir.nodes.b[n];
-    NodeId body_n  = ir.nodes.c[n];
+    NodeId iter_n = ir.nodes.b[n];
+    NodeId body_n = ir.nodes.c[n];
     auto &ctx = fn.getContext();
 
     CTypeId iter_ctid = bsema.node_type[iter_n].concrete;
@@ -1068,7 +1093,7 @@ struct FuncEmitter {
     CTypeId elem_ctid = ict.inner;
     llvm::Type *iter_ty = cg.type_lower.lower(iter_ctid); // { ptr*, i64, i64 }
     llvm::Type *elem_ty = cg.type_lower.lower(elem_ctid);
-    llvm::Type *i64     = llvm::Type::getInt64Ty(ctx);
+    llvm::Type *i64 = llvm::Type::getInt64Ty(ctx);
 
     push_scope();
 
@@ -1079,9 +1104,9 @@ struct FuncEmitter {
     define_local(var_name, var_slot);
 
     auto *header_bb = llvm::BasicBlock::Create(ctx, "forin.header", &fn);
-    auto *body_bb   = llvm::BasicBlock::Create(ctx, "forin.body",   &fn);
-    auto *step_bb   = llvm::BasicBlock::Create(ctx, "forin.step",   &fn);
-    auto *exit_bb   = llvm::BasicBlock::Create(ctx, "forin.exit",   &fn);
+    auto *body_bb = llvm::BasicBlock::Create(ctx, "forin.body", &fn);
+    auto *step_bb = llvm::BasicBlock::Create(ctx, "forin.step", &fn);
+    auto *exit_bb = llvm::BasicBlock::Create(ctx, "forin.exit", &fn);
 
     builder.CreateBr(header_bb);
 
@@ -1108,24 +1133,22 @@ struct FuncEmitter {
     // step: idx += 1; back to header
     builder.SetInsertPoint(step_bb);
     llvm::Value *cur_idx = builder.CreateLoad(i64, idx_ptr);
-    builder.CreateStore(builder.CreateAdd(cur_idx, llvm::ConstantInt::get(i64, 1)), idx_ptr);
+    builder.CreateStore(
+        builder.CreateAdd(cur_idx, llvm::ConstantInt::get(i64, 1)), idx_ptr);
     builder.CreateBr(header_bb);
 
     builder.SetInsertPoint(exit_bb);
     pop_scope();
   }
 
-
   // emit a default-parameter constant expression from the callee's BodyIR.
   // expected_ty: the LLVM type of the corresponding parameter (for IntLit).
-  llvm::Value *emit_default(NodeId n, const BodyIR &src_ir,
-                            const Symbol &csym,
+  llvm::Value *emit_default(NodeId n, const BodyIR &src_ir, const Symbol &csym,
                             llvm::Type *expected_ty = nullptr) {
     switch (src_ir.nodes.kind[n]) {
     case NodeKind::SiteId: {
       const LoadedModule &lm = cg.modules[csym.module_idx];
-      u32 site_idx =
-          cg.alloc_site(lm.src, src_ir.nodes.span_s[n], lm.rel_path);
+      u32 site_idx = cg.alloc_site(lm.src, src_ir.nodes.span_s[n], lm.rel_path);
       return llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()),
                                     site_idx);
     }
@@ -1154,8 +1177,8 @@ struct FuncEmitter {
                                     align);
     }
     case NodeKind::IntLit: {
-      llvm::Type *ty = expected_ty ? expected_ty
-                                   : llvm::Type::getInt64Ty(fn.getContext());
+      llvm::Type *ty =
+          expected_ty ? expected_ty : llvm::Type::getInt64Ty(fn.getContext());
       return llvm::ConstantInt::get(ty, src_ir.nodes.a[n]);
     }
     case NodeKind::BoolLit: {
@@ -1191,9 +1214,10 @@ struct FuncEmitter {
 
     SymbolId sym_id = bsema.node_symbol[n];
     if (sym_id != 0) {
-      // sema resolved it — static method, cross-module function, or cross-module
-      // enum type (when the path is module::Enum::Variant and Variant is not a
-      // method). in the last case sym_id points to the Type symbol, not fn_map.
+      // sema resolved it — static method, cross-module function, or
+      // cross-module enum type (when the path is module::Enum::Variant and
+      // Variant is not a method). in the last case sym_id points to the Type
+      // symbol, not fn_map.
       auto it = cg.fn_map.find(sym_id);
       if (it != cg.fn_map.end()) return it->second;
 
@@ -1273,7 +1297,8 @@ struct FuncEmitter {
     if (cg.sema.types.types[struct_ctid].kind == CTypeKind::Tuple &&
         cg.sema.types.types[struct_ctid].symbol != 0) {
       // anonymous struct stored as Tuple; .symbol holds the StructType NodeId.
-      NodeId stype_nid = static_cast<NodeId>(cg.sema.types.types[struct_ctid].symbol);
+      NodeId stype_nid =
+          static_cast<NodeId>(cg.sema.types.types[struct_ctid].symbol);
       u32 sf_start = ir.nodes.b[stype_nid], sf_count = ir.nodes.c[stype_nid];
       for (u32 i = 0; i < sf_count; ++i) {
         SymId fname = static_cast<SymId>(ir.nodes.list[sf_start + i * 2]);
@@ -1290,7 +1315,8 @@ struct FuncEmitter {
       auto fname = cg.interner.view(field_name);
       llvm::Type *iter_ty = cg.type_lower.lower(struct_ctid);
       u32 idx = (fname == "len" || fname == "count") ? 1u
-              : (fname == "idx")                      ? 2u : 0u;
+                : (fname == "idx")                   ? 2u
+                                                     : 0u;
       return builder.CreateStructGEP(iter_ty, base_ptr, idx);
     }
 
@@ -1347,11 +1373,14 @@ struct FuncEmitter {
            k == CTypeKind::I64;
   }
 
-  // widen or truncate val to expected if both are integer types; no-op otherwise.
-  llvm::Value *coerce_int(llvm::Value *val, llvm::Type *expected, NodeId src_n) {
+  // widen or truncate val to expected if both are integer types; no-op
+  // otherwise.
+  llvm::Value *coerce_int(llvm::Value *val, llvm::Type *expected,
+                          NodeId src_n) {
     if (val->getType() == expected) return val;
     if (!val->getType()->isIntegerTy() || !expected->isIntegerTy()) return val;
-    bool sign = is_signed(cg.sema.types.types[bsema.node_type[src_n].concrete].kind);
+    bool sign =
+        is_signed(cg.sema.types.types[bsema.node_type[src_n].concrete].kind);
     return builder.CreateIntCast(val, expected, sign);
   }
 

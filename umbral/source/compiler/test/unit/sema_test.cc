@@ -30,7 +30,7 @@ struct SemaFixture : ::testing::Test {
     EXPECT_TRUE(lex_result->has_value()) << "lex failed";
     IntrinsicTable intrinsics;
     intrinsics.init(interner);
-    parser.emplace(lex_result->value(), intrinsics, interner);
+    parser.emplace(lex_result->value(), intrinsics, interner, src);
     parser->parse_module();
     EXPECT_FALSE(parser->error().has_value())
         << "parse error: " << (parser->error() ? parser->error()->msg : "");
@@ -538,6 +538,81 @@ TEST_F(SemaFixture, IntLiteralWidensInAssign) {
   EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }
 
+// tuple field access
+
+TEST_F(SemaFixture, TupleFieldAccess) {
+  auto sr = sema(
+      "const f := fn () -> i32 {"
+      "  const t := (10, 20);"
+      "  return t.0 + t.1;"
+      "}");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, TupleFieldOutOfRange) {
+  auto sr = sema(
+      "const f := fn () -> i32 {"
+      "  const t := (10, 20);"
+      "  return t.5;"
+      "}");
+  EXPECT_FALSE(sr.has_value());
+  if (!sr.has_value())
+    EXPECT_NE(sr.error().msg.find("out of range"), std::string::npos)
+        << "error was: " << sr.error().msg;
+}
+
+// slice field access
+
+TEST_F(SemaFixture, SliceFieldLen) {
+  auto sr = sema(
+      "const f := fn (s: []u8) -> u64 { return s.len; }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, SliceFieldPtr) {
+  auto sr = sema(
+      "const f := fn (s: []u8) -> &u8 { return s.ptr; }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+// enum and cast
+
+TEST_F(SemaFixture, EnumVariantType) {
+  auto sr = sema(
+      "const Color: type = enum { Red, Green, Blue }"
+      "const f := fn () -> Color { return Color::Blue; }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+// break/continue outside loop
+
+TEST_F(SemaFixture, BreakOutsideLoopError) {
+  auto sr = sema(
+      "const f := fn () -> void { break; }");
+  EXPECT_FALSE(sr.has_value());
+  if (!sr.has_value())
+    EXPECT_NE(sr.error().msg.find("outside"), std::string::npos)
+        << "error was: " << sr.error().msg;
+}
+
+TEST_F(SemaFixture, ContinueOutsideLoopError) {
+  auto sr = sema(
+      "const f := fn () -> void { continue; }");
+  EXPECT_FALSE(sr.has_value());
+  if (!sr.has_value())
+    EXPECT_NE(sr.error().msg.find("outside"), std::string::npos)
+        << "error was: " << sr.error().msg;
+}
+
+// generic function
+
+TEST_F(SemaFixture, GenericFreeFunction) {
+  auto sr = sema(
+      "const identity<T: type>(x: T) -> T { return x; }"
+      "const f := fn () -> i32 { return identity(42); }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
 // Non-exported symbol errors
 
 TEST_F(MultiModFixture, NonExportedFunctionError) {
@@ -562,4 +637,108 @@ TEST_F(MultiModFixture, NonExportedTypeError) {
   if (!sr.has_value())
     EXPECT_NE(sr.error().msg.find("not exported"), std::string::npos)
         << "error was: " << sr.error().msg;
+}
+
+// monomorphization
+
+TEST_F(SemaFixture, GenericStructStaticMethod) {
+  auto sr = sema(
+      "const Pair<A: type, B: type> := struct { a: A, b: B }"
+      "impl Pair<A, B> {"
+      "  const make := fn (a: A, b: B) -> Pair<A, B> {"
+      "    return Pair<A, B> { a = a, b = b };"
+      "  }"
+      "}"
+      "const f := fn () -> void {"
+      "  const p := Pair<i32, u32>::make(10, 20);"
+      "}");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, GenericStructInstanceMethod) {
+  // instance method on generic struct — return type must resolve through mono subst
+  auto sr = sema(
+      "const Pair<A: type, B: type> := struct { a: A, b: B }"
+      "impl Pair<A, B> {"
+      "  const first := fn (&self) -> A { return self.a; }"
+      "}"
+      "const f := fn () -> i32 {"
+      "  const p := Pair<i32, u32>(10, 20);"
+      "  return p.first();"
+      "}");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, MultipleInstantiationsOfSameGeneric) {
+  // two distinct instantiations of the same generic in one function.
+  // typed helper functions force the literal to the desired type before passing
+  // to identity<T>, since bidirectional inference from declaration to generic
+  // return type is not supported.
+  auto sr = sema(
+      "const as_i32 := fn (x: i32) -> i32 { return x; }"
+      "const as_u64 := fn (x: u64) -> u64 { return x; }"
+      "const identity<T: type>(x: T) -> T { return x; }"
+      "const f := fn () -> i32 {"
+      "  const a := identity(as_i32(42));"
+      "  const b := identity(as_u64(99));"
+      "  return a;"
+      "}");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, ConstGenericParam) {
+  auto sr = sema(
+      "const fixed_val<N: u32>() -> u32 { return N; }"
+      "const f := fn () -> u32 { return fixed_val<5>(); }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, NestedGenericStruct) {
+  // nested generic: Box<Box<i32>> with field access through both layers
+  auto sr = sema(
+      "const Box<T: type> := struct { val: T }"
+      "const f := fn () -> i32 {"
+      "  const inner := Box<i32>(42);"
+      "  const outer := Box<Box<i32>>(inner);"
+      "  return outer.val.val;"
+      "}");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(SemaFixture, TypeAliasChain) {
+  auto sr = sema(
+      "const Handle := u64;"
+      "const f := fn (h: Handle) -> Handle { return h; }");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(MultiModFixture, CrossModuleGenericStructInit) {
+  // cross-module named init on a generic struct type
+  write("container.um",
+        "@pub const Box<T: type> := struct { val: T }");
+  write("main.um",
+        "import container;"
+        "const f := fn () -> void {"
+        "  const b := container::Box<i32> { val = 42 };"
+        "}");
+  auto sr = sema("main.um");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
+}
+
+TEST_F(MultiModFixture, CrossModuleGenericStaticMethod) {
+  // impl methods are automatically accessible when the type is @pub
+  write("pair.um",
+        "@pub const Pair<A: type, B: type> := struct { a: A, b: B }"
+        "impl Pair<A, B> {"
+        "  const make := fn (a: A, b: B) -> Pair<A, B> {"
+        "    return Pair<A, B> { a = a, b = b };"
+        "  }"
+        "}");
+  write("main.um",
+        "import pair;"
+        "const f := fn () -> void {"
+        "  const p := pair::Pair<i32, u32>::make(1, 2);"
+        "}");
+  auto sr = sema("main.um");
+  EXPECT_TRUE(sr.has_value()) << (sr.has_value() ? "" : sr.error().msg);
 }

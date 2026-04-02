@@ -8,6 +8,10 @@
 
 using CTypeId = u32;
 
+// sentinel returned by lenient type lowering when a type can't be resolved.
+// distinct from CTypeKind::Void (id 0) so callers don't confuse "unresolved" with "void".
+static constexpr CTypeId kUnresolved = UINT32_MAX;
+
 enum class CTypeKind : u8 {
   Void,
   Bool,
@@ -85,6 +89,14 @@ struct TypeTable {
     list.insert(list.end(), items, items + n);
     return {start, n};
   }
+
+  // shorthand constructors that intern automatically
+  CTypeId make_struct(SymbolId sym) { CType t; t.kind = CTypeKind::Struct; t.symbol = sym; return intern(t); }
+  CTypeId make_enum(SymbolId sym) { CType t; t.kind = CTypeKind::Enum; t.symbol = sym; return intern(t); }
+  CTypeId make_slice(CTypeId elem) { CType t; t.kind = CTypeKind::Slice; t.inner = elem; return intern(t); }
+  CTypeId make_ref(CTypeId inner, bool is_mut = false) { CType t; t.kind = CTypeKind::Ref; t.inner = inner; t.is_mut = is_mut; return intern(t); }
+  CTypeId make_iter(CTypeId elem) { CType t; t.kind = CTypeKind::Iter; t.inner = elem; return intern(t); }
+  CTypeId make_array(CTypeId elem, u32 count) { CType t; t.kind = CTypeKind::Array; t.inner = elem; t.count = count; return intern(t); }
 
   // intern or retrieve a ConstInt CTypeId for the given value.
   CTypeId const_int(u32 value) {

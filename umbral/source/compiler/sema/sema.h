@@ -65,7 +65,7 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
     for (const PendingMono &pm : batch) {
       const Symbol &msym = syms.symbols[pm.mono_id];
       TypeLowerer ml(type_ast, syms, interner, types);
-      ml.type_subst = msym.mono_type_subst;
+      if (msym.mono) ml.type_subst = msym.mono->type_subst;
       ml.lenient = true;
       ml.module_idx = pm.generic_mod_idx;
       ml.module_contexts = &single_ctx;
@@ -191,7 +191,7 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
       u32 mod_i = pm.generic_mod_idx;
       auto &lm = modules[mod_i];
       TypeLowerer ml(lm.type_ast, syms, interner, types);
-      ml.type_subst = msym.mono_type_subst;
+      if (msym.mono) ml.type_subst = msym.mono->type_subst;
       ml.lenient = true;
       ml.module_idx = mod_i;
       ml.module_contexts = &module_contexts;

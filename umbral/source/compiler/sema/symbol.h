@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <unordered_map>
 
 #include <common/interner.h>
@@ -27,6 +28,16 @@ enum class SymFlags : u8 {
   Mut          = 1 << 5, // mutable global (var)
 };
 
+// pre-lowered concrete type info for a monomorphized function instance.
+// allocated only for mono symbols; non-mono symbols have mono == nullptr.
+struct MonoInfo {
+  u32 concrete_ret = 0;               // concrete return CTypeId
+  u32 self_ctype = 0;                 // non-zero for methods (CTypeId of &self)
+  std::vector<u32> concrete_params;   // explicit params only (excludes self)
+  std::unordered_map<SymId, u32> type_subst;   // type-param name → concrete CTypeId
+  std::unordered_map<SymId, u32> const_values; // const-generic name → integer value
+};
+
 struct Symbol {
   SymbolKind kind{};
   SymId name{};
@@ -35,11 +46,8 @@ struct Symbol {
   u32 module_idx = 0; // which LoadedModule this symbol belongs to
 
   // type symbol
-  // init NodeId from Decl (StructType / EnumType / FnType / Path)
   NodeId type_node = 0;
-  // for cross-module type aliases (type_node = Path): the SymbolId of the
-  // actual target type after path resolution. 0 = not a cross-module alias.
-  SymbolId aliased_sym = 0;
+  SymbolId aliased_sym = 0; // cross-module type alias target (0 = not alias)
 
   // func symbol
   FuncSig sig{};
@@ -48,21 +56,14 @@ struct Symbol {
   u32 generics_start = 0; // into Module::generic_params
   u32 generics_count = 0; // 0 = not generic
 
-  // for monomorphized instances: pre-lowered concrete CTypeIds (= u32) for the
-  // function signature (avoids re-lowering with the substitution at codegen).
-  u32 mono_concrete_ret = 0;    // valid only when is_mono_instance
-  u32 mono_self_ctype = 0;      // non-zero if this is a mono instance method (CTypeId)
-  std::vector<u32> mono_concrete_params; // explicit params only (excludes self)
-  // type-param substitution used when monomorphizing (SymId → CTypeId).
-  // populated by BodyChecker::monomorphize; used by codegen for @size_of/@align_of.
-  std::unordered_map<SymId, u32> mono_type_subst;
-  // const-generic concrete values for mono instances (e.g. N=10).
-  // populated alongside mono_type_subst; used by @if condition evaluation in codegen.
-  std::unordered_map<SymId, u32> mono_const_values;
+  // non-null for monomorphized instances
+  std::shared_ptr<MonoInfo> mono;
 
   // global var
-  TypeId annotate_type = 0; // syntax level (0 if inferred)
+  TypeId annotate_type = 0;
   NodeId init_expr;
+
+  bool is_mono() const { return mono != nullptr; }
 };
 
 struct SymbolTable {
