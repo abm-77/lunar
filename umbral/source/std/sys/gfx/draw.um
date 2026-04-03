@@ -1,6 +1,8 @@
 import sys.gfx.types;
 import sys.mem;
 
+@extern const rt_gfx_submit_draw_packets : fn(u64, u64, &types::DrawPacket, u32) -> void;
+
 # gfx/draw.um — draw stream builder.
 #
 # usage pattern per frame:
@@ -25,10 +27,10 @@ import sys.mem;
 }
 
 impl DrawStream {
-    # create — allocate a draw stream for the current frame.
+    # create — allocate a draw stream with room for max_packets draw calls.
     const create(dev: types::Device, cmd: types::Cmd,
-                 pipeline: types::Pipeline) -> DrawStream {
-        const alloc := mem::Alloc<types::DrawPacket>::create(64);
+                 pipeline: types::Pipeline, max_packets: u64) -> DrawStream {
+        const alloc := mem::Alloc<types::DrawPacket>::create(max_packets);
         return DrawStream {
             dev      = dev,
             cmd      = cmd,
@@ -36,6 +38,13 @@ impl DrawStream {
             packets  = alloc,
             count    = 0,
         };
+    }
+
+    # reset — reuse the stream for a new frame without reallocating.
+    const reset(&mut self, cmd: types::Cmd, pipeline: types::Pipeline) -> void {
+        self.cmd = cmd;
+        self.pipeline = pipeline;
+        self.count = 0;
     }
 
     # destroy — free the packet buffer. call after submit or when discarding.
@@ -99,7 +108,7 @@ impl DrawStream {
     # HOST_COHERENT memory).
     const submit(&mut self) -> void {
         const s := self.packets.slice();
-        types::rt_gfx_submit_draw_packets(
+        rt_gfx_submit_draw_packets(
             self.cmd.handle,
             self.pipeline.handle,
             &s[0],

@@ -120,6 +120,8 @@ make_vulkan_target_env(mlir::MLIRContext &ctx) {
   mlir::spirv::Capability caps[] = {
       mlir::spirv::Capability::Shader,
       mlir::spirv::Capability::DrawParameters,
+      mlir::spirv::Capability::Int64,
+      mlir::spirv::Capability::Matrix,
       mlir::spirv::Capability::RuntimeDescriptorArray,
       mlir::spirv::Capability::SampledImageArrayDynamicIndexing,
       mlir::spirv::Capability::StorageBufferArrayDynamicIndexing,
@@ -142,7 +144,7 @@ declare_io_var(mlir::OpBuilder &b, mlir::Location loc,
   mlir::OpBuilder::InsertionGuard guard(b);
   b.setInsertionPointToStart(spirv_mod.getBody());
   auto ptr_ty = mlir::spirv::PointerType::get(field_type, sc);
-  auto var = b.create<mlir::spirv::GlobalVariableOp>(loc, ptr_ty, sym_name,
+  auto var = mlir::spirv::GlobalVariableOp::create(b, loc, ptr_ty, sym_name,
                                                      mlir::FlatSymbolRefAttr{});
   if (is_builtin_position)
     var->setAttr("built_in", b.getStringAttr("Position"));
@@ -151,6 +153,7 @@ declare_io_var(mlir::OpBuilder &b, mlir::Location loc,
   return var;
 }
 
+// declare a descriptor-bound global variable (uniform constant array).
 static mlir::spirv::GlobalVariableOp
 declare_descriptor_var(mlir::OpBuilder &b, mlir::Location loc,
                        mlir::spirv::ModuleOp spirv_mod,
@@ -160,7 +163,29 @@ declare_descriptor_var(mlir::OpBuilder &b, mlir::Location loc,
   b.setInsertionPointToStart(spirv_mod.getBody());
   auto arr_ty = mlir::spirv::RuntimeArrayType::get(elem_type);
   auto ptr_ty = mlir::spirv::PointerType::get(arr_ty, sc);
-  auto var = b.create<mlir::spirv::GlobalVariableOp>(loc, ptr_ty, sym_name,
+  auto var = mlir::spirv::GlobalVariableOp::create(b, loc, ptr_ty, sym_name,
+                                                     mlir::FlatSymbolRefAttr{});
+  var->setAttr("descriptor_set", b.getI32IntegerAttr(0));
+  var->setAttr("binding", b.getI32IntegerAttr(binding));
+  return var;
+}
+
+// declare a descriptor-bound SSBO global variable.
+// vulkan requires SSBO variables to be OpTypeStruct with Block decoration,
+// containing a runtime array member with an Offset decoration.
+static mlir::spirv::GlobalVariableOp
+declare_ssbo_var(mlir::OpBuilder &b, mlir::Location loc,
+                 mlir::spirv::ModuleOp spirv_mod, std::string_view sym_name,
+                 mlir::Type elem_type, uint32_t binding,
+                 uint32_t arr_stride) {
+  mlir::OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPointToStart(spirv_mod.getBody());
+  auto arr_ty = mlir::spirv::RuntimeArrayType::get(elem_type, arr_stride);
+  auto struct_ty = mlir::spirv::StructType::get(
+      {arr_ty}, {mlir::spirv::StructType::OffsetInfo{0}});
+  auto ptr_ty = mlir::spirv::PointerType::get(
+      struct_ty, mlir::spirv::StorageClass::StorageBuffer);
+  auto var = mlir::spirv::GlobalVariableOp::create(b, loc, ptr_ty, sym_name,
                                                      mlir::FlatSymbolRefAttr{});
   var->setAttr("descriptor_set", b.getI32IntegerAttr(0));
   var->setAttr("binding", b.getI32IntegerAttr(binding));
@@ -195,8 +220,8 @@ static mlir::Value addr_load(mlir::ConversionPatternRewriter &rw,
   if (!gvar) return {};
   auto ptr_ty = mlir::cast<mlir::spirv::GlobalVariableOp>(gvar).getType();
   auto sym_ref = mlir::SymbolRefAttr::get(rw.getContext(), var_name);
-  auto addr = rw.create<mlir::spirv::AddressOfOp>(loc, ptr_ty, sym_ref);
-  return rw.create<mlir::spirv::LoadOp>(loc, addr.getPointer()).getValue();
+  auto addr = mlir::spirv::AddressOfOp::create(rw, loc, ptr_ty, sym_ref);
+  return mlir::spirv::LoadOp::create(rw, loc, addr.getPointer()).getValue();
 }
 
 static mlir::Value
@@ -212,10 +237,10 @@ array_index_load(mlir::ConversionPatternRewriter &rw, mlir::Location loc,
       mlir::cast<mlir::spirv::RuntimeArrayType>(arr_ty).getElementType();
   auto elem_ptr_ty = mlir::spirv::PointerType::get(elem_ty, sc);
   auto sym_ref = mlir::SymbolRefAttr::get(rw.getContext(), var_name);
-  auto arr_addr = rw.create<mlir::spirv::AddressOfOp>(loc, arr_ptr_ty, sym_ref);
-  auto ptr = rw.create<mlir::spirv::AccessChainOp>(
+  auto arr_addr = mlir::spirv::AddressOfOp::create(rw, loc, arr_ptr_ty, sym_ref);
+  auto ptr = mlir::spirv::AccessChainOp::create(rw, 
       loc, elem_ptr_ty, arr_addr.getPointer(), mlir::ValueRange{index});
-  return rw.create<mlir::spirv::LoadOp>(loc, ptr.getComponentPtr()).getValue();
+  return mlir::spirv::LoadOp::create(rw, loc, ptr.getComponentPtr()).getValue();
 }
 
 struct LoadInputPattern : public mlir::OpConversionPattern<LoadInputOp> {
@@ -252,10 +277,10 @@ struct StoreOutputPattern : public mlir::OpConversionPattern<StoreOutputOp> {
     auto ptr_ty = mlir::cast<mlir::spirv::GlobalVariableOp>(gvar).getType();
     auto sym_ref = mlir::SymbolRefAttr::get(rw.getContext(), it->second);
     auto addr =
-        rw.create<mlir::spirv::AddressOfOp>(op.getLoc(), ptr_ty, sym_ref);
+        mlir::spirv::AddressOfOp::create(rw, op.getLoc(), ptr_ty, sym_ref);
     auto val = adaptor.getValue();
     if (!val) return mlir::failure();
-    rw.create<mlir::spirv::StoreOp>(op.getLoc(), addr.getPointer(), val);
+    mlir::spirv::StoreOp::create(rw, op.getLoc(), addr.getPointer(), val);
     rw.eraseOp(op);
     return mlir::success();
   }
@@ -311,9 +336,9 @@ struct SamplePattern : public mlir::OpConversionPattern<SampleOp> {
     // the texture operand is now a spirv.image type (after type conversion)
     auto img_ty = adaptor.getTexture().getType();
     auto sampled_img_ty = mlir::spirv::SampledImageType::get(img_ty);
-    auto combined = rw.create<CombineSampledImageOp>(
+    auto combined = CombineSampledImageOp::create(rw, 
         loc, sampled_img_ty, adaptor.getTexture(), adaptor.getSampler());
-    auto sampled = rw.create<mlir::spirv::ImageSampleImplicitLodOp>(
+    auto sampled = mlir::spirv::ImageSampleImplicitLodOp::create(rw, 
         loc, vec4_ty, combined.getResult(), adaptor.getUv(),
         mlir::spirv::ImageOperandsAttr{}, mlir::ValueRange{});
     rw.replaceOp(op, sampled.getResult());
@@ -336,7 +361,7 @@ struct DrawIdPattern : public mlir::OpConversionPattern<DrawIdOp> {
       auto i32_ty = mlir::IntegerType::get(rw.getContext(), 32);
       auto ptr_ty = mlir::spirv::PointerType::get(
           i32_ty, mlir::spirv::StorageClass::Input);
-      auto var = rw.create<mlir::spirv::GlobalVariableOp>(
+      auto var = mlir::spirv::GlobalVariableOp::create(rw, 
           loc, ptr_ty, "__draw_index", mlir::FlatSymbolRefAttr{});
       var->setAttr("built_in", rw.getStringAttr("DrawIndex"));
       lctx.draw_index_var = "__draw_index";
@@ -363,7 +388,7 @@ struct VertexIdPattern : public mlir::OpConversionPattern<VertexIdOp> {
       auto i32_ty = mlir::IntegerType::get(rw.getContext(), 32);
       auto ptr_ty = mlir::spirv::PointerType::get(
           i32_ty, mlir::spirv::StorageClass::Input);
-      auto var = rw.create<mlir::spirv::GlobalVariableOp>(
+      auto var = mlir::spirv::GlobalVariableOp::create(rw, 
           loc, ptr_ty, "__vertex_index", mlir::FlatSymbolRefAttr{});
       var->setAttr("built_in", rw.getStringAttr("VertexIndex"));
       lctx.vertex_index_var = "__vertex_index";
@@ -375,6 +400,8 @@ struct VertexIdPattern : public mlir::OpConversionPattern<VertexIdOp> {
   }
 };
 
+// draw_packet: just pass through the draw_id as i32 (the index into the SSBO).
+// DrawPacketFieldPattern does the actual SSBO access.
 struct DrawPacketPattern : public mlir::OpConversionPattern<DrawPacketOp> {
   SpirvLowerCtx &lctx;
   DrawPacketPattern(const mlir::TypeConverter &tc, mlir::MLIRContext *ctx,
@@ -384,29 +411,13 @@ struct DrawPacketPattern : public mlir::OpConversionPattern<DrawPacketOp> {
   matchAndRewrite(DrawPacketOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rw) const override {
     if (!lctx.draw_packets_var) return mlir::failure();
-    auto loc = op.getLoc();
-    auto gvar = mlir::SymbolTable::lookupSymbolIn(lctx.spirv_mod,
-                                                  *lctx.draw_packets_var);
-    if (!gvar) return mlir::failure();
-    auto arr_ptr_ty = mlir::cast<mlir::spirv::GlobalVariableOp>(gvar).getType();
-    auto arr_ty =
-        mlir::cast<mlir::spirv::PointerType>(arr_ptr_ty).getPointeeType();
-    auto pkt_ty =
-        mlir::cast<mlir::spirv::RuntimeArrayType>(arr_ty).getElementType();
-    auto pkt_ptr_ty = mlir::spirv::PointerType::get(
-        pkt_ty, mlir::spirv::StorageClass::StorageBuffer);
-    auto sym_ref =
-        mlir::SymbolRefAttr::get(rw.getContext(), *lctx.draw_packets_var);
-    auto arr_addr =
-        rw.create<mlir::spirv::AddressOfOp>(loc, arr_ptr_ty, sym_ref);
-    auto elem_ptr = rw.create<mlir::spirv::AccessChainOp>(
-        loc, pkt_ptr_ty, arr_addr.getPointer(),
-        mlir::ValueRange{adaptor.getDrawId()});
-    rw.replaceOp(op, elem_ptr.getComponentPtr());
+    // replace with the draw_id directly (i32 → i32 passthrough)
+    rw.replaceOp(op, adaptor.getDrawId());
     return mlir::success();
   }
 };
 
+// draw_packet_field: access the draw_packets SSBO via packets[draw_id].field
 struct DrawPacketFieldPattern
     : public mlir::OpConversionPattern<DrawPacketFieldOp> {
   SpirvLowerCtx &lctx;
@@ -420,23 +431,41 @@ struct DrawPacketFieldPattern
     int fidx = draw_packet_field_index(op.getFieldName().str().c_str());
     if (fidx < 0) return mlir::failure();
     auto loc = op.getLoc();
-    auto i32_ty = mlir::IntegerType::get(rw.getContext(), 32);
+    auto &ctx = *rw.getContext();
+    auto i32_ty = mlir::IntegerType::get(&ctx, 32);
     auto field_ty = draw_packet_field_is_u64(fidx)
-                        ? mlir::IntegerType::get(rw.getContext(), 64)
+                        ? mlir::IntegerType::get(&ctx, 64)
                         : i32_ty;
     auto field_ptr_ty = mlir::spirv::PointerType::get(
         field_ty, mlir::spirv::StorageClass::StorageBuffer);
-    auto idx_val =
-        rw.create<mlir::arith::ConstantOp>(loc, rw.getI32IntegerAttr(fidx))
-            .getResult();
-    auto field_ptr = rw.create<mlir::spirv::AccessChainOp>(
-        loc, field_ptr_ty, adaptor.getPacket(), mlir::ValueRange{idx_val});
+
+    // get the SSBO base address
+    auto gvar = mlir::SymbolTable::lookupSymbolIn(lctx.spirv_mod,
+                                                  *lctx.draw_packets_var);
+    if (!gvar) return mlir::failure();
+    auto arr_ptr_ty = mlir::cast<mlir::spirv::GlobalVariableOp>(gvar).getType();
+    auto sym_ref =
+        mlir::SymbolRefAttr::get(&ctx, *lctx.draw_packets_var);
+    auto arr_addr =
+        mlir::spirv::AddressOfOp::create(rw, loc, arr_ptr_ty, sym_ref);
+
+    // struct.data[draw_id].field — three indices: 0 (into struct), draw_id, field
+    auto zero = mlir::spirv::ConstantOp::create(rw, 
+        loc, i32_ty, rw.getI32IntegerAttr(0));
+    auto draw_id = adaptor.getPacket();
+    auto fidx_const = mlir::spirv::ConstantOp::create(rw, 
+        loc, i32_ty, rw.getI32IntegerAttr(fidx));
+    auto field_ptr = mlir::spirv::AccessChainOp::create(rw, 
+        loc, field_ptr_ty, arr_addr.getPointer(),
+        mlir::ValueRange{zero.getResult(), draw_id,
+                         fidx_const.getResult()});
     auto loaded =
-        rw.create<mlir::spirv::LoadOp>(loc, field_ptr.getComponentPtr());
+        mlir::spirv::LoadOp::create(rw, loc, field_ptr.getComponentPtr());
     mlir::Value result = loaded.getValue();
+    // truncate u64 fields to i32 if the result type is i32
     if (draw_packet_field_is_u64(fidx) && op.getResult().getType() != field_ty)
-      result =
-          rw.create<mlir::arith::TruncIOp>(loc, i32_ty, result).getResult();
+      result = mlir::spirv::UConvertOp::create(rw, loc, i32_ty, result)
+                   .getResult();
     rw.replaceOp(op, result);
     return mlir::success();
   }
@@ -447,6 +476,34 @@ struct FrameReadPattern : public mlir::OpConversionPattern<FrameReadOp> {
   FrameReadPattern(const mlir::TypeConverter &tc, mlir::MLIRContext *ctx,
                    SpirvLowerCtx &lctx)
       : OpConversionPattern(tc, ctx), lctx(lctx) {}
+
+  // load one i32 word from frame_arena at word_index (= byte_offset / 4).
+  // the arena layout is struct { i32 data[]; }, so indices are [0, word_idx].
+  mlir::Value load_word(mlir::ConversionPatternRewriter &rw, mlir::Location loc,
+                        mlir::Value ssbo_addr, mlir::Value word_idx,
+                        mlir::Type i32_ty) const {
+    auto zero = mlir::spirv::ConstantOp::create(rw, loc, i32_ty,
+                                                   rw.getI32IntegerAttr(0));
+    auto i32_ptr_ty = mlir::spirv::PointerType::get(
+        i32_ty, mlir::spirv::StorageClass::StorageBuffer);
+    auto ptr = mlir::spirv::AccessChainOp::create(rw, 
+        loc, i32_ptr_ty, ssbo_addr,
+        mlir::ValueRange{zero.getResult(), word_idx});
+    return mlir::spirv::LoadOp::create(rw, loc, ptr.getComponentPtr())
+        .getValue();
+  }
+
+  // convert a byte offset to a word index (byte_offset >> 2)
+  mlir::Value to_word_idx(mlir::ConversionPatternRewriter &rw,
+                          mlir::Location loc, mlir::Value byte_off,
+                          mlir::Type i32_ty) const {
+    auto two = mlir::spirv::ConstantOp::create(rw, loc, i32_ty,
+                                                  rw.getI32IntegerAttr(2));
+    return mlir::spirv::ShiftRightArithmeticOp::create(rw, 
+               loc, byte_off, two.getResult())
+        .getResult();
+  }
+
   mlir::LogicalResult
   matchAndRewrite(FrameReadOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rw) const override {
@@ -458,25 +515,75 @@ struct FrameReadPattern : public mlir::OpConversionPattern<FrameReadOp> {
                                                   *lctx.frame_arena_var);
     if (!gvar) return mlir::failure();
     auto arr_ptr_ty = mlir::cast<mlir::spirv::GlobalVariableOp>(gvar).getType();
-    auto i8_ptr_ty =
-        mlir::spirv::PointerType::get(mlir::IntegerType::get(&ctx, 8),
-                                      mlir::spirv::StorageClass::StorageBuffer);
     auto arr_addr =
-        rw.create<mlir::spirv::AddressOfOp>(loc, arr_ptr_ty, sym_ref);
-    auto byte_ptr = rw.create<mlir::spirv::AccessChainOp>(
-        loc, i8_ptr_ty, arr_addr.getPointer(),
-        mlir::ValueRange{adaptor.getOffset()});
+        mlir::spirv::AddressOfOp::create(rw, loc, arr_ptr_ty, sym_ref);
     auto i32_ty = mlir::IntegerType::get(&ctx, 32);
-    auto i32_ptr_ty = mlir::spirv::PointerType::get(
-        i32_ty, mlir::spirv::StorageClass::StorageBuffer);
-    auto cast_ptr = rw.create<mlir::spirv::BitcastOp>(
-        loc, i32_ptr_ty, byte_ptr.getComponentPtr());
-    auto raw = rw.create<mlir::spirv::LoadOp>(loc, cast_ptr.getResult());
-    mlir::Value result = raw.getValue();
+    auto f32_ty = mlir::Float32Type::get(&ctx);
+    auto base = adaptor.getOffset();
+    auto base_word = to_word_idx(rw, loc, base, i32_ty);
     auto req_ty = op.getElementType();
+
+    // matrix types: load 4 vec4 columns, compose into spirv.MatrixType
+    if (auto mat_ty = mlir::dyn_cast<mlir::spirv::MatrixType>(req_ty)) {
+      auto col_ty = mlir::cast<mlir::VectorType>(mat_ty.getColumnType());
+      uint32_t ncols = mat_ty.getNumColumns();
+      uint32_t nelem = col_ty.getNumElements();
+      llvm::SmallVector<mlir::Value> cols;
+      for (uint32_t c = 0; c < ncols; ++c) {
+        llvm::SmallVector<mlir::Value> elems;
+        for (uint32_t k = 0; k < nelem; ++k) {
+          uint32_t word_off = c * nelem + k;
+          mlir::Value widx = base_word;
+          if (word_off > 0) {
+            auto off_const = mlir::spirv::ConstantOp::create(rw, 
+                loc, i32_ty, rw.getI32IntegerAttr(word_off));
+            widx = mlir::spirv::IAddOp::create(rw, loc, base_word,
+                                                  off_const.getResult())
+                       .getResult();
+          }
+          auto word = load_word(rw, loc, arr_addr.getPointer(), widx, i32_ty);
+          elems.push_back(
+              mlir::spirv::BitcastOp::create(rw, loc, f32_ty, word).getResult());
+        }
+        cols.push_back(
+            mlir::spirv::CompositeConstructOp::create(rw, loc, col_ty, elems)
+                .getResult());
+      }
+      auto result =
+          mlir::spirv::CompositeConstructOp::create(rw, loc, mat_ty, cols);
+      rw.replaceOp(op, result.getResult());
+      return mlir::success();
+    }
+
+    // vector types: load N consecutive words, bitcast each to f32, compose
+    if (auto vec_ty = mlir::dyn_cast<mlir::VectorType>(req_ty)) {
+      int64_t n = vec_ty.getNumElements();
+      llvm::SmallVector<mlir::Value> elems;
+      for (int64_t k = 0; k < n; ++k) {
+        mlir::Value widx = base_word;
+        if (k > 0) {
+          auto k_const = mlir::spirv::ConstantOp::create(rw, 
+              loc, i32_ty, rw.getI32IntegerAttr(k));
+          widx = mlir::spirv::IAddOp::create(rw, loc, base_word,
+                                                k_const.getResult())
+                     .getResult();
+        }
+        auto word = load_word(rw, loc, arr_addr.getPointer(), widx, i32_ty);
+        elems.push_back(
+            mlir::spirv::BitcastOp::create(rw, loc, f32_ty, word).getResult());
+      }
+      auto result =
+          mlir::spirv::CompositeConstructOp::create(rw, loc, vec_ty, elems);
+      rw.replaceOp(op, result.getResult());
+      return mlir::success();
+    }
+
+    // scalar: single word load + optional bitcast
+    auto word = load_word(rw, loc, arr_addr.getPointer(), base_word, i32_ty);
+    mlir::Value result = word;
     if (req_ty != i32_ty)
       result =
-          rw.create<mlir::spirv::BitcastOp>(loc, req_ty, result).getResult();
+          mlir::spirv::BitcastOp::create(rw, loc, req_ty, result).getResult();
     rw.replaceOp(op, result);
     return mlir::success();
   }
@@ -504,7 +611,7 @@ struct FuncOpPattern : public mlir::OpConversionPattern<mlir::func::FuncOp> {
 
     auto spvFnType = mlir::FunctionType::get(
         rw.getContext(), signatureConv.getConvertedTypes(), result_types);
-    auto spvFunc = rw.create<mlir::spirv::FuncOp>(funcOp.getLoc(),
+    auto spvFunc = mlir::spirv::FuncOp::create(rw, funcOp.getLoc(),
                                                   funcOp.getName(), spvFnType);
     rw.inlineRegionBefore(funcOp.getBody(), spvFunc.getBody(), spvFunc.end());
     if (mlir::failed(
@@ -636,21 +743,27 @@ build_lower_ctx(mlir::OpBuilder &b, mlir::Location loc,
     lctx.samplers_var = "samplers";
   }
   if (need_frame) {
-    auto i8_ty = mlir::IntegerType::get(&ctx, 8);
-    declare_descriptor_var(b, loc, spirv_mod, "frame_arena", i8_ty,
-                           mlir::spirv::StorageClass::StorageBuffer, 2);
+    // use i32 words to avoid Int8 capability; byte offsets become word indices
+    auto i32_ty = mlir::IntegerType::get(&ctx, 32);
+    declare_ssbo_var(b, loc, spirv_mod, "frame_arena", i32_ty, 2, 4);
     lctx.frame_arena_var = "frame_arena";
   }
   if (need_pkt) {
-    // build draw_packet_t struct type from shared field definitions
     auto i64_ty = mlir::IntegerType::get(&ctx, 64);
     auto i32_ty = mlir::IntegerType::get(&ctx, 32);
     llvm::SmallVector<mlir::Type> fields;
-    for (uint32_t i = 0; i < kDrawPacketFieldCount; ++i)
-      fields.push_back(draw_packet_field_is_u64(i) ? i64_ty : i32_ty);
-    auto pkt_ty = mlir::spirv::StructType::get(fields);
-    declare_descriptor_var(b, loc, spirv_mod, "draw_packets", pkt_ty,
-                           mlir::spirv::StorageClass::StorageBuffer, 3);
+    llvm::SmallVector<mlir::spirv::StructType::OffsetInfo> offsets;
+    uint32_t off = 0;
+    for (uint32_t i = 0; i < kDrawPacketFieldCount; ++i) {
+      bool is_u64 = draw_packet_field_is_u64(i);
+      if (is_u64) off = (off + 7) & ~7u;
+      offsets.push_back({off});
+      fields.push_back(is_u64 ? i64_ty : i32_ty);
+      off += is_u64 ? 8 : 4;
+    }
+    auto pkt_ty = mlir::spirv::StructType::get(fields, offsets);
+    uint32_t stride = (off + 7) & ~7u;
+    declare_ssbo_var(b, loc, spirv_mod, "draw_packets", pkt_ty, 3, stride);
     lctx.draw_packets_var = "draw_packets";
   }
 
@@ -689,7 +802,7 @@ bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
     auto loc = stage_fn.getLoc();
     mlir::OpBuilder b(stage_fn);
 
-    auto spirv_mod = b.create<mlir::spirv::ModuleOp>(
+    auto spirv_mod = mlir::spirv::ModuleOp::create(b, 
         loc, mlir::spirv::AddressingModel::Logical,
         mlir::spirv::MemoryModel::GLSL450);
     spirv_mod->setAttr(mlir::spirv::getTargetEnvAttrName(), target_env);
@@ -820,12 +933,12 @@ bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
     auto exec_model = (stage == "vertex")
                           ? mlir::spirv::ExecutionModel::Vertex
                           : mlir::spirv::ExecutionModel::Fragment;
-    b.create<mlir::spirv::EntryPointOp>(loc, exec_model,
+    mlir::spirv::EntryPointOp::create(b, loc, exec_model,
                                         llvm::StringRef("main"),
                                         mlir::ArrayAttr::get(&ctx, iface_refs));
 
     if (stage == "fragment") {
-      b.create<mlir::spirv::ExecutionModeOp>(
+      mlir::spirv::ExecutionModeOp::create(b, 
           loc, llvm::StringRef("main"),
           mlir::spirv::ExecutionMode::OriginUpperLeft,
           mlir::ArrayAttr::get(&ctx, {}));

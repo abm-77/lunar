@@ -53,6 +53,8 @@ typedef struct {
                               // rt_gfx_submit_draw_packets call
   bool enable_validation; // enable VK_LAYER_KHRONOS_validation; adds overhead;
                           // false in release
+  bool enable_depth;      // allocate a D32_SFLOAT depth buffer and enable depth
+                          // test/write; false by default
   gfx_present_mode_t present_mode; // falls back to FIFO if unavailable
 } rt_gfx_config_t;
 
@@ -61,7 +63,8 @@ typedef struct {
 #define RT_GFX_CONFIG_DEFAULTS                                                 \
   .frames_in_flight = 2, .max_textures = 4096, .max_samplers = 256,            \
   .frame_arena_bytes = (64ull << 20), .draw_packets_max = 65536,               \
-  .enable_validation = false, .present_mode = GFX_PRESENT_MODE_MAILBOX
+  .enable_validation = false, .enable_depth = false,                            \
+  .present_mode = GFX_PRESENT_MODE_MAILBOX
 
 // draw_packet_t — one logical draw command uploaded to draw_packets_ssbo per
 // frame. ABI between CPU (runtime) and GPU (shaders); field order is fixed. do
@@ -111,7 +114,8 @@ gfx_device_handle_t rt_gfx_init(uint64_t window_handle,
                                 uint32_t max_textures, uint32_t max_samplers,
                                 uint64_t frame_arena_bytes,
                                 uint32_t draw_packets_max,
-                                bool enable_validation, uint32_t present_mode);
+                                bool enable_validation, uint32_t present_mode,
+                                bool enable_depth);
 
 // rt_gfx_shutdown — destroy all Vulkan resources and free the device context.
 // dev must not be GFX_NULL_HANDLE; after this call it is invalid.

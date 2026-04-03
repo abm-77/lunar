@@ -1,0 +1,80 @@
+# RUN: mkdir -p %t.d && %uc %s --shader-out %t.d 2>/dev/null
+# RUN: ls %t.d/VecReadShader.umsh
+# RUN: %uc %s --dump-shader-mlir 2>/dev/null | %FileCheck %s
+
+# vertex stage reads vec4, vec3, and a struct from the frame arena
+# CHECK: func.func private @VecReadShader_vert
+# CHECK-SAME: stage = "vertex"
+# CHECK: um_shader.draw_id
+# CHECK: um_shader.draw_packet
+# CHECK: um_shader.draw_packet_field {{.*}} "draw_data_offset"
+# CHECK: um_shader.frame_read
+# CHECK: um_shader.frame_read
+# CHECK: um_shader.frame_read
+
+# fragment stage: passthrough
+# CHECK: func.func private @VecReadShader_frag
+# CHECK-SAME: stage = "fragment"
+
+const vec3 := vec<f32, 3>;
+const vec4 := vec<f32, 4>;
+const mat4 := mat<f32, 4, 4>;
+
+const CubeVertex := struct {
+  px: f32, py: f32, pz: f32,
+  cr: f32, cg: f32, cb: f32, ca: f32,
+};
+
+@shader_pod const VsOut := struct {
+  @builtin(position) clip: vec4,
+  @location(0) color: vec4,
+};
+
+@shader_pod const FsOut := struct {
+  @location(0) color: vec4,
+};
+
+@shader const VecReadShader := struct {
+  @vs_out vout: VsOut,
+  @fs_in  fin:  VsOut,
+  @fs_out fout: FsOut,
+};
+
+impl VecReadShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    const pkt := @draw_packet(@draw_id());
+    const base := pkt.draw_data_offset;
+
+    # read MVP as a struct (4 vec4 columns = 64 bytes)
+    const mvp := @frame_read<mat4>(base);
+
+    # read per-vertex data (7 f32s = 28 bytes each)
+    const vid := @vertex_id();
+    const v_off := base + 64 + vid * 28;
+    const pos := @frame_read<vec3>(v_off);
+    const color := @frame_read<vec4>(v_off + 12);
+
+    # mat4 × vec4(pos, 1.0) using individual column access
+    const px := pos.x;
+    const py := pos.y;
+    const pz := pos.z;
+    const c0 := mvp.col0;
+    const c1 := mvp.col1;
+    const c2 := mvp.col2;
+    const c3 := mvp.col3;
+
+    self.vout.clip = vec4(
+      c0.x * px + c1.x * py + c2.x * pz + c3.x,
+      c0.y * px + c1.y * py + c2.y * pz + c3.y,
+      c0.z * px + c1.z * py + c2.z * pz + c3.z,
+      c0.w * px + c1.w * py + c2.w * pz + c3.w
+    );
+    self.vout.color = color;
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    self.fout.color = self.fin.color;
+  };
+}

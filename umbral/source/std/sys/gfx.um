@@ -2,6 +2,16 @@ import sys.gfx.types;
 import sys.gfx.draw;
 import sys.gfx.assets;
 
+@extern const rt_gfx_init : fn(u64, u32, u32, u32, u64, u32, bool, u32, bool) -> u64;
+@extern const rt_gfx_shutdown : fn(u64) -> void;
+@extern const rt_gfx_begin_frame : fn(u64) -> u64;
+@extern const rt_gfx_end_frame : fn(u64, u64) -> void;
+@extern const rt_gfx_texture2d_create_rgba8 : fn(u64, u32, u32, &u8, u64, []u8) -> u64;
+@extern const rt_gfx_texture_destroy : fn(u64, u64) -> void;
+@extern const rt_gfx_sampler_create_linear : fn(u64, []u8) -> u64;
+@extern const rt_gfx_sampler_destroy : fn(u64, u64) -> void;
+@extern const rt_gfx_frame_alloc : fn(u64, u64, u64, &mut u32) -> u64;
+
 # gfx.um — main entry point for the Umbral graphics layer.
 # Vulkan is hidden behind the runtime C ABI; users only see the types below.
 #
@@ -43,6 +53,8 @@ import sys.gfx.assets;
     draw_packets_max:  u32,
     # enable VK_LAYER_KHRONOS_validation; disable in release builds
     enable_validation: bool,
+    # allocate a D32_SFLOAT depth buffer and enable depth test/write; false by default
+    enable_depth:      bool,
     # preferred swapchain present mode; runtime falls back to Fifo if unavailable
     present_mode:      PresentMode,
 }
@@ -52,7 +64,7 @@ import sys.gfx.assets;
 #   cfg:           device configuration.
 #   returns a valid Device on success; Device { handle = 0 } on failure.
 @pub const init := fn(window_handle: u64, cfg: GfxConfig) -> Device {
-    const h := types::rt_gfx_init(
+    const h := rt_gfx_init(
         window_handle,
         cfg.frames_in_flight,
         cfg.max_textures,
@@ -60,7 +72,8 @@ import sys.gfx.assets;
         cfg.frame_arena_bytes,
         cfg.draw_packets_max,
         cfg.enable_validation,
-        @as(cfg.present_mode, u32)
+        @as(cfg.present_mode, u32),
+        cfg.enable_depth
     );
     return Device { handle = h };
 }
@@ -69,21 +82,21 @@ import sys.gfx.assets;
 #   dev: must be the Device from gfx::init; invalid after this call.
 #   the GLFW window must still be live when this is called.
 @pub const shutdown := fn(dev: Device) -> void {
-    types::rt_gfx_shutdown(dev.handle);
+    rt_gfx_shutdown(dev.handle);
 }
 
 # begin_frame — acquire the next swapchain image and open a command buffer.
 #   returns Cmd { handle = 0 } if the swapchain is out-of-date (window resized);
 #   skip all rendering this frame and call end_frame with the null cmd anyway.
 @pub const begin_frame := fn(dev: Device) -> Cmd {
-    const h := types::rt_gfx_begin_frame(dev.handle);
+    const h := rt_gfx_begin_frame(dev.handle);
     return Cmd { handle = h };
 }
 
 # end_frame — submit commands and present.
 #   cmd: the Cmd from begin_frame; invalid after this call.
 @pub const end_frame := fn(dev: Device, cmd: Cmd) -> void {
-    types::rt_gfx_end_frame(dev.handle, cmd.handle);
+    rt_gfx_end_frame(dev.handle, cmd.handle);
 }
 
 # pipeline_destroy — destroy a pipeline.
@@ -99,7 +112,7 @@ import sys.gfx.assets;
 @pub const texture2d_from_rgba8 := fn(dev: Device, w: u32, h: u32,
                                        bytes: []u8) -> Texture2d {
     var no_name: []u8 = "";
-    const h_tex := types::rt_gfx_texture2d_create_rgba8(
+    const h_tex := rt_gfx_texture2d_create_rgba8(
         dev.handle, w, h,
         bytes.ptr, bytes.len,
         no_name
@@ -111,20 +124,20 @@ import sys.gfx.assets;
 #   safe to call while frames are in flight; runtime delays GPU destroy by frames_in_flight.
 #   the texture's descriptor index must not appear in new draw packets after this call.
 @pub const texture_destroy := fn(dev: Device, tex: Texture2d) -> void {
-    types::rt_gfx_texture_destroy(dev.handle, tex.handle);
+    rt_gfx_texture_destroy(dev.handle, tex.handle);
 }
 
 # sampler_linear — create a bilinear clamp-to-edge sampler.
 #   returns Sampler { handle = 0 } on failure.
 @pub const sampler_linear := fn(dev: Device) -> Sampler {
     var no_name: []u8 = "";
-    const h_s := types::rt_gfx_sampler_create_linear(dev.handle, no_name);
+    const h_s := rt_gfx_sampler_create_linear(dev.handle, no_name);
     return Sampler { handle = h_s };
 }
 
 # sampler_destroy — queue a sampler for deferred destruction.
 @pub const sampler_destroy := fn(dev: Device, samp: Sampler) -> void {
-    types::rt_gfx_sampler_destroy(dev.handle, samp.handle);
+    rt_gfx_sampler_destroy(dev.handle, samp.handle);
 }
 
 # FrameAlloc — result of a frame_alloc call.
@@ -144,6 +157,6 @@ import sys.gfx.assets;
 #   returns FrameAlloc { offset=0, ptr=0 } if the arena is exhausted (treat as fatal in v0).
 @pub const frame_alloc := fn(dev: Device, size: u64, align: u64) -> FrameAlloc {
     var out_offset: u32 = 0;
-    const raw_ptr := types::rt_gfx_frame_alloc(dev.handle, size, align, &mut out_offset);
+    const raw_ptr := rt_gfx_frame_alloc(dev.handle, size, align, &mut out_offset);
     return FrameAlloc { offset = out_offset, ptr = raw_ptr };
 }

@@ -1,0 +1,12 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: pi=3.14159
+
+import math.types => math;
+import sys.io.fmt;
+
+const main := fn() -> i32 {
+  # cross-module global constant access via path
+  const pi := math::PI;
+  fmt::println("pi={}", [1]fmt::Arg{ fmt::arg_f32(pi) });
+  return 0;
+};

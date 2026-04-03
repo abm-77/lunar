@@ -1,7 +1,7 @@
 # RUN: not %uc %s
 # CHECK: missing @vs_out
 
-const vec2 := struct { x: f32, y: f32 };
+const vec2 := vec<f32, 2>;
 
 @shader_pod const SpriteVertex := struct {
   @location(0) pos: vec2,

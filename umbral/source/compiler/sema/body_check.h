@@ -247,6 +247,45 @@ struct BodyChecker {
     return kInvalidSymbol;
   }
 
+  // check if a node (or the Ident it references) is a @draw_packet expression.
+  // walks through const bindings so `const pkt := @draw_packet(...)` is found.
+  bool is_draw_packet_expr(NodeId n) const {
+    if (!n || n >= ir.nodes.kind.size()) return false;
+    if (ir.nodes.kind[n] == NodeKind::ShaderDrawPacket) return true;
+    if (ir.nodes.kind[n] == NodeKind::Ident) {
+      SymId sym = static_cast<SymId>(ir.nodes.a[n]);
+      // look up the const binding's init expression
+      for (u32 i = 0; i < ir.nodes.kind.size(); ++i) {
+        if (ir.nodes.kind[i] == NodeKind::ConstStmt &&
+            static_cast<SymId>(ir.nodes.a[i]) == sym) {
+          NodeId init = ir.nodes.c[i];
+          return is_draw_packet_expr(init);
+        }
+      }
+    }
+    return false;
+  }
+
+  static bool is_float(CTypeKind k) {
+    return k == CTypeKind::F32 || k == CTypeKind::F64;
+  }
+
+  // map vec/mat field names to indices. returns -1 for unknown names.
+  static i32 vec_mat_field_index(std::string_view s) {
+    if (s.size() == 1) {
+      switch (s[0]) {
+      case 'x': case 'r': return 0;
+      case 'y': case 'g': return 1;
+      case 'z': case 'b': return 2;
+      case 'w': case 'a': return 3;
+      default: return -1;
+      }
+    }
+    if (s.size() == 4 && s[0] == 'c' && s[3] >= '0' && s[3] <= '3')
+      return s[3] - '0';
+    return -1;
+  }
+
   bool require_shader_context(NodeId n) {
     if (!current_shader_stage && !is_shader_fn) {
       emit(node_span(n),
@@ -280,6 +319,26 @@ struct BodyChecker {
         const Symbol &ssym = syms.get(struct_sid);
         const BodyIR &ssym_ir = body_for(ssym.module_idx);
         NodeId tn = ssym.type_node;
+        // vec/mat positional construction: vec4(1.0, 2.0, 3.0, 4.0)
+        if (tn != 0 && (ssym_ir.nodes.kind[tn] == NodeKind::VecType ||
+                        ssym_ir.nodes.kind[tn] == NodeKind::MatType)) {
+          auto dep_fl = make_dep_type_lowerer(ssym.module_idx);
+          TypeLowerer &fl = dep_or_current(dep_fl);
+          auto ct = fl.lower_user_type(struct_sid, nullptr, 0, node_span(n));
+          if (ct) {
+            const CType &ctype = types.types[*ct];
+            u32 expected = ctype.count;
+            if (args_count != expected)
+              emit(node_span(n), "wrong number of arguments for vec/mat construction");
+            // unify each arg with the element/column type
+            for (u32 k = 0; k < args_count && k < expected; ++k)
+              unifier.unify(arg_types[k], IType::from(ctype.inner), types);
+            result = itype(*ct);
+          }
+          sema.node_type[n] = result;
+          return result;
+        }
+        // struct positional construction: TypeName(arg0, arg1, ...)
         if (tn != 0 && ssym_ir.nodes.kind[tn] == NodeKind::StructType) {
           u32 fc = ssym_ir.nodes.c[tn];
           if (args_count != fc) {
@@ -296,14 +355,13 @@ struct BodyChecker {
               if (ct) unifier.unify(arg_types[k], IType::from(*ct), types);
             }
           }
-          // use the callee's resolved type if it's a struct with type args
-          // (e.g. Pair<i32, u32>); otherwise fall back to bare struct.
           IType callee_resolved = unifier.resolve(sema.node_type[callee_n]);
           if (!callee_resolved.is_var &&
               types.types[callee_resolved.concrete].kind == CTypeKind::Struct &&
               types.types[callee_resolved.concrete].list_count > 0)
             result = itype(callee_resolved.concrete);
-          else result = itype(types.make_struct(struct_sid));
+          else
+            result = itype(types.make_struct(struct_sid));
           sema.node_type[n] = result;
           return result;
         }
@@ -429,9 +487,33 @@ struct BodyChecker {
       }
     }
 
+    // draw packet field access: @draw_packet returns opaque type,
+    // resolve field types from the known DrawPacket layout.
+    if (is_draw_packet_expr(base_n)) {
+      auto fname = interner.view(field_nm);
+      if (fname == "pipeline_handle" || fname == "vertex_buffer_handle" ||
+          fname == "index_buffer_handle")
+        result = itype(CTypeKind::U64);
+      else
+        result = itype(CTypeKind::U32);
+      sema.node_type[n] = result;
+      return result;
+    }
+
     auto [sct_id, sct_ptr] = peel_ref(base_t);
     if (sct_ptr) {
       const CType &sct = *sct_ptr;
+
+      // builtin vec/mat field access
+      if (sct.kind == CTypeKind::Vec || sct.kind == CTypeKind::Mat) {
+        auto fname = interner.view(field_nm);
+        i32 idx = vec_mat_field_index(fname);
+        if (idx >= 0 && static_cast<u32>(idx) < sct.count) {
+          result = itype(sct.inner);
+          sema.node_type[n] = result;
+          return result;
+        }
+      }
 
       // shader field access enforcement: check read/write rules for @shader
       // structs.
@@ -1101,15 +1183,44 @@ struct BodyChecker {
     case NodeKind::Binary: {
       IType lt = check_expr(ir.nodes.b[n], sema);
       IType rt = check_expr(ir.nodes.c[n], sema);
-      if (!unifier.unify(lt, rt, types))
-        emit(node_span(n), "type mismatch in binary expression: " +
-                               type_name(lt) + " vs " + type_name(rt));
       auto op = static_cast<TokenKind>(ir.nodes.a[n]);
+      if (!unifier.unify(lt, rt, types)) {
+        auto lres = unifier.resolve(lt);
+        auto rres = unifier.resolve(rt);
+        bool handled = false;
+        if (!lres.is_var && !rres.is_var &&
+            (op == TokenKind::Star || op == TokenKind::Slash ||
+             op == TokenKind::Plus || op == TokenKind::Minus)) {
+          auto &lct = types.types[lres.concrete];
+          auto &rct = types.types[rres.concrete];
+          // vec op scalar / scalar op vec (element type must match scalar)
+          if (lct.kind == CTypeKind::Vec && rres.concrete == lct.inner) {
+            result = lt; handled = true;
+          } else if (rct.kind == CTypeKind::Vec && lres.concrete == rct.inner) {
+            result = rt; handled = true;
+          }
+          // mat * vec → vec (column type must match)
+          if (!handled && op == TokenKind::Star &&
+              lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Vec &&
+              lct.inner == rres.concrete) {
+            result = rt; handled = true;
+          }
+          // mat * mat (same type)
+          if (!handled && op == TokenKind::Star &&
+              lct.kind == CTypeKind::Mat && lres.concrete == rres.concrete) {
+            result = lt; handled = true;
+          }
+        }
+        if (!handled)
+          emit(node_span(n), "type mismatch in binary expression: " +
+                                 type_name(lt) + " vs " + type_name(rt));
+      }
       bool is_cmp = op == TokenKind::EqualEqual || op == TokenKind::BangEqual ||
                     op == TokenKind::Less || op == TokenKind::LessEqual ||
                     op == TokenKind::Greater || op == TokenKind::GreaterEqual ||
                     op == TokenKind::PipePipe || op == TokenKind::AmpAmp;
-      result = is_cmp ? itype(CTypeKind::Bool) : lt;
+      if (!result.is_var && result.concrete == 0) // not yet set
+        result = is_cmp ? itype(CTypeKind::Bool) : lt;
       break;
     }
     case NodeKind::Call: result = check_call(n, sema); break;
@@ -1368,14 +1479,7 @@ struct BodyChecker {
       check_expr(ir.nodes.a[n], sema);
       check_expr(ir.nodes.b[n], sema);
       check_expr(ir.nodes.c[n], sema);
-      {
-        SymbolId vec4_sid = lookup_type("vec4");
-        if (vec4_sid != kInvalidSymbol) {
-          result = itype(types.make_struct(vec4_sid));
-        } else {
-          result = IType::fresh(unifier.fresh());
-        }
-      }
+      result = itype(types.make_vec(types.builtin(CTypeKind::F32), 4));
       break;
     }
     case NodeKind::ShaderDrawId:

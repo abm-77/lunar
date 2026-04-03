@@ -44,6 +44,8 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       } break;
 
       case NodeKind::StructType:
+      case NodeKind::VecType:
+      case NodeKind::MatType:
       case NodeKind::EnumType:
       case NodeKind::FnType:
       case NodeKind::Ident:

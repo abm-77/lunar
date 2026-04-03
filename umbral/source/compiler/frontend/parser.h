@@ -397,6 +397,33 @@ private:
       return type_ast.make(TypeKind::Named, start, name);
     }
 
+    // vec<T, N> — vector type
+    if (match(TokenKind::KwVec)) {
+      expect(TokenKind::Less, "expected '<' after vec");
+      TypeId elem = parse_type();
+      expect(TokenKind::Comma, "expected ',' in vec<T, N>");
+      u32 count = t.payload[i];
+      expect(TokenKind::Int, "expected integer dimension in vec<T, N>");
+      expect(TokenKind::Greater, "expected '>'");
+      Span endsp = {start.start, t.end[i - 1]};
+      return type_ast.make(TypeKind::Vec, endsp, count, elem);
+    }
+
+    // mat<T, N, M> — matrix type (N cols × M rows)
+    if (match(TokenKind::KwMat)) {
+      expect(TokenKind::Less, "expected '<' after mat");
+      TypeId elem = parse_type();
+      expect(TokenKind::Comma, "expected ',' in mat<T, N, M>");
+      u32 cols = t.payload[i];
+      expect(TokenKind::Int, "expected column count in mat<T, N, M>");
+      expect(TokenKind::Comma, "expected ',' in mat<T, N, M>");
+      u32 rows = t.payload[i];
+      expect(TokenKind::Int, "expected row count in mat<T, N, M>");
+      expect(TokenKind::Greater, "expected '>'");
+      Span endsp = {start.start, t.end[i - 1]};
+      return type_ast.make(TypeKind::Mat, endsp, cols, rows, elem);
+    }
+
     // named type: Ident [:: Ident] [< TypeArg, ... >]
     SymId name = expect_ident("expected type name");
     if (match(TokenKind::ColonColon)) {
@@ -765,6 +792,33 @@ private:
         return body_ir.nodes.make(NodeKind::AnonStructInit, aspan, stype_nid,
                                   istart, ifields_count);
       }
+    }
+
+    // vec<T, N> — vector type expression (used in type aliases and constructors)
+    if (match(TokenKind::KwVec)) {
+      expect(TokenKind::Less, "expected '<' after vec");
+      TypeId elem = parse_type();
+      expect(TokenKind::Comma, "expected ',' in vec<T, N>");
+      u32 count = t.payload[i];
+      expect(TokenKind::Int, "expected integer dimension in vec<T, N>");
+      expect(TokenKind::Greater, "expected '>'");
+      Span endsp = {s.start, t.end[i - 1]};
+      return body_ir.nodes.make(NodeKind::VecType, endsp, count, elem);
+    }
+
+    // mat<T, N, M> — matrix type expression
+    if (match(TokenKind::KwMat)) {
+      expect(TokenKind::Less, "expected '<' after mat");
+      TypeId elem = parse_type();
+      expect(TokenKind::Comma, "expected ',' in mat<T, N, M>");
+      u32 cols = t.payload[i];
+      expect(TokenKind::Int, "expected column count in mat<T, N, M>");
+      expect(TokenKind::Comma, "expected ',' in mat<T, N, M>");
+      u32 rows = t.payload[i];
+      expect(TokenKind::Int, "expected row count in mat<T, N, M>");
+      expect(TokenKind::Greater, "expected '>'");
+      Span endsp = {s.start, t.end[i - 1]};
+      return body_ir.nodes.make(NodeKind::MatType, endsp, cols, rows, elem);
     }
 
     // enum { Variant, ... }

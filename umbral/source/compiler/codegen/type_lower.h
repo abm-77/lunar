@@ -111,6 +111,10 @@ private:
     case CTypeKind::U64: return llvm::Type::getInt64Ty(ctx);
     case CTypeKind::F32: return llvm::Type::getFloatTy(ctx);
     case CTypeKind::F64: return llvm::Type::getDoubleTy(ctx);
+    case CTypeKind::Vec:
+      return llvm::FixedVectorType::get(lower(ct.inner), ct.count);
+    case CTypeKind::Mat:
+      return llvm::ArrayType::get(lower(ct.inner), ct.count);
 
     // reference → opaque pointer
     case CTypeKind::Ref: return llvm::PointerType::get(ctx, 0);

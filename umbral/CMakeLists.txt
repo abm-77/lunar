@@ -333,7 +333,8 @@ foreach(EXAMPLE_DIR ${EXAMPLE_DIRS})
         --root ${CMAKE_SOURCE_DIR}/source/std
         --shader-out ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
         -o ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME}
-      DEPENDS uc
+      COMMAND sh -c "$<TARGET_FILE:ul> --pack ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/assets.umpack ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/*.umsh"
+      DEPENDS uc ul
       COMMENT "Building example: ${EXAMPLE_NAME}"
     )
     list(APPEND EXAMPLE_OUTPUTS ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME})

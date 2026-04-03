@@ -77,6 +77,8 @@ enum class NodeKind : u16 {
   FnLit,      // a = index into BodyIR::fn_lits
   StructType, // b = fields_start, c = fields_count (pairs [SymId, TypeId] in
               // list)
+  VecType, // a = count (2/3/4), b = element TypeId
+  MatType, // a = cols, b = rows, c = element TypeId
   FnType,     // a = ret TypeId, b = params_start, c = params_count (TypeIds in
               // list)
   EnumType,   // b = variants_start, c = variants_count (SymIds in list)
@@ -127,6 +129,8 @@ enum class TypeKind : u16 {
              //   param like [N]T)
   ConstInt, // a = integer value — const-generic value type arg (e.g. the 10 in
             // List<i32, 10>)
+  Vec, // a = count (2/3/4), b = element TypeId
+  Mat, // a = cols, b = rows, c = element TypeId
 };
 
 using ExprAst = NodeStore<NodeId, NodeKind, NodeId>;

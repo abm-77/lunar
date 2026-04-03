@@ -65,7 +65,7 @@ const main := fn() -> i32 {
 
     const cmd := gfx::begin_frame(dev);
     if (cmd.handle != 0) {
-      var ds := draw::DrawStream::create(dev, cmd, pipeline);
+      var ds := draw::DrawStream::create(dev, cmd, pipeline, 16);
       ds.push_draw_packet(types::DrawPacket {
         vertex_count   = 3,
         instance_count = 1,

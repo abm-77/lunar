@@ -15,8 +15,8 @@
 # CHECK: um_shader.sampler
 # CHECK: um_shader.sample
 
-const vec2 := struct { x: f32, y: f32 };
-const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
+const vec2 := vec<f32, 2>;
+const vec4 := vec<f32, 4>;
 
 @shader_pod const Vert08In := struct {
   @location(0) pos: vec2,

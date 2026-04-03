@@ -1,0 +1,141 @@
+import sys.window;
+import sys.gfx;
+import sys.gfx.types;
+import sys.gfx.draw;
+import sys.gfx.assets;
+import sys.asset;
+import math.types => math;
+
+# vertex data uploaded to the frame arena; read by shader via @frame_read
+const CubeVertex := struct {
+  px: f32, py: f32, pz: f32,
+  cr: f32, cg: f32, cb: f32, ca: f32,
+};
+
+# per-draw data: MVP matrix followed by vertex array
+const CubeDrawData := struct {
+  mvp: math::mat4,
+  verts: [36]CubeVertex,
+};
+
+# shader IO types
+@shader_pod const CubeVsOut := struct {
+  @builtin(position) clip: math::vec4,
+  @location(0) color: math::vec4,
+};
+
+@shader_pod const CubeFsOut := struct {
+  @location(0) color: math::vec4,
+};
+
+@shader const CubeShader := struct {
+  @vs_out vout: CubeVsOut,
+  @fs_in  fin:  CubeVsOut,
+  @fs_out fout: CubeFsOut,
+};
+
+impl CubeShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    const pkt := @draw_packet(@draw_id());
+    const base := pkt.draw_data_offset;
+
+    # read MVP (64 bytes) and per-vertex data (28 bytes each)
+    const mvp := @frame_read<math::mat4>(base);
+    const vid := @vertex_id();
+    const v_off := base + 64 + vid * 28;
+    const pos := @frame_read<math::vec3>(v_off);
+    const color := @frame_read<math::vec4>(v_off + 12);
+
+    self.vout.clip = mvp * math::vec4(pos.x, pos.y, pos.z, 1.0);
+    self.vout.color = color;
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    self.fout.color = self.fin.color;
+  };
+}
+
+const cv := fn(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32) -> CubeVertex {
+  return CubeVertex(x, y, z, r, g, b, 1.0);
+};
+
+const main := fn() -> i32 {
+  asset::init("assets.umpack");
+
+  var win := window::Window::create("cube", 800, 600);
+
+  const dev := gfx::init(win.handle, gfx::GfxConfig {
+    frames_in_flight  = 2,
+    max_textures      = 64,
+    max_samplers      = 16,
+    frame_arena_bytes = 1048576,
+    draw_packets_max  = 1024,
+    enable_validation = true,
+    enable_depth      = true,
+    present_mode      = types::PresentMode::Fifo,
+  });
+
+  const pipeline := assets::pipeline_create<CubeShader>(dev);
+
+  const h: f32 = 0.5;
+  const verts := [36]CubeVertex{
+    # front (z=+h), red
+    cv(-h,-h, h, 1.0,0.2,0.2), cv( h,-h, h, 1.0,0.2,0.2), cv( h, h, h, 1.0,0.2,0.2),
+    cv(-h,-h, h, 1.0,0.2,0.2), cv( h, h, h, 1.0,0.2,0.2), cv(-h, h, h, 1.0,0.2,0.2),
+    # back (z=-h), cyan
+    cv( h,-h,-h, 0.2,1.0,1.0), cv(-h,-h,-h, 0.2,1.0,1.0), cv(-h, h,-h, 0.2,1.0,1.0),
+    cv( h,-h,-h, 0.2,1.0,1.0), cv(-h, h,-h, 0.2,1.0,1.0), cv( h, h,-h, 0.2,1.0,1.0),
+    # right (x=+h), green
+    cv( h,-h, h, 0.2,1.0,0.2), cv( h,-h,-h, 0.2,1.0,0.2), cv( h, h,-h, 0.2,1.0,0.2),
+    cv( h,-h, h, 0.2,1.0,0.2), cv( h, h,-h, 0.2,1.0,0.2), cv( h, h, h, 0.2,1.0,0.2),
+    # left (x=-h), magenta
+    cv(-h,-h,-h, 1.0,0.2,1.0), cv(-h,-h, h, 1.0,0.2,1.0), cv(-h, h, h, 1.0,0.2,1.0),
+    cv(-h,-h,-h, 1.0,0.2,1.0), cv(-h, h, h, 1.0,0.2,1.0), cv(-h, h,-h, 1.0,0.2,1.0),
+    # top (y=+h), yellow
+    cv(-h, h, h, 1.0,1.0,0.2), cv( h, h, h, 1.0,1.0,0.2), cv( h, h,-h, 1.0,1.0,0.2),
+    cv(-h, h, h, 1.0,1.0,0.2), cv( h, h,-h, 1.0,1.0,0.2), cv(-h, h,-h, 1.0,1.0,0.2),
+    # bottom (y=-h), blue
+    cv(-h,-h,-h, 0.2,0.2,1.0), cv( h,-h,-h, 0.2,0.2,1.0), cv( h,-h, h, 0.2,0.2,1.0),
+    cv(-h,-h,-h, 0.2,0.2,1.0), cv( h,-h, h, 0.2,0.2,1.0), cv(-h,-h, h, 0.2,0.2,1.0),
+  };
+
+  var angle: f32 = 0.0;
+  var ds := draw::DrawStream::create(dev, gfx::Cmd { handle = 0 }, pipeline, 16);
+
+  for (; !window::Window::should_close(&win);) {
+    window::Window::poll_events();
+
+    const cmd := gfx::begin_frame(dev);
+    if (cmd.handle != 0) {
+      const proj := math::mat4_perspective(math::PI / 3.0, 800.0 / 600.0, 0.1, 100.0);
+      const view := math::mat4_translate(0.0, 0.0, -3.0);
+      const ry := math::mat4_rotate_y(angle);
+      const rx := math::mat4_rotate_x(angle * 0.7);
+      const mvp := math::mat4_mul(proj, math::mat4_mul(view, math::mat4_mul(ry, rx)));
+
+      const fa := gfx::frame_alloc(dev, @size_of(CubeDrawData), 256);
+      const data := @as(fa.ptr, &mut CubeDrawData);
+      *data = CubeDrawData { mvp = mvp, verts = verts };
+
+      ds.reset(cmd, pipeline);
+      ds.push_draw_packet(types::DrawPacket {
+        vertex_count     = 36,
+        instance_count   = 1,
+        draw_data_offset = fa.offset,
+      });
+      ds.submit();
+      gfx::end_frame(dev, cmd);
+    }
+
+    angle += 0.01;
+  }
+
+  ds.destroy();
+  gfx::pipeline_destroy(dev, pipeline);
+  gfx::shutdown(dev);
+  win.destroy();
+
+  return 0;
+};

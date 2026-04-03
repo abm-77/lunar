@@ -1,0 +1,32 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: scale=2 4 6 8
+# CHECK: matvec=1 2 3 1
+# CHECK: field=3.14
+
+import math.types => math;
+import sys.io.fmt;
+
+const main := fn() -> i32 {
+  # vec4 * scalar
+  const v := math::vec4(1.0, 2.0, 3.0, 4.0);
+  const s := v * 2.0;
+  fmt::println("scale={} {} {} {}", [4]fmt::Arg{
+    fmt::arg_f32(s.x), fmt::arg_f32(s.y),
+    fmt::arg_f32(s.z), fmt::arg_f32(s.w),
+  });
+
+  # mat4 * vec4 (identity pass-through)
+  const m := math::mat4_identity();
+  const pos := math::vec4(1.0, 2.0, 3.0, 1.0);
+  const r := m * pos;
+  fmt::println("matvec={} {} {} {}", [4]fmt::Arg{
+    fmt::arg_f32(r.x), fmt::arg_f32(r.y),
+    fmt::arg_f32(r.z), fmt::arg_f32(r.w),
+  });
+
+  # field access
+  const pv := math::vec4(3.14, 2.71, 1.41, 0.0);
+  fmt::println("field={}", [1]fmt::Arg{ fmt::arg_f32(pv.x) });
+
+  return 0;
+};

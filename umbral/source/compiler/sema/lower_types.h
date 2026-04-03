@@ -206,6 +206,31 @@ struct TypeLowerer {
         NodeKind tnk = ir->nodes.kind[resolved.type_node];
         if (tnk == NodeKind::EnumType) {
           ct_kind = CTypeKind::Enum;
+        } else if (tnk == NodeKind::VecType) {
+          u32 count = ir->nodes.a[resolved.type_node];
+          TypeId elem_tid = ir->nodes.b[resolved.type_node];
+          // lower element type using the defining module's TypeAst
+          const TypeAst &def_ta = module_contexts
+              ? *(*module_contexts)[resolved.module_idx].type_ast
+              : type_ast;
+          TypeLowerer def_fl(def_ta, syms, interner, out);
+          def_fl.module_idx = resolved.module_idx;
+          auto elem = def_fl.lower(elem_tid);
+          if (!elem) return elem;
+          return out.make_vec(*elem, count);
+        } else if (tnk == NodeKind::MatType) {
+          u32 cols = ir->nodes.a[resolved.type_node];
+          u32 rows = ir->nodes.b[resolved.type_node];
+          TypeId elem_tid = ir->nodes.c[resolved.type_node];
+          const TypeAst &def_ta = module_contexts
+              ? *(*module_contexts)[resolved.module_idx].type_ast
+              : type_ast;
+          TypeLowerer def_fl(def_ta, syms, interner, out);
+          def_fl.module_idx = resolved.module_idx;
+          auto elem = def_fl.lower(elem_tid);
+          if (!elem) return elem;
+          auto col_vec = out.make_vec(*elem, rows);
+          return out.make_mat(col_vec, cols);
         } else if (tnk == NodeKind::Ident) {
           SymId alias_name = ir->nodes.a[resolved.type_node];
           if (auto b = builtin_from_name(interner.view(alias_name), out))
@@ -361,6 +386,23 @@ struct TypeLowerer {
       ct.list_start = start;
       ct.list_count = cnt;
       return out.intern(ct);
+    } break;
+
+    case TypeKind::Vec: {
+      u32 count = type_ast.a[tid];
+      auto elem = lower(type_ast.b[tid]);
+      if (!elem) return elem;
+      return out.make_vec(*elem, count);
+    } break;
+
+    case TypeKind::Mat: {
+      u32 cols = type_ast.a[tid];
+      u32 rows = type_ast.b[tid];
+      TypeId elem_tid = type_ast.c[tid];
+      auto elem = lower(elem_tid);
+      if (!elem) return elem;
+      auto col_vec = out.make_vec(*elem, rows);
+      return out.make_mat(col_vec, cols);
     } break;
 
     case TypeKind::Fn: {

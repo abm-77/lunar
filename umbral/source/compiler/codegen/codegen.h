@@ -84,6 +84,25 @@ inline std::string mangle(SymbolId id, const CodegenCtx &cg) {
   return out;
 }
 
+// try to evaluate a constant init expression to an llvm::Constant.
+// handles int/float/bool literals; returns null for anything else.
+static llvm::Constant *try_const_init(CodegenCtx &cg, const Symbol &sym,
+                                      llvm::Type *ty) {
+  if (!sym.init_expr) return nullptr;
+  const BodyIR &ir = cg.modules[sym.module_idx].ir;
+  NodeId n = sym.init_expr;
+  if (n >= ir.nodes.kind.size()) return nullptr;
+  switch (ir.nodes.kind[n]) {
+  case NodeKind::IntLit:
+    return llvm::ConstantInt::get(ty, static_cast<int64_t>(ir.nodes.a[n]));
+  case NodeKind::FloatLit:
+    return llvm::ConstantFP::get(ty, ir.float_lits[ir.nodes.a[n]]);
+  case NodeKind::BoolLit:
+    return llvm::ConstantInt::getBool(ty->getContext(), ir.nodes.a[n] != 0);
+  default: return nullptr;
+  }
+}
+
 inline void declare_globals(CodegenCtx &cg) {
   for (SymbolId i = 1; i < cg.sema.syms.symbols.size(); ++i) {
     const Symbol &sym = cg.sema.syms.symbols[i];
@@ -106,7 +125,8 @@ inline void declare_globals(CodegenCtx &cg) {
                                     llvm::GlobalValue::ExternalLinkage, nullptr,
                                     llvm::StringRef{sv.data(), sv.size()});
     } else {
-      llvm::Constant *init = llvm::Constant::getNullValue(ty);
+      llvm::Constant *init = try_const_init(cg, sym, ty);
+      if (!init) init = llvm::Constant::getNullValue(ty);
       gv = new llvm::GlobalVariable(
           *cg.module, ty, !has(sym.flags, SymFlags::Mut),
           llvm::GlobalValue::ExternalLinkage, init, mangle(i, cg));

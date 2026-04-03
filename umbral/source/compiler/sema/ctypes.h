@@ -26,6 +26,8 @@ enum class CTypeKind : u8 {
   U64,
   F32,
   F64,
+  Vec, // inner = element CTypeId (F32/I32/etc), count = length (2/3/4)
+  Mat, // inner = column Vec CTypeId, count = columns (2/3/4)
   Ref,       // inner, is_mut
   Array,     // inner=elem, count
   Tuple,     // list_start, list_count
@@ -94,6 +96,20 @@ struct TypeTable {
   }
 
   // shorthand constructors that intern automatically
+  CTypeId make_vec(CTypeId elem, u32 count) {
+    CType t;
+    t.kind = CTypeKind::Vec;
+    t.inner = elem;
+    t.count = count;
+    return intern(t);
+  }
+  CTypeId make_mat(CTypeId col_vec, u32 cols) {
+    CType t;
+    t.kind = CTypeKind::Mat;
+    t.inner = col_vec;
+    t.count = cols;
+    return intern(t);
+  }
   CTypeId make_struct(SymbolId sym) {
     CType t;
     t.kind = CTypeKind::Struct;

@@ -95,6 +95,11 @@ typedef struct {
   uint64_t
       min_ssbo_alignment; // VkPhysicalDeviceLimits.minStorageBufferOffsetAlignment
 
+  VkImage depth_image;
+  VkDeviceMemory depth_memory;
+  VkImageView depth_image_view;
+  bool depth_enabled;
+
   uint32_t
       current_frame; // monotonically increasing; mod frames_in_flight for slot
   bool frame_open;
@@ -385,6 +390,8 @@ static bool create_device(gfx_device_ctx_t *d) {
       .pNext = &di_features,
       .features =
           {
+              .vertexPipelineStoresAndAtomics = VK_TRUE,
+              .shaderInt64 = VK_TRUE,
               .shaderSampledImageArrayDynamicIndexing = VK_TRUE,
               .shaderStorageBufferArrayDynamicIndexing = VK_TRUE,
           },
@@ -543,10 +550,27 @@ static bool create_render_pass(gfx_device_ctx_t *d) {
       .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
   };
 
+  VkAttachmentDescription depth_att = {
+      .format = VK_FORMAT_D32_SFLOAT,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  };
+
+  VkAttachmentReference depth_ref = {
+      .attachment = 1,
+      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  };
+
   VkSubpassDescription subpass = {
       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
       .colorAttachmentCount = 1,
       .pColorAttachments = &color_ref,
+      .pDepthStencilAttachment = d->depth_enabled ? &depth_ref : NULL,
   };
 
   // dependency ensures swapchain image is ready before we write to it and
@@ -554,16 +578,27 @@ static bool create_render_pass(gfx_device_ctx_t *d) {
   VkSubpassDependency dep = {
       .srcSubpass = VK_SUBPASS_EXTERNAL,
       .dstSubpass = 0,
-      .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-      .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+      .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                      (d->depth_enabled
+                           ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                           : 0),
+      .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                      (d->depth_enabled
+                           ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                           : 0),
       .srcAccessMask = 0,
-      .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                       (d->depth_enabled
+                            ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                            : 0),
   };
+
+  VkAttachmentDescription attachments[2] = {color_att, depth_att};
 
   VkRenderPassCreateInfo rp_ci = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-      .attachmentCount = 1,
-      .pAttachments = &color_att,
+      .attachmentCount = d->depth_enabled ? 2u : 1u,
+      .pAttachments = attachments,
       .subpassCount = 1,
       .pSubpasses = &subpass,
       .dependencyCount = 1,
@@ -576,11 +611,12 @@ static bool create_render_pass(gfx_device_ctx_t *d) {
 
 static bool create_framebuffers(gfx_device_ctx_t *d) {
   for (int i = 0; i < d->swapchain_image_count; ++i) {
-    VkImageView attachments[] = {d->swapchain_image_views[i]};
+    VkImageView attachments[] = {d->swapchain_image_views[i],
+                                 d->depth_image_view};
     VkFramebufferCreateInfo fb_ci = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = d->render_pass,
-        .attachmentCount = 1,
+        .attachmentCount = d->depth_enabled ? 2u : 1u,
         .pAttachments = attachments,
         .width = d->swapchain_extent.width,
         .height = d->swapchain_extent.height,
@@ -625,6 +661,59 @@ static void destroy_swapchain(gfx_device_ctx_t *d) {
   vkDestroySwapchainKHR(d->device, d->swapchain, NULL);
   d->swapchain = VK_NULL_HANDLE;
   d->swapchain_image_count = 0;
+}
+
+static bool create_depth_resources(gfx_device_ctx_t *d) {
+  VkFormat depth_fmt = VK_FORMAT_D32_SFLOAT;
+  VkImageCreateInfo img_ci = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = depth_fmt,
+      .extent = {d->swapchain_extent.width, d->swapchain_extent.height, 1},
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+  };
+  vkCreateImage(d->device, &img_ci, NULL, &d->depth_image);
+
+  VkMemoryRequirements mem_req;
+  vkGetImageMemoryRequirements(d->device, d->depth_image, &mem_req);
+  VkMemoryAllocateInfo alloc_ci = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = mem_req.size,
+      .memoryTypeIndex = find_memory_type(d->physical_device,
+                                          mem_req.memoryTypeBits,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+  };
+  vkAllocateMemory(d->device, &alloc_ci, NULL, &d->depth_memory);
+  vkBindImageMemory(d->device, d->depth_image, d->depth_memory, 0);
+
+  VkImageViewCreateInfo view_ci = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = d->depth_image,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+      .format = depth_fmt,
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+              .levelCount = 1,
+              .layerCount = 1,
+          },
+  };
+  vkCreateImageView(d->device, &view_ci, NULL, &d->depth_image_view);
+  return true;
+}
+
+static void destroy_depth_resources(gfx_device_ctx_t *d) {
+  if (d->depth_image_view)
+    vkDestroyImageView(d->device, d->depth_image_view, NULL);
+  if (d->depth_image) vkDestroyImage(d->device, d->depth_image, NULL);
+  if (d->depth_memory) vkFreeMemory(d->device, d->depth_memory, NULL);
+  d->depth_image_view = VK_NULL_HANDLE;
+  d->depth_image = VK_NULL_HANDLE;
+  d->depth_memory = VK_NULL_HANDLE;
 }
 
 static bool create_sync_objects(gfx_device_ctx_t *d) {
@@ -844,7 +933,8 @@ gfx_device_handle_t rt_gfx_init(uint64_t window_handle,
                                 uint32_t max_textures, uint32_t max_samplers,
                                 uint64_t frame_arena_bytes,
                                 uint32_t draw_packets_max,
-                                bool enable_validation, uint32_t present_mode) {
+                                bool enable_validation, uint32_t present_mode,
+                                bool enable_depth) {
   assert(!g_dev_alive && "rt_gfx_init called twice");
   memset(&g_dev, 0, sizeof(g_dev));
 
@@ -854,8 +944,10 @@ gfx_device_handle_t rt_gfx_init(uint64_t window_handle,
   g_dev.cfg.frame_arena_bytes = frame_arena_bytes;
   g_dev.cfg.draw_packets_max = draw_packets_max;
   g_dev.cfg.enable_validation = enable_validation;
+  g_dev.cfg.enable_depth = enable_depth;
   g_dev.cfg.present_mode = (gfx_present_mode_t)present_mode;
   g_dev.window_handle = window_handle;
+  g_dev.depth_enabled = enable_depth;
 
   gfx_device_ctx_t *d = &g_dev;
 
@@ -864,6 +956,7 @@ gfx_device_handle_t rt_gfx_init(uint64_t window_handle,
   if (!create_device(d)) goto fail;
 
   if (!create_swapchain(d, window_handle)) goto fail;
+  if (d->depth_enabled && !create_depth_resources(d)) goto fail;
   if (!create_render_pass(d)) goto fail;
   if (!create_framebuffers(d)) goto fail;
 
@@ -930,6 +1023,7 @@ void rt_gfx_shutdown(gfx_device_handle_t dev) {
   }
 
   destroy_framebuffers(d);
+  if (d->depth_enabled) destroy_depth_resources(d);
   vkDestroyRenderPass(d->device, d->render_pass, NULL);
   destroy_swapchain(d);
   vkDestroySurfaceKHR(d->instance, d->surface, NULL);
@@ -975,8 +1069,10 @@ gfx_cmd_handle_t rt_gfx_begin_frame(gfx_device_handle_t dev) {
   if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
     vkDeviceWaitIdle(d->device);
     destroy_framebuffers(d);
+    if (d->depth_enabled) destroy_depth_resources(d);
     destroy_swapchain(d);
     create_swapchain(d, d->window_handle);
+    if (d->depth_enabled) create_depth_resources(d);
     create_framebuffers(d);
     return GFX_NULL_HANDLE;
   }
@@ -988,14 +1084,17 @@ gfx_cmd_handle_t rt_gfx_begin_frame(gfx_device_handle_t dev) {
   };
   vkBeginCommandBuffer(d->command_buffers[slot], &begin_ci);
 
-  VkClearValue clear_val = {.color = {.float32 = {0, 0, 0, 1}}};
+  VkClearValue clear_vals[2] = {
+      {.color = {.float32 = {0, 0, 0, 1}}},
+      {.depthStencil = {.depth = 1.0f, .stencil = 0}},
+  };
   VkRenderPassBeginInfo rp_bi = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
       .renderPass = d->render_pass,
       .framebuffer = d->framebuffers[d->current_image_index],
       .renderArea = {.offset = {0, 0}, .extent = d->swapchain_extent},
-      .clearValueCount = 1,
-      .pClearValues = &clear_val,
+      .clearValueCount = d->depth_enabled ? 2u : 1u,
+      .pClearValues = clear_vals,
   };
   vkCmdBeginRenderPass(d->command_buffers[slot], &rp_bi,
                        VK_SUBPASS_CONTENTS_INLINE);
@@ -1169,6 +1268,12 @@ rt_gfx_pipeline_create(gfx_device_handle_t dev, const uint8_t *vs_spv,
       .dynamicStateCount = 2,
       .pDynamicStates = dyn_states,
   };
+  VkPipelineDepthStencilStateCreateInfo ds = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+      .depthTestEnable = VK_TRUE,
+      .depthWriteEnable = VK_TRUE,
+      .depthCompareOp = VK_COMPARE_OP_LESS,
+  };
   VkGraphicsPipelineCreateInfo pipeline_ci = {
       .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
       .stageCount = 2,
@@ -1178,6 +1283,7 @@ rt_gfx_pipeline_create(gfx_device_handle_t dev, const uint8_t *vs_spv,
       .pViewportState = &vp_state,
       .pRasterizationState = &rast,
       .pMultisampleState = &ms,
+      .pDepthStencilState = d->depth_enabled ? &ds : NULL,
       .pColorBlendState = &blend,
       .pDynamicState = &dyn,
       .layout = d->pipeline_layout,
@@ -1751,7 +1857,8 @@ void *gfx_arena_alloc(gfx_frame_arena_t *arena, uint64_t size, uint64_t align,
   }
   arena->head = aligned + size;
   uint64_t abs = arena->frame_base_offset + aligned;
-  *out_offset = (uint32_t)abs;
+  // offset relative to current frame's slice (descriptor set already binds at frame_base)
+  *out_offset = (uint32_t)aligned;
   if (!arena->mapped_ptr) return NULL;
   return (uint8_t *)arena->mapped_ptr + abs;
 }

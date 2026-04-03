@@ -471,6 +471,49 @@ struct FuncEmitter {
     }
   }
 
+  // map vec/mat field names to indices. returns -1 for unknown.
+  static i32 vec_mat_field_index(std::string_view s) {
+    if (s.size() == 1) {
+      switch (s[0]) {
+      case 'x': case 'r': return 0;
+      case 'y': case 'g': return 1;
+      case 'z': case 'b': return 2;
+      case 'w': case 'a': return 3;
+      default: return -1;
+      }
+    }
+    if (s.size() == 4 && s[0] == 'c' && s[3] >= '0' && s[3] <= '3')
+      return s[3] - '0';
+    return -1;
+  }
+
+  // vec * scalar: splat scalar to vector width, then element-wise op.
+  llvm::Value *emit_vec_scalar_op(TokenKind op, llvm::Value *vec,
+                                  llvm::Value *scalar, u32 n,
+                                  bool vec_is_lhs) {
+    auto *vty = llvm::cast<llvm::FixedVectorType>(vec->getType());
+    if (scalar->getType() != vty->getElementType())
+      scalar = builder.CreateFPTrunc(scalar, vty->getElementType());
+    auto *splat = builder.CreateVectorSplat(n, scalar);
+    auto *a = vec_is_lhs ? vec : splat;
+    auto *bv = vec_is_lhs ? splat : vec;
+    return emit_arith_op(op, a, bv, true, false);
+  }
+
+  // mat * vec: column-major matrix-vector multiply.
+  // mat is [N x <N x T>], vec is <N x T>. result is <N x T>.
+  llvm::Value *emit_mat_mul_vec(llvm::Value *mat, llvm::Value *vec, u32 n) {
+    llvm::Value *result = nullptr;
+    for (u32 i = 0; i < n; ++i) {
+      auto *col = builder.CreateExtractValue(mat, i);
+      auto *vi = builder.CreateExtractElement(vec, i);
+      auto *splat = builder.CreateVectorSplat(n, vi);
+      auto *term = builder.CreateFMul(col, splat);
+      result = result ? builder.CreateFAdd(result, term) : term;
+    }
+    return result;
+  }
+
   llvm::Value *emit_binary(NodeId n) {
     auto op = static_cast<TokenKind>(ir.nodes.a[n]);
 
@@ -480,9 +523,37 @@ struct FuncEmitter {
     llvm::Value *lv = emit_expr(ir.nodes.b[n]);
     llvm::Value *rv = emit_expr(ir.nodes.c[n]);
 
-    CTypeKind lk =
-        cg.sema.types.types[bsema.node_type[ir.nodes.b[n]].concrete].kind;
-    return emit_arith_op(op, lv, rv, is_float(lk), is_signed(lk));
+    const CType &lct = cg.sema.types.types[bsema.node_type[ir.nodes.b[n]].concrete];
+    const CType &rct = cg.sema.types.types[bsema.node_type[ir.nodes.c[n]].concrete];
+
+    // vec op scalar / scalar op vec (neither side is mat)
+    if (lct.kind == CTypeKind::Vec && rct.kind != CTypeKind::Vec &&
+        rct.kind != CTypeKind::Mat)
+      return emit_vec_scalar_op(op, lv, rv, lct.count, true);
+    if (rct.kind == CTypeKind::Vec && lct.kind != CTypeKind::Vec &&
+        lct.kind != CTypeKind::Mat)
+      return emit_vec_scalar_op(op, rv, lv, rct.count, false);
+
+    // mat * vec
+    if (lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Vec &&
+        op == TokenKind::Star)
+      return emit_mat_mul_vec(lv, rv, lct.count);
+
+    // mat * mat
+    if (lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Mat &&
+        op == TokenKind::Star) {
+      llvm::Value *result = llvm::UndefValue::get(lv->getType());
+      for (u32 i = 0; i < lct.count; ++i) {
+        auto *col = builder.CreateExtractValue(rv, i);
+        result = builder.CreateInsertValue(
+            result, emit_mat_mul_vec(lv, col, lct.count), i);
+      }
+      return result;
+    }
+
+    // vec op vec: LLVM vector arith (fadd/fmul/etc work natively on <N x float>)
+    bool fp = is_float(lct.kind) || lct.kind == CTypeKind::Vec;
+    return emit_arith_op(op, lv, rv, fp, is_signed(lct.kind));
   }
 
   // short-circuit &&: if lhs is false, result is false without evaluating rhs.
@@ -554,6 +625,37 @@ struct FuncEmitter {
     }
   }
 
+  // positional type construction: vec, mat, or struct from ordered args
+  llvm::Value *emit_positional_construct(CTypeId ctid, u32 args_start,
+                                         u32 args_count) {
+    CTypeKind ck = cg.sema.types.types[ctid].kind;
+    llvm::Type *ty = cg.type_lower.lower(ctid);
+    if (ck == CTypeKind::Vec) {
+      llvm::Value *v = llvm::UndefValue::get(ty);
+      for (u32 i = 0; i < args_count; ++i)
+        v = builder.CreateInsertElement(
+            v, emit_expr(ir.nodes.list[args_start + i]), i);
+      return v;
+    }
+    if (ck == CTypeKind::Mat) {
+      llvm::Value *m = llvm::UndefValue::get(ty);
+      for (u32 i = 0; i < args_count; ++i)
+        m = builder.CreateInsertValue(
+            m, emit_expr(ir.nodes.list[args_start + i]), i);
+      return m;
+    }
+    // struct: alloca, store each field via GEP
+    auto *sty = llvm::cast<llvm::StructType>(ty);
+    auto *slot = create_entry_alloca(ty, "sctor");
+    for (u32 i = 0; i < args_count; ++i) {
+      NodeId val_nid = ir.nodes.list[args_start + i];
+      llvm::Value *val =
+          coerce_int(emit_expr(val_nid), sty->getElementType(i), val_nid);
+      builder.CreateStore(val, builder.CreateStructGEP(ty, slot, i));
+    }
+    return builder.CreateLoad(ty, slot);
+  }
+
   llvm::Value *emit_call(NodeId n) {
     // a = callee NodeId, b = args_start (into nodes.list), c = args_count.
     NodeId callee_nid = ir.nodes.a[n];
@@ -563,23 +665,20 @@ struct FuncEmitter {
     llvm::FunctionType *ft = nullptr;
     llvm::Value *callee_val = nullptr;
 
+    // positional type construction: Type(arg0, arg1, ...)
+    // callee symbol is a Type, or callee has no symbol but result is vec/mat
+    // (cross-module constructor where import alias prevents symbol resolution).
+    CTypeId call_ctid = bsema.node_type[n].concrete;
     SymbolId callee_sym_id = bsema.node_symbol[callee_nid];
-    if (callee_sym_id != 0 &&
-        cg.sema.syms.symbols[callee_sym_id].kind == SymbolKind::Type) {
-      // positional struct construction: TypeName(arg0, arg1, ...)
-      CTypeId ctid = bsema.node_type[n].concrete;
-      llvm::Type *sty = cg.type_lower.lower(ctid);
-      auto *sty_s = llvm::cast<llvm::StructType>(sty);
-      auto *slot = create_entry_alloca(sty, "sctor");
-      for (u32 i = 0; i < args_count; ++i) {
-        NodeId val_nid = ir.nodes.list[args_start + i];
-        llvm::Value *val =
-            coerce_int(emit_expr(val_nid), sty_s->getElementType(i), val_nid);
-        auto *fp = builder.CreateStructGEP(sty, slot, i);
-        builder.CreateStore(val, fp);
-      }
-      return builder.CreateLoad(sty, slot);
-    }
+    bool is_type_ctor =
+        (callee_sym_id != 0 &&
+         cg.sema.syms.symbols[callee_sym_id].kind == SymbolKind::Type) ||
+        (callee_sym_id == 0 &&
+         (cg.sema.types.types[call_ctid].kind == CTypeKind::Vec ||
+          cg.sema.types.types[call_ctid].kind == CTypeKind::Mat));
+    if (is_type_ctor)
+      return emit_positional_construct(call_ctid, args_start, args_count);
+
     if (callee_sym_id != 0) {
       if (auto it = cg.fn_map.find(callee_sym_id); it != cg.fn_map.end()) {
         // direct function/method call.
@@ -660,6 +759,26 @@ struct FuncEmitter {
       }
     }
 
+    // vec field access: extractelement (can't GEP into LLVM vectors)
+    CTypeId base_ctid = bsema.node_type[base_nid].concrete;
+    CTypeKind bk = cg.sema.types.types[base_ctid].kind;
+    if (bk == CTypeKind::Vec ||
+        (bk == CTypeKind::Ref &&
+         cg.sema.types.types[cg.sema.types.types[base_ctid].inner].kind ==
+             CTypeKind::Vec)) {
+      SymId fname = ir.nodes.b[n];
+      i32 idx = vec_mat_field_index(cg.interner.view(fname));
+      llvm::Value *vec_val;
+      if (bk == CTypeKind::Ref) {
+        auto *ptr = emit_expr(base_nid);
+        vec_val = builder.CreateLoad(
+            cg.type_lower.lower(cg.sema.types.types[base_ctid].inner), ptr);
+      } else {
+        vec_val = emit_expr(base_nid);
+      }
+      return builder.CreateExtractElement(vec_val, static_cast<uint64_t>(idx));
+    }
+
     auto *field_ptr = emit_field_ptr(n);
     CTypeId field_ctid = bsema.node_type[n].concrete;
     llvm::Type *field_ty = cg.type_lower.lower(field_ctid);
@@ -696,7 +815,27 @@ struct FuncEmitter {
     // a = type SymId (string handle), b = fields_start, c = fields_count.
     // nodes.list[b..b+2*c] holds [SymId, NodeId] pairs.
     CTypeId ctid = bsema.node_type[n].concrete;
+    CTypeKind ck = cg.sema.types.types[ctid].kind;
     llvm::Type *sty = cg.type_lower.lower(ctid);
+
+    // builtin vec/mat: named field init (e.g. mat4 { col0 = v, col1 = v, ... })
+    if (ck == CTypeKind::Vec || ck == CTypeKind::Mat) {
+      u32 fields_start = ir.nodes.b[n];
+      u32 fields_count = ir.nodes.c[n];
+      llvm::Value *result = llvm::UndefValue::get(sty);
+      for (u32 i = 0; i < fields_count; ++i) {
+        SymId fname = ir.nodes.list[fields_start + (i * 2)];
+        NodeId val_nid = ir.nodes.list[fields_start + (i * 2) + 1];
+        i32 idx = vec_mat_field_index(cg.interner.view(fname));
+        llvm::Value *val = emit_expr(val_nid);
+        if (ck == CTypeKind::Vec)
+          result = builder.CreateInsertElement(result, val, static_cast<u32>(idx));
+        else
+          result = builder.CreateInsertValue(result, val, static_cast<u32>(idx));
+      }
+      return result;
+    }
+
     SymbolId struct_sym = cg.sema.types.types[ctid].symbol;
     auto *sty_s = llvm::cast<llvm::StructType>(sty);
 
@@ -1222,21 +1361,48 @@ struct FuncEmitter {
       auto it = cg.fn_map.find(sym_id);
       if (it != cg.fn_map.end()) return it->second;
 
-      // sym_id is a Type symbol: cross-module enum variant reference.
       const Symbol &esym = cg.sema.syms.symbols[sym_id];
+
+      // cross-module global variable access (e.g. math::PI)
+      if (esym.kind == SymbolKind::GlobalVar) {
+        auto git = cg.global_map.find(sym_id);
+        assert(git != cg.global_map.end() && "cross-module global not found");
+        return builder.CreateLoad(git->second->getValueType(), git->second);
+      }
+
+      // cross-module enum variant reference (e.g. types::PresentMode::Fifo)
       SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
       return emit_enum_variant(esym, variant_name);
     }
 
-    // same-module enum variant: first segment names the enum type, last names
-    // the variant.
-    assert(seg_count >= 2 && "unresolved Path must have >= 2 segments");
-    SymId enum_name = ir.nodes.list[seg_start];
-    SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
+    // single-segment path with no resolved symbol: type name used as callee
+    if (seg_count == 1) return nullptr;
 
-    SymbolId enum_sid = cg.sema.syms.lookup(sym.module_idx, enum_name);
-    assert(enum_sid != kInvalidSymbol && "enum type not found");
-    return emit_enum_variant(cg.sema.syms.symbols[enum_sid], variant_name);
+    // multi-segment unresolved path
+    assert(seg_count >= 2 && "unresolved Path must have >= 2 segments");
+    SymId first = ir.nodes.list[seg_start];
+    SymbolId first_sid = cg.sema.syms.lookup(sym.module_idx, first);
+    // resolve import alias: mod::Type::Variant (3 segments)
+    if (first_sid == kInvalidSymbol && seg_count >= 3) {
+      auto &imap = cg.modules[sym.module_idx].import_map;
+      auto it = imap.find(first);
+      if (it != imap.end()) {
+        SymId type_name = ir.nodes.list[seg_start + 1];
+        first_sid = cg.sema.syms.lookup(it->second, type_name);
+      }
+    }
+    if (first_sid == kInvalidSymbol) return nullptr;
+    const Symbol &fsym = cg.sema.syms.symbols[first_sid];
+    if (fsym.kind == SymbolKind::Type && fsym.type_node != 0) {
+      const BodyIR &eir = cg.modules[fsym.module_idx].ir;
+      if (eir.nodes.kind[fsym.type_node] == NodeKind::EnumType) {
+        SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
+        return emit_enum_variant(fsym, variant_name);
+      }
+      return nullptr;
+    }
+    SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
+    return emit_enum_variant(fsym, variant_name);
   }
 
   // returns a pointer to the storage location (not a loaded value).
@@ -1277,6 +1443,17 @@ struct FuncEmitter {
     } else {
       base_ptr = emit_place(base_nid);
       struct_ctid = base_ctid;
+    }
+
+    // builtin mat field: GEP into [N x <M x T>] array
+    CTypeKind sk = cg.sema.types.types[struct_ctid].kind;
+    if (sk == CTypeKind::Mat) {
+      auto fname = cg.interner.view(field_name);
+      i32 idx = vec_mat_field_index(fname);
+      llvm::Type *ty = cg.type_lower.lower(struct_ctid);
+      auto *zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()), 0);
+      auto *idx_v = llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()), idx);
+      return builder.CreateGEP(ty, base_ptr, {zero, idx_v});
     }
 
     if (cg.sema.types.types[struct_ctid].kind == CTypeKind::Slice) {

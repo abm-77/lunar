@@ -1,20 +1,18 @@
 import sys.asset;
 import sys.gfx.types;
 
-# pipeline_create<T> — load the .umsh for @shader type T and create a raster pipeline.
-# T must be a @shader struct. the asset ID is computed at compile time via @shader_ref(T).
+@extern const rt_gfx_pipeline_create_from_umsh : fn(u64, []u8, u32) -> u64;
+@extern const rt_gfx_pipeline_destroy : fn(u64, u64) -> void;
+
+# load the .umsh for @shader type T and create a raster pipeline.
 @pub const pipeline_create<T: type>(dev: types::Device) -> types::Pipeline {
     const shader_id: u64 = @shader_ref(T);
     const bytes := asset::rt_asset_load(shader_id);
-    const h := types::rt_gfx_pipeline_create_from_umsh(
-        dev.handle,
-        bytes,
-        0
-    );
+    const h := rt_gfx_pipeline_create_from_umsh(dev.handle, bytes, 0);
     asset::rt_asset_release(shader_id);
     return types::Pipeline { handle = h };
 }
 
 @pub const pipeline_destroy := fn(dev: types::Device, pipe: types::Pipeline) -> void {
-    types::rt_gfx_pipeline_destroy(dev.handle, pipe.handle);
+    rt_gfx_pipeline_destroy(dev.handle, pipe.handle);
 }

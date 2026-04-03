@@ -68,7 +68,7 @@ bool serialize_spirv_module(mlir::spirv::ModuleOp spirv_mod,
   cloned_mod.walk([&](CombineSampledImageOp op) {
     mlir::OpBuilder b(op);
     auto result_ty = op.getResult().getType();
-    auto undef = b.create<mlir::spirv::UndefOp>(op.getLoc(), result_ty);
+    auto undef = mlir::spirv::UndefOp::create(b, op.getLoc(), result_ty);
     combine_infos.push_back({op.getImage(), op.getSampler()});
     undef_markers.insert(undef.getOperation());
     op.getResult().replaceAllUsesWith(undef.getResult());
