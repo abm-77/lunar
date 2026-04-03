@@ -83,7 +83,6 @@ struct CodegenCtx {
     TypeLowerer tl(modules[module_idx].type_ast, sema.syms, interner,
                    type_lower.types);
     tl.module_idx = module_idx;
-    tl.current_ir = &modules[module_idx].ir;
     tl.import_map = &modules[module_idx].import_map;
     if (!module_contexts.empty()) tl.module_contexts = &module_contexts;
     return tl;

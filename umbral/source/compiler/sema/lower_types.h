@@ -38,9 +38,6 @@ struct TypeLowerer {
       false; // if true, unknown named types return Void instead of error
   // per-module context vector for struct/enum node kind distinction.
   const std::vector<ModuleContext> *module_contexts = nullptr;
-  // fallback BodyIR for the current (or only) module when module_contexts is
-  // null.
-  const BodyIR *current_ir = nullptr;
   // import alias map (alias SymId → module index) for resolving module::Type.
   const std::unordered_map<SymId, u32> *import_map = nullptr;
 
@@ -201,7 +198,6 @@ struct TypeLowerer {
         if (mod < static_cast<u32>(module_contexts->size()))
           ir = (*module_contexts)[mod].ir;
       }
-      if (!ir) ir = current_ir;
       if (ir && resolved.type_node != 0) {
         NodeKind tnk = ir->nodes.kind[resolved.type_node];
         if (tnk == NodeKind::EnumType) {
@@ -441,7 +437,6 @@ make_module_type_lowerer(u32 mod_idx, const ModuleContext &ctx,
   TypeLowerer tl(*ctx.type_ast, syms, interner, types);
   tl.module_idx = mod_idx;
   tl.module_contexts = all_contexts;
-  tl.current_ir = ctx.ir;
   tl.import_map = ctx.import_map;
   return tl;
 }

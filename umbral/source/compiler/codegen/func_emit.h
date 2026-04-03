@@ -1347,62 +1347,33 @@ struct FuncEmitter {
   }
 
   llvm::Value *emit_path(NodeId n) {
-    // path nodes: either a sema-resolved function/method, or an enum variant
-    // (sema leaves node_symbol == 0 for same-module enum variants).
     u32 seg_start = ir.nodes.b[n];
     u32 seg_count = ir.nodes.c[n];
-
     SymbolId sym_id = bsema.node_symbol[n];
-    if (sym_id != 0) {
-      // sema resolved it — static method, cross-module function, or
-      // cross-module enum type (when the path is module::Enum::Variant and
-      // Variant is not a method). in the last case sym_id points to the Type
-      // symbol, not fn_map.
-      auto it = cg.fn_map.find(sym_id);
-      if (it != cg.fn_map.end()) return it->second;
 
-      const Symbol &esym = cg.sema.syms.symbols[sym_id];
+    // unresolved single-segment path: type name used as callee
+    if (sym_id == 0) return nullptr;
 
-      // cross-module global variable access (e.g. math::PI)
-      if (esym.kind == SymbolKind::GlobalVar) {
-        auto git = cg.global_map.find(sym_id);
-        assert(git != cg.global_map.end() && "cross-module global not found");
-        return builder.CreateLoad(git->second->getValueType(), git->second);
-      }
+    // function or method
+    if (auto it = cg.fn_map.find(sym_id); it != cg.fn_map.end())
+      return it->second;
 
-      // cross-module enum variant reference (e.g. types::PresentMode::Fifo)
+    const Symbol &s = cg.sema.syms.symbols[sym_id];
+
+    // global variable (e.g. math::PI)
+    if (s.kind == SymbolKind::GlobalVar) {
+      auto git = cg.global_map.find(sym_id);
+      assert(git != cg.global_map.end() && "cross-module global not found");
+      return builder.CreateLoad(git->second->getValueType(), git->second);
+    }
+
+    // enum variant: last segment is the variant name
+    if (s.kind == SymbolKind::Type) {
       SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
-      return emit_enum_variant(esym, variant_name);
+      return emit_enum_variant(s, variant_name);
     }
 
-    // single-segment path with no resolved symbol: type name used as callee
-    if (seg_count == 1) return nullptr;
-
-    // multi-segment unresolved path
-    assert(seg_count >= 2 && "unresolved Path must have >= 2 segments");
-    SymId first = ir.nodes.list[seg_start];
-    SymbolId first_sid = cg.sema.syms.lookup(sym.module_idx, first);
-    // resolve import alias: mod::Type::Variant (3 segments)
-    if (first_sid == kInvalidSymbol && seg_count >= 3) {
-      auto &imap = cg.modules[sym.module_idx].import_map;
-      auto it = imap.find(first);
-      if (it != imap.end()) {
-        SymId type_name = ir.nodes.list[seg_start + 1];
-        first_sid = cg.sema.syms.lookup(it->second, type_name);
-      }
-    }
-    if (first_sid == kInvalidSymbol) return nullptr;
-    const Symbol &fsym = cg.sema.syms.symbols[first_sid];
-    if (fsym.kind == SymbolKind::Type && fsym.type_node != 0) {
-      const BodyIR &eir = cg.modules[fsym.module_idx].ir;
-      if (eir.nodes.kind[fsym.type_node] == NodeKind::EnumType) {
-        SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
-        return emit_enum_variant(fsym, variant_name);
-      }
-      return nullptr;
-    }
-    SymId variant_name = ir.nodes.list[seg_start + seg_count - 1];
-    return emit_enum_variant(fsym, variant_name);
+    return nullptr;
   }
 
   // returns a pointer to the storage location (not a loaded value).

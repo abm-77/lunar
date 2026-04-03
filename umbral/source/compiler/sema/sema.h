@@ -34,7 +34,6 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
   TypeLowerer lowerer(type_ast, syms, interner, types);
   lowerer.module_idx = 0;
   lowerer.module_contexts = &single_ctx;
-  lowerer.current_ir = &ir;
 
   // phase 3: method table
   auto methods_r = build_method_table(mod, /*module_idx=*/0, syms, lowerer);
@@ -52,6 +51,7 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
     if (sym.generics_count > 0) continue;
     BodyChecker checker(ir, mod, syms, methods, types, lowerer, interner, src);
     checker.mono_engine = &mono_engine;
+    checker.module_contexts = &single_ctx;
     checker.body_semas_out = &body_semas;
     auto body_r = checker.check(sym);
     if (!body_r) return std::unexpected(body_r.error());
@@ -70,11 +70,11 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
       ml.lenient = true;
       ml.module_idx = pm.generic_mod_idx;
       ml.module_contexts = &single_ctx;
-      ml.current_ir = &ir;
 
       BodyChecker sub(ir, mod, syms, methods, types, std::move(ml), interner,
                       src);
       sub.mono_engine = &mono_engine;
+      sub.module_contexts = &single_ctx;
       sub.body_semas_out = &body_semas;
       sub.const_generic_scope_start = pm.const_generic_scope_start;
       sub.const_generic_scope_count = pm.const_generic_scope_count;
@@ -87,6 +87,70 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
 
   return SemaResult{std::move(syms), std::move(types), std::move(methods),
                     std::move(body_semas)};
+}
+
+// resolve all unresolved Path nodes in the given body_semas.
+// walks each Path with node_symbol == 0 and resolves iteratively through
+// import aliases, module namespaces, type methods, and enum variants.
+inline void resolve_paths(
+    std::unordered_map<SymbolId, BodySema> &body_semas,
+    const SymbolTable &syms, const MethodTable &methods,
+    const std::vector<LoadedModule> &modules) {
+  for (auto &[bsema_sym_id, bsema] : body_semas) {
+    const Symbol &fn_sym = syms.symbols[bsema_sym_id];
+    u32 mod_i = fn_sym.module_idx;
+    if (mod_i >= modules.size()) continue;
+    const BodyIR &fn_ir = modules[mod_i].ir;
+    const auto &imap = modules[mod_i].import_map;
+
+    for (u32 n = 0; n < static_cast<u32>(fn_ir.nodes.kind.size()); ++n) {
+      if (fn_ir.nodes.kind[n] != NodeKind::Path) continue;
+      if (bsema.node_symbol[n] != 0) continue;
+
+      u32 seg_start = fn_ir.nodes.b[n];
+      u32 seg_count = fn_ir.nodes.c[n];
+      if (seg_count < 2) continue;
+
+      SymId first = fn_ir.nodes.list[seg_start];
+      u32 scope_mod = mod_i;
+      u32 seg_idx = 0;
+
+      // try first segment as import alias
+      auto imp_it = imap.find(first);
+      if (imp_it != imap.end()) {
+        scope_mod = imp_it->second;
+        seg_idx = 1;
+      }
+
+      // walk remaining segments
+      SymbolId resolved = kInvalidSymbol;
+      for (; seg_idx < seg_count; ++seg_idx) {
+        SymId seg = fn_ir.nodes.list[seg_start + seg_idx];
+        SymbolId sid = (scope_mod == mod_i)
+                           ? syms.lookup(scope_mod, seg)
+                           : syms.lookup_pub(scope_mod, seg);
+        if (sid == kInvalidSymbol) break;
+        if (syms.symbols[sid].aliased_sym != 0)
+          sid = syms.symbols[sid].aliased_sym;
+        resolved = sid;
+
+        // if type with more segments, try method lookup
+        if (seg_idx + 1 < seg_count &&
+            syms.symbols[sid].kind == SymbolKind::Type) {
+          SymId next_seg = fn_ir.nodes.list[seg_start + seg_idx + 1];
+          SymbolId method_id = methods.lookup(sid, next_seg);
+          if (method_id != kInvalidSymbol) {
+            resolved = method_id;
+            seg_idx++;
+          }
+          // not a method → type stays resolved (enum variants handled in codegen)
+        }
+      }
+
+      if (resolved != kInvalidSymbol)
+        bsema.node_symbol[n] = resolved;
+    }
+  }
 }
 
 // multi-module entry point.
@@ -169,7 +233,6 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     TypeLowerer lowerer(lm.type_ast, syms, interner, types);
     lowerer.module_idx = mod_i;
     lowerer.module_contexts = &module_contexts;
-    lowerer.current_ir = &lm.ir;
     lowerer.import_map = &lm.import_map;
 
     BodyChecker checker(lm.ir, lm.mod, syms, methods, types, lowerer, interner,
@@ -199,7 +262,6 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
       ml.lenient = true;
       ml.module_idx = mod_i;
       ml.module_contexts = &module_contexts;
-      ml.current_ir = &lm.ir;
       ml.import_map = &lm.import_map;
 
       BodyChecker sub(lm.ir, lm.mod, syms, methods, types, std::move(ml),
@@ -217,6 +279,9 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
       body_semas[pm.mono_id] = std::move(*body_r);
     }
   }
+
+  // phase 5b: resolve all unresolved cross-module Path nodes
+  resolve_paths(body_semas, syms, methods, modules);
 
   return SemaResult{std::move(syms), std::move(types), std::move(methods),
                     std::move(body_semas)};

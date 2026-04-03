@@ -88,7 +88,6 @@ private:
     tl.type_subst = subst;
     tl.module_idx = sym.module_idx;
     tl.module_contexts = &local_ctx;
-    tl.current_ir = &ir;
     tl.import_map = &modules[sym.module_idx].import_map;
 
     NodeId evaled = tl.eval_meta_block(type_node, ir, nullptr);
@@ -204,7 +203,6 @@ private:
     tl.type_subst = subst;
     tl.module_idx = sym.module_idx;
     tl.module_contexts = &local_ctx;
-    tl.current_ir = &ir;
     tl.import_map = &modules[sym.module_idx].import_map;
 
     // resolve the effective StructType NodeId (@gen types have a MetaBlock

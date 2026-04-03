@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -759,13 +760,13 @@ struct BodyChecker {
 
   const BodyIR &body_for(u32 mod_idx) const {
     if (mod_idx == module_idx) return ir;
-    if (module_contexts && mod_idx < module_contexts->size() &&
-        (*module_contexts)[mod_idx].ir)
-      return *(*module_contexts)[mod_idx].ir;
-    return ir;
+    assert(module_contexts && mod_idx < module_contexts->size() &&
+           (*module_contexts)[mod_idx].ir);
+    return *(*module_contexts)[mod_idx].ir;
   }
 
   Result<BodySema> check(const Symbol &fn_sym) {
+    assert(module_contexts && "module_contexts must be set before body checking");
     BodySema sema;
     u32 node_count = static_cast<u32>(ir.nodes.kind.size());
     sema.node_type.assign(node_count, itype(CTypeKind::Void));
