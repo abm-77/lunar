@@ -68,7 +68,7 @@ struct TypeLowerer {
   std::optional<i64> eval_const_int(NodeId n, const BodyIR &ir) const {
     if (n == 0) return std::nullopt;
     switch (ir.nodes.kind[n]) {
-    case NodeKind::IntLit: return static_cast<i64>(ir.nodes.a[n]);
+    case NodeKind::IntLit: return static_cast<i64>(ir.int_lits[ir.nodes.a[n]]);
     case NodeKind::BoolLit: return static_cast<i64>(ir.nodes.a[n]);
     case NodeKind::Ident: {
       SymId sym = ir.nodes.a[n];

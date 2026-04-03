@@ -741,9 +741,15 @@ struct BodyChecker {
         if (mit != import_map->end()) {
           u32 dep_mod_idx = mit->second;
           SymbolId dep_sid = syms.lookup_pub(dep_mod_idx, second_seg);
-          if (dep_sid == kInvalidSymbol &&
-              syms.lookup(dep_mod_idx, second_seg) != kInvalidSymbol) {
-            emit(node_span(n), "symbol is not exported from module");
+          if (dep_sid == kInvalidSymbol) {
+            if (syms.lookup(dep_mod_idx, second_seg) != kInvalidSymbol)
+              emit(node_span(n), "symbol is not exported from module");
+            else
+              emit(node_span(n),
+                   "unknown symbol '" +
+                       std::string(interner.view(second_seg)) +
+                       "' in module '" +
+                       std::string(interner.view(first_seg)) + "'");
           }
           if (dep_sid != kInvalidSymbol) {
             sema.node_symbol[n] = dep_sid;
@@ -1174,6 +1180,9 @@ struct BodyChecker {
       SymId name = static_cast<SymId>(ir.nodes.a[n]);
       if (auto loc = sema.lookup(name)) {
         result = loc->type;
+        // also resolve symbol for functions so codegen can do direct calls
+        SymbolId sid = syms.lookup(module_idx, name);
+        if (sid != kInvalidSymbol) sema.node_symbol[n] = sid;
       } else {
         SymbolId sid = syms.lookup(module_idx, name);
         if (sid == kInvalidSymbol) {

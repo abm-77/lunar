@@ -332,7 +332,7 @@ mlir::Value ShaderEmitCtx::emit(mlir::OpBuilder &b, NodeId nid) {
 
   case NodeKind::IntLit:
     return mlir::arith::ConstantOp::create(b,
-            loc, b.getIntegerAttr(b.getI32Type(), static_cast<int64_t>(na)))
+            loc, b.getIntegerAttr(b.getI32Type(), static_cast<int64_t>(ir.int_lits[na])))
         .getResult();
 
   case NodeKind::FloatLit: {

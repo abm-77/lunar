@@ -164,5 +164,6 @@ struct BodyIR {
   std::vector<ForPayload> fors;
   std::vector<FnLitPayload> fn_lits;
   std::vector<ArrayLitPayload> array_lits;
+  std::vector<u64> int_lits;      // indexed by IntLit node's a field
   std::vector<double> float_lits; // indexed by FloatLit node's a field
 };

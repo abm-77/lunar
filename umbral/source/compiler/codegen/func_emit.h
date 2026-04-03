@@ -373,7 +373,7 @@ struct FuncEmitter {
     CTypeId ctid = bsema.node_type[n].concrete;
     llvm::Type *ty = cg.type_lower.lower(ctid);
     return llvm::ConstantInt::get(
-        ty, ir.nodes.a[n],
+        ty, ir.int_lits[ir.nodes.a[n]],
         /*IsSigned=*/is_signed(cg.sema.types.types[ctid].kind));
   }
 
@@ -693,6 +693,7 @@ struct FuncEmitter {
       // FunctionType.
       callee_val = emit_expr(callee_nid);
       CTypeId callee_ctid = bsema.node_type[callee_nid].concrete;
+      cg.type_lower.lower(callee_ctid);
       auto fti = cg.type_lower.fn_type_cache.find(callee_ctid);
       assert(fti != cg.type_lower.fn_type_cache.end() &&
              "function pointer type not in fn_type_cache");
@@ -1319,7 +1320,7 @@ struct FuncEmitter {
     case NodeKind::IntLit: {
       llvm::Type *ty =
           expected_ty ? expected_ty : llvm::Type::getInt64Ty(fn.getContext());
-      return llvm::ConstantInt::get(ty, src_ir.nodes.a[n]);
+      return llvm::ConstantInt::get(ty, src_ir.int_lits[src_ir.nodes.a[n]]);
     }
     case NodeKind::BoolLit: {
       return llvm::ConstantInt::getBool(fn.getContext(),

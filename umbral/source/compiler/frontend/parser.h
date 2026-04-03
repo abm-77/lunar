@@ -40,7 +40,7 @@ private:
   // token helpers
   TokenKind k(u32 look = 0) const { return t.kind[i + look]; }
   Span sp(u32 look = 0) const { return {t.start[i + look], t.end[i + look]}; }
-  u32 pl(u32 look = 0) const { return t.payload[i + look]; }
+  u64 pl(u32 look = 0) const { return t.payload[i + look]; }
   bool at(TokenKind kk) const { return k() == kk; }
   bool match(TokenKind kk) {
     if (k() == kk) {
@@ -836,8 +836,11 @@ private:
       return body_ir.nodes.make(NodeKind::EnumType, endsp, 0, ls, cnt);
     }
 
-    if (match(TokenKind::Int))
-      return body_ir.nodes.make(NodeKind::IntLit, s, t.payload[i - 1]);
+    if (match(TokenKind::Int)) {
+      u32 idx = static_cast<u32>(body_ir.int_lits.size());
+      body_ir.int_lits.push_back(t.payload[i - 1]);
+      return body_ir.nodes.make(NodeKind::IntLit, s, idx);
+    }
     if (match(TokenKind::Float)) {
       u32 idx = static_cast<u32>(body_ir.float_lits.size());
       Span fs = {t.start[i - 1], t.end[i - 1]};

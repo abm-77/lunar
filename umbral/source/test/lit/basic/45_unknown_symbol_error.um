@@ -1,0 +1,9 @@
+# RUN: not %uc %s --root %S/../../../std 2>&1 | %FileCheck %s
+
+import sys.io.fmt;
+
+# CHECK: unknown symbol 'nonexistent_function' in module 'fmt'
+const main := fn() -> i32 {
+  fmt::nonexistent_function();
+  return 0;
+};

@@ -3,12 +3,27 @@
 @pub const vec4 := vec<f32, 4>;
 @pub const mat4 := mat<f32, 4, 4>;
 
-@extern const sinf : fn(f32) -> f32;
-@extern const cosf : fn(f32) -> f32;
-@extern const tanf : fn(f32) -> f32;
-@extern const sqrtf : fn(f32) -> f32;
+@pub @extern const sinf : fn(f32) -> f32;
+@pub @extern const cosf : fn(f32) -> f32;
+@pub @extern const tanf : fn(f32) -> f32;
+@pub @extern const sqrtf : fn(f32) -> f32;
 
 @pub const PI: f32 = 3.14159265;
+
+@pub const I8_MIN:  i8  = -128;
+@pub const I8_MAX:  i8  = 127;
+@pub const I16_MIN: i16 = -32768;
+@pub const I16_MAX: i16 = 32767;
+@pub const I32_MIN: i32 = -2147483648;
+@pub const I32_MAX: i32 = 2147483647;
+@pub const I64_MIN: i64 = -9223372036854775808;
+@pub const I64_MAX: i64 = 9223372036854775807;
+@pub const U8_MAX:  u8  = 255;
+@pub const U16_MAX: u16 = 65535;
+@pub const U32_MAX: u32 = 4294967295;
+@pub const U64_MAX: u64 = 18446744073709551615;
+@pub const F32_EPSILON: f32 = 0.00000011920929;
+@pub const F64_EPSILON: f64 = 0.00000000000000022204460492503131;
 
 @pub const mat4_identity := fn() -> mat4 {
   return mat4 {
@@ -63,8 +78,6 @@
   };
 };
 
-@pub const U64_MAX: u64 = 18446744073709551615;
-
 @pub const saturating_add_u64 := fn(a: u64, b: u64) -> u64 {
   if (a > U64_MAX - b) { return U64_MAX; }
   return a + b;
@@ -75,32 +88,3 @@
   return a - b;
 };
 
-# column-major matrix multiply: C = A * B
-@pub const mat4_mul := fn(a: mat4, b: mat4) -> mat4 {
-  return mat4 {
-    col0 = vec4(
-      a.col0.x * b.col0.x + a.col1.x * b.col0.y + a.col2.x * b.col0.z + a.col3.x * b.col0.w,
-      a.col0.y * b.col0.x + a.col1.y * b.col0.y + a.col2.y * b.col0.z + a.col3.y * b.col0.w,
-      a.col0.z * b.col0.x + a.col1.z * b.col0.y + a.col2.z * b.col0.z + a.col3.z * b.col0.w,
-      a.col0.w * b.col0.x + a.col1.w * b.col0.y + a.col2.w * b.col0.z + a.col3.w * b.col0.w
-    ),
-    col1 = vec4(
-      a.col0.x * b.col1.x + a.col1.x * b.col1.y + a.col2.x * b.col1.z + a.col3.x * b.col1.w,
-      a.col0.y * b.col1.x + a.col1.y * b.col1.y + a.col2.y * b.col1.z + a.col3.y * b.col1.w,
-      a.col0.z * b.col1.x + a.col1.z * b.col1.y + a.col2.z * b.col1.z + a.col3.z * b.col1.w,
-      a.col0.w * b.col1.x + a.col1.w * b.col1.y + a.col2.w * b.col1.z + a.col3.w * b.col1.w
-    ),
-    col2 = vec4(
-      a.col0.x * b.col2.x + a.col1.x * b.col2.y + a.col2.x * b.col2.z + a.col3.x * b.col2.w,
-      a.col0.y * b.col2.x + a.col1.y * b.col2.y + a.col2.y * b.col2.z + a.col3.y * b.col2.w,
-      a.col0.z * b.col2.x + a.col1.z * b.col2.y + a.col2.z * b.col2.z + a.col3.z * b.col2.w,
-      a.col0.w * b.col2.x + a.col1.w * b.col2.y + a.col2.w * b.col2.z + a.col3.w * b.col2.w
-    ),
-    col3 = vec4(
-      a.col0.x * b.col3.x + a.col1.x * b.col3.y + a.col2.x * b.col3.z + a.col3.x * b.col3.w,
-      a.col0.y * b.col3.x + a.col1.y * b.col3.y + a.col2.y * b.col3.z + a.col3.y * b.col3.w,
-      a.col0.z * b.col3.x + a.col1.z * b.col3.y + a.col2.z * b.col3.z + a.col3.z * b.col3.w,
-      a.col0.w * b.col3.x + a.col1.w * b.col3.y + a.col2.w * b.col3.z + a.col3.w * b.col3.w
-    ),
-  };
-};

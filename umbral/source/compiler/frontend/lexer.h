@@ -103,9 +103,9 @@ struct TokenStream {
   std::vector<TokenKind> kind;
   std::vector<u32> start;
   std::vector<u32> end;
-  std::vector<u32> payload;
+  std::vector<u64> payload;
 
-  void push(TokenKind k, Span sp, u32 pl = 0) {
+  void push(TokenKind k, Span sp, u64 pl = 0) {
     kind.push_back(k);
     start.push_back(sp.start);
     end.push_back(sp.end);
@@ -231,13 +231,13 @@ private:
   struct NumResult {
     TokenKind kind;
     Span span;
-    u32 value = 0;
+    u64 value = 0;
     const char *err = nullptr;
   };
 
   NumResult lex_number() {
     u32 start = pos;
-    u32 value = 0;
+    u64 value = 0;
 
     // Hex: 0x / 0X
     if (peek() == '0' && (peek_next() == 'x' || peek_next() == 'X')) {
@@ -250,8 +250,8 @@ private:
                 "expected hex digit after '0x'"};
       while (!eof() && is_hex_digit(peek())) {
         char c = peek();
-        u32 d = is_digit(c) ? static_cast<u32>(c - '0')
-                            : static_cast<u32>(std::tolower(c) - 'a' + 10);
+        u64 d = is_digit(c) ? static_cast<u64>(c - '0')
+                            : static_cast<u64>(std::tolower(c) - 'a' + 10);
         value = value * 16 + d;
         advance();
       }
@@ -276,7 +276,11 @@ private:
 
     // Decimal integer, or float if followed by '.' + digit
     while (!eof() && is_digit(peek())) {
-      value = value * 10 + static_cast<u32>(peek() - '0');
+      u64 prev = value;
+      value = value * 10 + static_cast<u64>(peek() - '0');
+      if (value < prev)
+        return {TokenKind::Int, {start, static_cast<u32>(pos)}, 0,
+                "integer literal overflows u64"};
       advance();
     }
 

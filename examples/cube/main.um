@@ -113,7 +113,7 @@ const main := fn() -> i32 {
       const view := math::mat4_translate(0.0, 0.0, -3.0);
       const ry := math::mat4_rotate_y(angle);
       const rx := math::mat4_rotate_x(angle * 0.7);
-      const mvp := math::mat4_mul(proj, math::mat4_mul(view, math::mat4_mul(ry, rx)));
+      const mvp := proj * view * ry * rx;
 
       const fa := gfx::frame_alloc(dev, @size_of(CubeDrawData), 256);
       const data := @as(fa.ptr, &mut CubeDrawData);

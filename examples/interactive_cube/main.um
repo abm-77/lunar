@@ -1,0 +1,215 @@
+import sys.window;
+import sys.input;
+import sys.gfx;
+import sys.gfx.types;
+import sys.gfx.draw;
+import sys.gfx.assets;
+import sys.asset;
+import sys.time;
+import math.types => math;
+
+const CubeVertex := struct {
+  px: f32, py: f32, pz: f32,
+  cr: f32, cg: f32, cb: f32, ca: f32,
+};
+
+const CubeDrawData := struct {
+  mvp: math::mat4,
+  verts: [36]CubeVertex,
+};
+
+@shader_pod const CubeVsOut := struct {
+  @builtin(position) clip: math::vec4,
+  @location(0) color: math::vec4,
+};
+
+@shader_pod const CubeFsOut := struct {
+  @location(0) color: math::vec4,
+};
+
+@shader const CubeShader := struct {
+  @vs_out vout: CubeVsOut,
+  @fs_in  fin:  CubeVsOut,
+  @fs_out fout: CubeFsOut,
+};
+
+impl CubeShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    const pkt := @draw_packet(@draw_id());
+    const base := pkt.draw_data_offset;
+    const mvp := @frame_read<math::mat4>(base);
+    const vid := @vertex_id();
+    const v_off := base + 64 + vid * 28;
+    const pos := @frame_read<math::vec3>(v_off);
+    const color := @frame_read<math::vec4>(v_off + 12);
+    self.vout.clip = mvp * math::vec4(pos.x, pos.y, pos.z, 1.0);
+    self.vout.color = color;
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    self.fout.color = self.fin.color;
+  };
+}
+
+const cv := fn(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32) -> CubeVertex {
+  return CubeVertex(x, y, z, r, g, b, 1.0);
+};
+
+const main := fn() -> i32 {
+  asset::init("assets.umpack");
+
+  var win := window::Window::create("interactive cube", 800, 600);
+
+  const dev := gfx::init(win.handle, gfx::GfxConfig {
+    frames_in_flight  = 2,
+    max_textures      = 64,
+    max_samplers      = 16,
+    frame_arena_bytes = 1048576,
+    draw_packets_max  = 1024,
+    enable_validation = true,
+    enable_depth      = true,
+    present_mode      = types::PresentMode::Fifo,
+  });
+
+  const pipeline := assets::pipeline_create<CubeShader>(dev);
+
+  const half: f32 = 0.5;
+  const verts := [36]CubeVertex{
+    # front (z=+half), red
+    cv(-half,-half, half, 1.0,0.2,0.2), cv( half,-half, half, 1.0,0.2,0.2), cv( half, half, half, 1.0,0.2,0.2),
+    cv(-half,-half, half, 1.0,0.2,0.2), cv( half, half, half, 1.0,0.2,0.2), cv(-half, half, half, 1.0,0.2,0.2),
+    # back (z=-half), cyan
+    cv( half,-half,-half, 0.2,1.0,1.0), cv(-half,-half,-half, 0.2,1.0,1.0), cv(-half, half,-half, 0.2,1.0,1.0),
+    cv( half,-half,-half, 0.2,1.0,1.0), cv(-half, half,-half, 0.2,1.0,1.0), cv( half, half,-half, 0.2,1.0,1.0),
+    # right (x=+half), green
+    cv( half,-half, half, 0.2,1.0,0.2), cv( half,-half,-half, 0.2,1.0,0.2), cv( half, half,-half, 0.2,1.0,0.2),
+    cv( half,-half, half, 0.2,1.0,0.2), cv( half, half,-half, 0.2,1.0,0.2), cv( half, half, half, 0.2,1.0,0.2),
+    # left (x=-half), magenta
+    cv(-half,-half,-half, 1.0,0.2,1.0), cv(-half,-half, half, 1.0,0.2,1.0), cv(-half, half, half, 1.0,0.2,1.0),
+    cv(-half,-half,-half, 1.0,0.2,1.0), cv(-half, half, half, 1.0,0.2,1.0), cv(-half, half,-half, 1.0,0.2,1.0),
+    # top (y=+half), yellow
+    cv(-half, half, half, 1.0,1.0,0.2), cv( half, half, half, 1.0,1.0,0.2), cv( half, half,-half, 1.0,1.0,0.2),
+    cv(-half, half, half, 1.0,1.0,0.2), cv( half, half,-half, 1.0,1.0,0.2), cv(-half, half,-half, 1.0,1.0,0.2),
+    # bottom (y=-half), blue
+    cv(-half,-half,-half, 0.2,0.2,1.0), cv( half,-half,-half, 0.2,0.2,1.0), cv( half,-half, half, 0.2,0.2,1.0),
+    cv(-half,-half,-half, 0.2,0.2,1.0), cv( half,-half, half, 0.2,0.2,1.0), cv(-half,-half, half, 0.2,0.2,1.0),
+  };
+
+  # camera state
+  var cam_x: f32 = 0.0;
+  var cam_y: f32 = 0.0;
+  var cam_z: f32 = 3.0;
+  var yaw: f32 = 0.0;
+  var pitch: f32 = 0.0;
+
+  # mouse drag state
+  var dragging: bool = false;
+  var last_mx: f64 = 0.0;
+  var last_my: f64 = 0.0;
+
+  var last_time := time::Instant::now();
+  var ds := draw::DrawStream::create(dev, gfx::Cmd { handle = 0 }, pipeline, 16);
+
+  const move_speed: f32 = 3.0;
+  const look_speed: f32 = 0.003;
+
+  for (; !window::Window::should_close(&win);) {
+    window::Window::poll_events();
+    input::begin_frame(&win);
+
+    # delta time
+    const now := time::Instant::now();
+    const dt_dur := now.elapsed_since(last_time);
+    const dt := dt_dur.as_secs_f32();
+    last_time = now;
+
+    # mouse drag: hold left button to rotate camera
+    if (input::mouse_pressed(&win, input::MouseButton::Left)) {
+      dragging = true;
+      last_mx = input::mouse_x(&win);
+      last_my = input::mouse_y(&win);
+    }
+    if (input::mouse_released(&win, input::MouseButton::Left)) {
+      dragging = false;
+    }
+    if (dragging) {
+      const mx := input::mouse_x(&win);
+      const my := input::mouse_y(&win);
+      const dx := @as(mx - last_mx, f32);
+      const dy := @as(my - last_my, f32);
+      yaw += dx * look_speed;
+      pitch += dy * look_speed;
+      # clamp pitch to avoid gimbal lock
+      if (pitch > 1.5) { pitch = 1.5; }
+      if (pitch < -1.5) { pitch = -1.5; }
+      last_mx = mx;
+      last_my = my;
+    }
+
+    # WASD movement relative to camera yaw
+    const forward_x := math::sinf(yaw);
+    const forward_z := math::cosf(yaw);
+    const right_x := math::cosf(yaw);
+    const right_z := -1.0 * math::sinf(yaw);
+    const speed := move_speed * dt;
+
+    if (input::key_down(&win, input::Key::W)) {
+      cam_x -= forward_x * speed;
+      cam_z -= forward_z * speed;
+    }
+    if (input::key_down(&win, input::Key::S)) {
+      cam_x += forward_x * speed;
+      cam_z += forward_z * speed;
+    }
+    if (input::key_down(&win, input::Key::A)) {
+      cam_x -= right_x * speed;
+      cam_z -= right_z * speed;
+    }
+    if (input::key_down(&win, input::Key::D)) {
+      cam_x += right_x * speed;
+      cam_z += right_z * speed;
+    }
+    if (input::key_down(&win, input::Key::Space)) {
+      cam_y += speed;
+    }
+    if (input::key_down(&win, input::Key::LeftShift)) {
+      cam_y -= speed;
+    }
+    if (input::key_pressed(&win, input::Key::Escape)) {
+      win.request_close();
+    }
+
+    const cmd := gfx::begin_frame(dev);
+    if (cmd.handle != 0) {
+      # build view matrix: rotate then translate to camera position
+      const rot_y := math::mat4_rotate_y(-1.0 * yaw);
+      const rot_x := math::mat4_rotate_x(-1.0 * pitch);
+      const trans := math::mat4_translate(-1.0 * cam_x, -1.0 * cam_y, -1.0 * cam_z);
+      const view := rot_x * rot_y * trans;
+      const proj := math::mat4_perspective(math::PI / 3.0, 800.0 / 600.0, 0.1, 100.0);
+      const mvp := proj * view;
+
+      const fa := gfx::frame_alloc(dev, @size_of(CubeDrawData), 256);
+      const data := @as(fa.ptr, &mut CubeDrawData);
+      *data = CubeDrawData { mvp = mvp, verts = verts };
+
+      ds.reset(cmd, pipeline);
+      ds.push_draw_packet(types::DrawPacket {
+        vertex_count     = 36,
+        instance_count   = 1,
+        draw_data_offset = fa.offset,
+      });
+      ds.submit();
+      gfx::end_frame(dev, cmd);
+    }
+  }
+
+  ds.destroy();
+  gfx::pipeline_destroy(dev, pipeline);
+  gfx::shutdown(dev);
+  win.destroy();
+
+  return 0;
+};

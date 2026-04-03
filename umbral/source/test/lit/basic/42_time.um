@@ -3,39 +3,80 @@
 # CHECK: wall=ok
 # CHECK: sleep=ok
 # CHECK: elapsed=ok
+# CHECK: checked_add=ok
+# CHECK: checked_sub_none=ok
+# CHECK: sat_add=ok
+# CHECK: sat_sub=ok
+# CHECK: inst_checked_add=ok
+# CHECK: inst_checked_sub_none=ok
+# CHECK: inst_sat_sub=ok
 
 import sys.time;
 import sys.io.fmt;
 
+const ok := fn(label: []u8) -> void {
+  fmt::println("{}=ok", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+const fail := fn(label: []u8) -> void {
+  fmt::println("{}=FAIL", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+const check := fn(label: []u8, cond: bool) -> void {
+  if (cond) { ok(label); } else { fail(label); }
+};
+
 const main := fn() -> i32 {
-  # monotonic clock returns nonzero nanoseconds
+  # monotonic clock returns nonzero
   const t0 := time::Instant::now();
-  const ok_mono := t0.ns > 0;
-  if (ok_mono) { fmt::println("mono=ok", [0]fmt::Arg{}); }
-  else { fmt::println("mono=FAIL", [0]fmt::Arg{}); }
+  check("mono", t0.ns > 0);
 
   # wall clock returns nonzero
   const w := time::WallTime::now_utc();
-  const ok_wall := w.utc_ns > 0;
-  if (ok_wall) { fmt::println("wall=ok", [0]fmt::Arg{}); }
-  else { fmt::println("wall=FAIL", [0]fmt::Arg{}); }
+  check("wall", w.utc_ns > 0);
 
   # sleep 10ms then check elapsed
   const before := time::Instant::now();
   time::sleep(time::Duration::from_ms(10));
   const after := time::Instant::now();
   const d := after.elapsed_since(before);
+  check("sleep", d.as_ms() >= 5);
 
-  # should have slept at least 5ms (generous to avoid flaky test)
-  const ok_sleep := d.as_ms() >= 5;
-  if (ok_sleep) { fmt::println("sleep=ok", [0]fmt::Arg{}); }
-  else { fmt::println("sleep=FAIL", [0]fmt::Arg{}); }
-
-  # elapsed() should be >= the sleep duration
+  # elapsed()
   const e := before.elapsed();
-  const ok_elapsed := e.as_ms() >= 5;
-  if (ok_elapsed) { fmt::println("elapsed=ok", [0]fmt::Arg{}); }
-  else { fmt::println("elapsed=FAIL", [0]fmt::Arg{}); }
+  check("elapsed", e.as_ms() >= 5);
+
+  # Duration::checked_add — normal case
+  const d1 := time::Duration::from_ms(100);
+  const d2 := time::Duration::from_ms(200);
+  const sum := d1.checked_add(d2);
+  check("checked_add", sum.has_value && sum.value.as_ms() == 300);
+
+  # Duration::checked_sub — underflow returns none
+  const small := time::Duration::from_ms(10);
+  const big := time::Duration::from_ms(100);
+  const diff := small.checked_sub(big);
+  check("checked_sub_none", !diff.has_value);
+
+  # Duration::saturating_add
+  const sa := d1.saturating_add(d2);
+  check("sat_add", sa.as_ms() == 300);
+
+  # Duration::saturating_sub — clamps to zero
+  const ss := small.saturating_sub(big);
+  check("sat_sub", ss.as_ns() == 0);
+
+  # Instant::checked_add
+  const t1 := time::Instant::now();
+  const later := t1.checked_add(time::Duration::from_ms(50));
+  check("inst_checked_add", later.has_value && later.value.ns > t1.ns);
+
+  # Instant::checked_sub — underflow returns none
+  const t2 := time::Instant(10);
+  const too_much := t2.checked_sub(time::Duration::from_secs(999));
+  check("inst_checked_sub_none", !too_much.has_value);
+
+  # Instant::saturating_sub — clamps to zero
+  const si := t2.saturating_sub(time::Duration::from_secs(999));
+  check("inst_sat_sub", si.ns == 0);
 
   return 0;
 };

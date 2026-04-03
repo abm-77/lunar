@@ -1,0 +1,19 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: max=18446744073709551615
+# CHECK: big=1000000000000
+# CHECK: hex=18446744073709551615
+
+import sys.io.fmt;
+
+const main := fn() -> i32 {
+  const max: u64 = 18446744073709551615;
+  fmt::println("max={}", [1]fmt::Arg{ fmt::arg_u64(max) });
+
+  const big: u64 = 1000000000000;
+  fmt::println("big={}", [1]fmt::Arg{ fmt::arg_u64(big) });
+
+  const hex: u64 = 0xFFFFFFFFFFFFFFFF;
+  fmt::println("hex={}", [1]fmt::Arg{ fmt::arg_u64(hex) });
+
+  return 0;
+};

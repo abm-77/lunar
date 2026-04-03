@@ -94,7 +94,7 @@ static llvm::Constant *try_const_init(CodegenCtx &cg, const Symbol &sym,
   if (n >= ir.nodes.kind.size()) return nullptr;
   switch (ir.nodes.kind[n]) {
   case NodeKind::IntLit:
-    return llvm::ConstantInt::get(ty, static_cast<int64_t>(ir.nodes.a[n]));
+    return llvm::ConstantInt::get(ty, static_cast<int64_t>(ir.int_lits[ir.nodes.a[n]]));
   case NodeKind::FloatLit:
     return llvm::ConstantFP::get(ty, ir.float_lits[ir.nodes.a[n]]);
   case NodeKind::BoolLit:
