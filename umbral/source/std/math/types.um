@@ -1,9 +1,106 @@
-@pub const vec2 := struct { x: f32, y: f32 };
-@pub const vec3 := struct { x: f32, y: f32, z: f32 };
-@pub const vec4 := struct { x: f32, y: f32, z: f32, w: f32 };
-@pub const mat4 := struct {
-  col0: vec4,
-  col1: vec4,
-  col2: vec4,
-  col3: vec4,
+@pub const vec2 := vec<f32, 2>;
+@pub const vec3 := vec<f32, 3>;
+@pub const vec4 := vec<f32, 4>;
+@pub const mat4 := mat<f32, 4, 4>;
+
+@extern const sinf : fn(f32) -> f32;
+@extern const cosf : fn(f32) -> f32;
+@extern const tanf : fn(f32) -> f32;
+@extern const sqrtf : fn(f32) -> f32;
+
+@pub const PI: f32 = 3.14159265;
+
+@pub const mat4_identity := fn() -> mat4 {
+  return mat4 {
+    col0 = vec4(1.0, 0.0, 0.0, 0.0),
+    col1 = vec4(0.0, 1.0, 0.0, 0.0),
+    col2 = vec4(0.0, 0.0, 1.0, 0.0),
+    col3 = vec4(0.0, 0.0, 0.0, 1.0),
+  };
+};
+
+# vulkan clip space: y-flip, depth [0,1]
+@pub const mat4_perspective := fn(fovy: f32, aspect: f32, near: f32, far: f32) -> mat4 {
+  const half_tan := tanf(fovy * 0.5);
+  const f := 1.0 / half_tan;
+  const range := near - far;
+  return mat4 {
+    col0 = vec4(f / aspect, 0.0, 0.0, 0.0),
+    col1 = vec4(0.0, -1.0 * f, 0.0, 0.0),
+    col2 = vec4(0.0, 0.0, far / range, -1.0),
+    col3 = vec4(0.0, 0.0, near * far / range, 0.0),
+  };
+};
+
+@pub const mat4_rotate_y := fn(angle: f32) -> mat4 {
+  const c := cosf(angle);
+  const s := sinf(angle);
+  return mat4 {
+    col0 = vec4(c, 0.0, -1.0 * s, 0.0),
+    col1 = vec4(0.0, 1.0, 0.0, 0.0),
+    col2 = vec4(s, 0.0, c, 0.0),
+    col3 = vec4(0.0, 0.0, 0.0, 1.0),
+  };
+};
+
+@pub const mat4_rotate_x := fn(angle: f32) -> mat4 {
+  const c := cosf(angle);
+  const s := sinf(angle);
+  return mat4 {
+    col0 = vec4(1.0, 0.0, 0.0, 0.0),
+    col1 = vec4(0.0, c, s, 0.0),
+    col2 = vec4(0.0, -1.0 * s, c, 0.0),
+    col3 = vec4(0.0, 0.0, 0.0, 1.0),
+  };
+};
+
+@pub const mat4_translate := fn(x: f32, y: f32, z: f32) -> mat4 {
+  return mat4 {
+    col0 = vec4(1.0, 0.0, 0.0, 0.0),
+    col1 = vec4(0.0, 1.0, 0.0, 0.0),
+    col2 = vec4(0.0, 0.0, 1.0, 0.0),
+    col3 = vec4(x, y, z, 1.0),
+  };
+};
+
+@pub const U64_MAX: u64 = 18446744073709551615;
+
+@pub const saturating_add_u64 := fn(a: u64, b: u64) -> u64 {
+  if (a > U64_MAX - b) { return U64_MAX; }
+  return a + b;
+};
+
+@pub const saturating_sub_u64 := fn(a: u64, b: u64) -> u64 {
+  if (a < b) { return 0; }
+  return a - b;
+};
+
+# column-major matrix multiply: C = A * B
+@pub const mat4_mul := fn(a: mat4, b: mat4) -> mat4 {
+  return mat4 {
+    col0 = vec4(
+      a.col0.x * b.col0.x + a.col1.x * b.col0.y + a.col2.x * b.col0.z + a.col3.x * b.col0.w,
+      a.col0.y * b.col0.x + a.col1.y * b.col0.y + a.col2.y * b.col0.z + a.col3.y * b.col0.w,
+      a.col0.z * b.col0.x + a.col1.z * b.col0.y + a.col2.z * b.col0.z + a.col3.z * b.col0.w,
+      a.col0.w * b.col0.x + a.col1.w * b.col0.y + a.col2.w * b.col0.z + a.col3.w * b.col0.w
+    ),
+    col1 = vec4(
+      a.col0.x * b.col1.x + a.col1.x * b.col1.y + a.col2.x * b.col1.z + a.col3.x * b.col1.w,
+      a.col0.y * b.col1.x + a.col1.y * b.col1.y + a.col2.y * b.col1.z + a.col3.y * b.col1.w,
+      a.col0.z * b.col1.x + a.col1.z * b.col1.y + a.col2.z * b.col1.z + a.col3.z * b.col1.w,
+      a.col0.w * b.col1.x + a.col1.w * b.col1.y + a.col2.w * b.col1.z + a.col3.w * b.col1.w
+    ),
+    col2 = vec4(
+      a.col0.x * b.col2.x + a.col1.x * b.col2.y + a.col2.x * b.col2.z + a.col3.x * b.col2.w,
+      a.col0.y * b.col2.x + a.col1.y * b.col2.y + a.col2.y * b.col2.z + a.col3.y * b.col2.w,
+      a.col0.z * b.col2.x + a.col1.z * b.col2.y + a.col2.z * b.col2.z + a.col3.z * b.col2.w,
+      a.col0.w * b.col2.x + a.col1.w * b.col2.y + a.col2.w * b.col2.z + a.col3.w * b.col2.w
+    ),
+    col3 = vec4(
+      a.col0.x * b.col3.x + a.col1.x * b.col3.y + a.col2.x * b.col3.z + a.col3.x * b.col3.w,
+      a.col0.y * b.col3.x + a.col1.y * b.col3.y + a.col2.y * b.col3.z + a.col3.y * b.col3.w,
+      a.col0.z * b.col3.x + a.col1.z * b.col3.y + a.col2.z * b.col3.z + a.col3.z * b.col3.w,
+      a.col0.w * b.col3.x + a.col1.w * b.col3.y + a.col2.w * b.col3.z + a.col3.w * b.col3.w
+    ),
+  };
 };

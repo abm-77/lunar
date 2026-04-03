@@ -4,7 +4,7 @@
 }
 
 impl Option<T> {
-  const create := fn(v: T) -> Option<T> {
+  const some := fn(v: T) -> Option<T> {
     return Option<T> {
         has_value = true,
         value = v,
@@ -15,5 +15,13 @@ impl Option<T> {
     return Option<T> {
         has_value = false,
     };
+  }
+
+  const unwrap := fn(&self) -> &T {
+    return self.value;
+  }
+
+  const unwrap_mut := fn(&mut self) -> &mut T {
+    return self.value;
   }
 }

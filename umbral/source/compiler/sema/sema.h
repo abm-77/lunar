@@ -6,6 +6,7 @@
 #include "lower_types.h"
 #include "method_table.h"
 #include "mono.h"
+#include "resolve.h"
 #include "symbol.h"
 #include <compiler/driver/loader.h>
 
@@ -89,13 +90,13 @@ inline Result<SemaResult> run_sema(const Module &mod, const BodyIR &ir,
                     std::move(body_semas)};
 }
 
-// resolve all unresolved Path nodes in the given body_semas.
-// walks each Path with node_symbol == 0 and resolves iteratively through
-// import aliases, module namespaces, type methods, and enum variants.
-inline void resolve_paths(
+// resolve all unresolved Path nodes in the given body_semas using resolve_path.
+inline void resolve_all_paths(
     std::unordered_map<SymbolId, BodySema> &body_semas,
     const SymbolTable &syms, const MethodTable &methods,
-    const std::vector<LoadedModule> &modules) {
+    TypeTable &types, const std::vector<LoadedModule> &modules,
+    const std::vector<ModuleContext> &module_contexts,
+    const Interner &interner) {
   for (auto &[bsema_sym_id, bsema] : body_semas) {
     const Symbol &fn_sym = syms.symbols[bsema_sym_id];
     u32 mod_i = fn_sym.module_idx;
@@ -111,44 +112,15 @@ inline void resolve_paths(
       u32 seg_count = fn_ir.nodes.c[n];
       if (seg_count < 2) continue;
 
-      SymId first = fn_ir.nodes.list[seg_start];
-      u32 scope_mod = mod_i;
-      u32 seg_idx = 0;
+      std::vector<SymId> segs;
+      for (u32 si = 0; si < seg_count; ++si)
+        segs.push_back(static_cast<SymId>(fn_ir.nodes.list[seg_start + si]));
 
-      // try first segment as import alias
-      auto imp_it = imap.find(first);
-      if (imp_it != imap.end()) {
-        scope_mod = imp_it->second;
-        seg_idx = 1;
-      }
-
-      // walk remaining segments
-      SymbolId resolved = kInvalidSymbol;
-      for (; seg_idx < seg_count; ++seg_idx) {
-        SymId seg = fn_ir.nodes.list[seg_start + seg_idx];
-        SymbolId sid = (scope_mod == mod_i)
-                           ? syms.lookup(scope_mod, seg)
-                           : syms.lookup_pub(scope_mod, seg);
-        if (sid == kInvalidSymbol) break;
-        if (syms.symbols[sid].aliased_sym != 0)
-          sid = syms.symbols[sid].aliased_sym;
-        resolved = sid;
-
-        // if type with more segments, try method lookup
-        if (seg_idx + 1 < seg_count &&
-            syms.symbols[sid].kind == SymbolKind::Type) {
-          SymId next_seg = fn_ir.nodes.list[seg_start + seg_idx + 1];
-          SymbolId method_id = methods.lookup(sid, next_seg);
-          if (method_id != kInvalidSymbol) {
-            resolved = method_id;
-            seg_idx++;
-          }
-          // not a method → type stays resolved (enum variants handled in codegen)
-        }
-      }
-
-      if (resolved != kInvalidSymbol)
-        bsema.node_symbol[n] = resolved;
+      auto rp = resolve_path(segs.data(), seg_count, mod_i, imap,
+                              syms, methods, types, &module_contexts,
+                              interner);
+      if (rp.kind != ResolvedPath::Unresolved)
+        bsema.node_symbol[n] = rp.symbol;
     }
   }
 }
@@ -207,6 +179,32 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
     u32 dep_mod_idx = mit->second;
     SymbolId actual = syms.lookup_pub(dep_mod_idx, second_seg);
     if (actual != kInvalidSymbol) sym.aliased_sym = actual;
+  }
+
+  // phase 4a2: resolve explicit type aliases (const X : type = mod::Type<Args>).
+  // these have type_node == 0, annotate_type != 0. resolve the annotate_type's
+  // named type to a SymbolId and set aliased_sym.
+  for (auto &sym : syms.symbols) {
+    if (sym.kind != SymbolKind::Type || sym.type_node != 0 ||
+        sym.annotate_type == 0 ||
+        sym.module_idx >= static_cast<u32>(modules.size()))
+      continue;
+    const TypeAst &ta = modules[sym.module_idx].type_ast;
+    TypeId tid = sym.annotate_type;
+    if (tid >= ta.kind.size()) continue;
+    SymId type_name = ta.a[tid];
+    if (ta.kind[tid] == TypeKind::Named) {
+      SymbolId actual = syms.lookup(sym.module_idx, type_name);
+      if (actual != kInvalidSymbol) sym.aliased_sym = actual;
+    } else if (ta.kind[tid] == TypeKind::QualNamed) {
+      SymId mod_prefix = static_cast<SymId>(ta.list[ta.b[tid]]);
+      const auto &imp = modules[sym.module_idx].import_map;
+      auto mit = imp.find(mod_prefix);
+      if (mit != imp.end()) {
+        SymbolId actual = syms.lookup_pub(mit->second, type_name);
+        if (actual != kInvalidSymbol) sym.aliased_sym = actual;
+      }
+    }
   }
 
   // phase 4b: build a unified per-module context vector replacing the old five
@@ -281,7 +279,8 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
   }
 
   // phase 5b: resolve all unresolved cross-module Path nodes
-  resolve_paths(body_semas, syms, methods, modules);
+  resolve_all_paths(body_semas, syms, methods, types, modules,
+                    module_contexts, interner);
 
   return SemaResult{std::move(syms), std::move(types), std::move(methods),
                     std::move(body_semas)};

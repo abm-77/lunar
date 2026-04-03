@@ -71,6 +71,11 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
         if (d.kind == DeclKind::Var) s.flags = s.flags | SymFlags::Mut;
       } break;
       }
+    } else if (d.init == 0 && d.type != 0 && d.kind == DeclKind::Const &&
+               !has(d.flags, DeclFlags::Extern)) {
+      // const X : type = SomeType<Args> — explicit type alias
+      s.kind = SymbolKind::Type;
+      s.annotate_type = d.type;
     } else {
       // no initializer. for extern declarations, the type annotation determines
       // whether this is an extern function (FnType) or an extern global.

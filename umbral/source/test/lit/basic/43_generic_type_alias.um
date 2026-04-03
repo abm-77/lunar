@@ -1,0 +1,18 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: has=1
+# CHECK: val=42
+
+import core.option;
+import sys.io.fmt;
+
+const Foo := struct { x: i32 };
+const MaybeFoo : type = option::Option<Foo>;
+
+const main := fn() -> i32 {
+  const m := MaybeFoo::some(Foo { x = 42 });
+  const has: i64 = @as(m.has_value, i64);
+  const val := m.value.x;
+  fmt::println("has={}", [1]fmt::Arg{ fmt::arg_i64(has) });
+  fmt::println("val={}", [1]fmt::Arg{ fmt::arg_i64(@as(val, i64)) });
+  return 0;
+};

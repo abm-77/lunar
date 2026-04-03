@@ -1595,7 +1595,15 @@ private:
       init = parse_expr();
     } else {
       if (match(TokenKind::Colon)) ty = parse_type();
-      if (match(TokenKind::Equal)) init = parse_expr();
+      if (match(TokenKind::Equal)) {
+        bool is_type_decl = ty != 0 &&
+            type_ast.kind[ty] == TypeKind::Named &&
+            interner.view(type_ast.a[ty]) == "type";
+        if (is_type_decl && !at(TokenKind::KwStruct) && !at(TokenKind::KwEnum))
+          ty = parse_type();
+        else
+          init = parse_expr();
+      }
     }
     current_struct_name = 0;
     match(TokenKind::Semicolon); // optional at module level

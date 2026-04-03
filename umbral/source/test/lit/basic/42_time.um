@@ -1,0 +1,41 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: mono=ok
+# CHECK: wall=ok
+# CHECK: sleep=ok
+# CHECK: elapsed=ok
+
+import sys.time;
+import sys.io.fmt;
+
+const main := fn() -> i32 {
+  # monotonic clock returns nonzero nanoseconds
+  const t0 := time::Instant::now();
+  const ok_mono := t0.ns > 0;
+  if (ok_mono) { fmt::println("mono=ok", [0]fmt::Arg{}); }
+  else { fmt::println("mono=FAIL", [0]fmt::Arg{}); }
+
+  # wall clock returns nonzero
+  const w := time::WallTime::now_utc();
+  const ok_wall := w.utc_ns > 0;
+  if (ok_wall) { fmt::println("wall=ok", [0]fmt::Arg{}); }
+  else { fmt::println("wall=FAIL", [0]fmt::Arg{}); }
+
+  # sleep 10ms then check elapsed
+  const before := time::Instant::now();
+  time::sleep(time::Duration::from_ms(10));
+  const after := time::Instant::now();
+  const d := after.elapsed_since(before);
+
+  # should have slept at least 5ms (generous to avoid flaky test)
+  const ok_sleep := d.as_ms() >= 5;
+  if (ok_sleep) { fmt::println("sleep=ok", [0]fmt::Arg{}); }
+  else { fmt::println("sleep=FAIL", [0]fmt::Arg{}); }
+
+  # elapsed() should be >= the sleep duration
+  const e := before.elapsed();
+  const ok_elapsed := e.as_ms() >= 5;
+  if (ok_elapsed) { fmt::println("elapsed=ok", [0]fmt::Arg{}); }
+  else { fmt::println("elapsed=FAIL", [0]fmt::Arg{}); }
+
+  return 0;
+};

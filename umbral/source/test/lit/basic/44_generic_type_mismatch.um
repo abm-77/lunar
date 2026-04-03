@@ -1,0 +1,14 @@
+# RUN: not %uc %s --root %S/../../../std 2>&1 | %FileCheck %s
+
+import core.option;
+
+const Foo := struct { x: i32 };
+const Bar := struct { y: i32 };
+const MaybeFoo : type = option::Option<Foo>;
+
+# CHECK: return type mismatch: expected Option<Foo>, got Option<Bar>
+const bad := fn() -> MaybeFoo {
+  return option::Option<Bar>::some(Bar { y = 1 });
+};
+
+const main := fn() -> i32 { return 0; };

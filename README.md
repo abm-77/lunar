@@ -120,6 +120,8 @@ type := '&' ['mut'] type                             # reference
       | '[]' type                                    # slice: fat pointer { ptr, len }
       | '[' (int | ident) ']' type                  # array: [N]T
       | '(' type (',' type)+ ')'                    # tuple
+      | 'vec' '<' type ',' int '>'                  # builtin vector: vec<T, N> (N = 2/3/4)
+      | 'mat' '<' type ',' int ',' int '>'          # builtin matrix: mat<T, N, M> (cols, rows)
       | 'fn' '(' ([ident ':'] type (',' [ident ':'] type)*)? ')' '->' type  # function type; param names optional
       | ident ['<' type (',' type)* '>']            # named type, optional generic args
 ```
@@ -133,6 +135,7 @@ const e: fn(i32, i32) -> i32;       # function type
 const f: [10]i32;                   # array of 10 i32s
 const g: [N]T;                      # array with const-generic count
 const h: []i32;                     # slice of i32
+const j: vec<f32, 3>;                # builtin vector type (3 x f32)
 const k: Option<i32>;               # generic named type
 const m: Array<i32, 10>;            # generic type with const-generic arg
 ```
@@ -158,6 +161,21 @@ const Array<T: type, N: u32> := struct {
 const identity<T: type> := fn(x: T) -> T {
     return x;
 }
+```
+
+### Type Aliases
+
+Use `:=` for simple type aliases and `const Name : type = T;` for generic types.
+
+```
+# simple alias — := form works fine
+const Handle := u64;
+
+# generic alias — explicit `: type =` required
+const MaybeFoo : type = Option<Foo>;
+
+# methods on the aliased type resolve through the alias
+const val := MaybeFoo::some(my_foo);
 ```
 
 ### impl Blocks
@@ -695,21 +713,57 @@ Mouse position functions (take `w: &Window`):
 
 **`MouseButton` variants:** `Unknown`, `Left`, `Right`, `Middle`, `Count`.
 
-#### `math.types` — GLSL-compatible vector and matrix types
+#### `sys.time` — monotonic clock, wall clock, and sleep
+
+```
+import sys.time => time;
+
+const start := time::Instant::now();
+# ... work ...
+const elapsed := start.elapsed();
+const ms := elapsed.as_ms();
+
+time::sleep(time::Duration::from_ms(16));
+
+const wall := time::WallTime::now_utc();
+const unix_ns := wall.as_unix_ns();
+```
+
+| Type | Key methods |
+|------|-------------|
+| `Duration` | `from_ns`, `from_us`, `from_ms`, `from_secs`; `as_ns`, `as_us`, `as_ms`, `as_secs`, `as_secs_f32` |
+| `Instant` | `now()`, `elapsed() -> Duration`, `elapsed_since(other: Instant) -> Duration` |
+| `WallTime` | `now_utc()`, `as_unix_ns() -> u64` |
+
+Free functions: `sleep(d: Duration)`.
+
+Type aliases `MaybeDuration` and `MaybeInstant` wrap `Option<Duration>` and `Option<Instant>` respectively. `Duration` and `Instant` support checked and saturating arithmetic.
+
+#### `math.types` — vector, matrix types, and arithmetic helpers
+
+`vec` and `mat` are builtin keyword types. `math.types` re-exports standard aliases and utility functions.
 
 ```
 import math.types => m;
 
-const pos: m::vec2 = m::vec2 { x = 1.0, y = 2.0 };
-const clip: m::vec4 = m::vec4(pos.x, pos.y, 0.0, 1.0);  # positional init
+const pos  := m::vec2(1.0, 2.0);                    # positional constructor
+const clip := m::vec4(pos.x, pos.y, 0.0, 1.0);
+const col  := m::mat4(c0, c1, c2, c3);              # column-major from 4 vec4s
+const transformed := mvp * m::vec4(x, y, z, 1.0);   # mat * vec -> vec
 ```
 
-| Type | Fields | Size |
-|------|--------|------|
-| `vec2` | `x, y: f32` | 8 B |
-| `vec3` | `x, y, z: f32` | 12 B |
-| `vec4` | `x, y, z, w: f32` | 16 B |
-| `mat4` | `col0..col3: vec4` | 64 B (column-major) |
+**Builtin vector type `vec<T, N>`:** fields `.x/.y/.z/.w` (aliases `.r/.g/.b/.a`). Operators: `vec + vec`, `vec - vec`, `vec * scalar`, `scalar * vec`. CPU maps to LLVM `<N x T>` SIMD; GPU maps to SPIR-V vector.
+
+**Builtin matrix type `mat<T, N, M>`:** fields `.col0` through `.col3`. Operators: `mat * vec -> vec`, `mat * mat -> mat`. CPU maps to an array of column vectors; GPU maps to SPIR-V matrix.
+
+| Alias | Expands to | Fields | Size |
+|-------|------------|--------|------|
+| `vec2` | `vec<f32, 2>` | `x, y` | 8 B |
+| `vec3` | `vec<f32, 3>` | `x, y, z` | 12 B |
+| `vec4` | `vec<f32, 4>` | `x, y, z, w` | 16 B |
+| `mat4` | `mat<f32, 4, 4>` | `col0..col3: vec4` | 64 B (column-major) |
+
+Additional utilities: `U64_MAX`, `saturating_add_u64(a, b)`, `saturating_sub_u64(a, b)`.
 
 ---
 
@@ -747,6 +801,7 @@ const cfg := gfx::GfxConfig {
     max_samplers      = 256,
     frame_arena_bytes = 64 * 1024 * 1024,
     draw_packets_max  = 65536,
+    enable_depth      = true,
     enable_validation = false,
     present_mode      = gfx::PresentMode::Mailbox,
 };
@@ -807,6 +862,7 @@ gfx::shutdown(dev);
 | `max_samplers` | `u32` | bindless sampler array capacity; ≤ 256 |
 | `frame_arena_bytes` | `u64` | per-frame transient upload arena; multiple of 256 |
 | `draw_packets_max` | `u32` | max `DrawPacket`s per submit call |
+| `enable_depth` | `bool` | creates a D32_SFLOAT depth buffer; enables depth test/write with LESS compare |
 | `enable_validation` | `bool` | enables GPU validation layers; disable in release |
 | `present_mode` | `PresentMode` | `Fifo` / `Immediate` / `Mailbox`; runtime falls back to Fifo |
 
@@ -814,9 +870,11 @@ gfx::shutdown(dev);
 
 | Method | Description |
 |--------|-------------|
+| `DrawStream::create(dev, max_packets: u64) -> DrawStream` | allocate a reusable draw stream with the given capacity |
 | `DrawStream::begin(dev, cmd, pipe) -> DrawStream` | open a draw stream for the current frame |
 | `push_sprite(tex, samp, draw_data_offset, instance_count, first_instance)` | append a textured procedural quad (6 non-indexed vertices) |
 | `push_draw_packet(packet: DrawPacket)` | append a fully-specified draw packet verbatim |
+| `reset()` | clear accumulated packets for reuse between frames without reallocating |
 | `submit()` | upload all accumulated packets and record draw calls |
 
 **`FrameAlloc` fields:**
@@ -834,6 +892,17 @@ gfx::shutdown(dev);
 | 0 | 1 | `samplers[]` | all samplers; indexed by lower 32 bits of `Sampler.handle` |
 | 0 | 2 | `frame_arena_ssbo` | per-frame transient data; indexed by `draw_data_offset` |
 | 0 | 3 | `draw_packets_ssbo` | `DrawPacket[]`; indexed by `gl_DrawID` in the vertex shader |
+
+---
+
+### Examples
+
+Example programs live in `examples/` and are built via `ninja build_examples`.
+
+| Example | Description |
+|---------|-------------|
+| `examples/triangle/` | textured triangle using the sprite draw stream |
+| `examples/cube/` | 3D spinning cube using storage buffer API, `mat * vec` operator, and depth buffer |
 
 ---
 
@@ -870,6 +939,6 @@ The shader pipeline runs inside `uc` (not `ul`) via `shader_compile()` in `compi
 
 ## Keywords
 
-`fn` `const` `var` `mut` `if` `else` `for` `return` `struct` `enum` `type` `impl` `import` `true` `false` `as` `self`
+`fn` `const` `var` `mut` `if` `else` `for` `return` `struct` `enum` `type` `impl` `import` `true` `false` `as` `self` `vec` `mat`
 
 `pub` and `extern` are **not** keywords — they are `@pub` and `@extern` intrinsic annotations.

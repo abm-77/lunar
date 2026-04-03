@@ -188,6 +188,22 @@ struct TypeLowerer {
   // lowering.
   Result<CTypeId> lower_user_type(SymbolId sid, const TypeId *targs,
                                   u32 targs_count, Span sp) {
+    // explicit type alias: const X : type = SomeType<Args>
+    // check BEFORE following aliased_sym since the alias carries the annotate_type
+    if (syms.get(sid).kind == SymbolKind::Type &&
+        syms.get(sid).type_node == 0 && syms.get(sid).annotate_type != 0) {
+      const Symbol &resolved = syms.get(sid);
+      if (module_contexts &&
+          resolved.module_idx < module_contexts->size()) {
+        const auto &mctx = (*module_contexts)[resolved.module_idx];
+        TypeLowerer def_fl(*mctx.type_ast, syms, interner, out);
+        def_fl.module_idx = resolved.module_idx;
+        def_fl.module_contexts = module_contexts;
+        if (mctx.import_map) def_fl.import_map = mctx.import_map;
+        return def_fl.lower(resolved.annotate_type);
+      }
+      return lower(syms.get(sid).annotate_type);
+    }
     if (syms.get(sid).aliased_sym != 0) sid = syms.get(sid).aliased_sym;
     CTypeKind ct_kind = CTypeKind::Struct;
     {

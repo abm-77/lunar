@@ -41,6 +41,7 @@ find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 add_library(runtime STATIC
 ./source/runtime/sys/fmt.c
 ./source/runtime/sys/mem.c
+./source/runtime/sys/time.c
 ./source/runtime/sys/window.c
 ./source/runtime/asset/asset.c
 ./source/runtime/gfx/gfx_vulkan.c

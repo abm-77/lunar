@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "mono.h"
+#include "resolve.h"
 #include <common/error.h>
 #include <common/interner.h>
 #include <compiler/frontend/ast.h>
@@ -143,11 +144,28 @@ struct BodyChecker {
     case CTypeKind::Array:
       return "[" + std::to_string(ct.count) + "]" + type_name_for(ct.inner);
     case CTypeKind::Slice: return "[]" + type_name_for(ct.inner);
+    case CTypeKind::Vec:
+      return "vec<" + type_name_for(ct.inner) + ", " +
+             std::to_string(ct.count) + ">";
+    case CTypeKind::Mat:
+      return "mat<" + type_name_for(types.types[ct.inner].inner) + ", " +
+             std::to_string(ct.count) + ", " +
+             std::to_string(types.types[ct.inner].count) + ">";
     case CTypeKind::Struct:
-    case CTypeKind::Enum:
-      if (ct.symbol != 0 && ct.symbol < syms.symbols.size())
-        return std::string(interner.view(syms.symbols[ct.symbol].name));
-      return ct.kind == CTypeKind::Struct ? "<struct>" : "<enum>";
+    case CTypeKind::Enum: {
+      if (ct.symbol == 0 || ct.symbol >= syms.symbols.size())
+        return ct.kind == CTypeKind::Struct ? "<struct>" : "<enum>";
+      std::string name(interner.view(syms.symbols[ct.symbol].name));
+      if (ct.list_count > 0) {
+        name += "<";
+        for (u32 k = 0; k < ct.list_count; ++k) {
+          if (k > 0) name += ", ";
+          name += type_name_for(types.list[ct.list_start + k]);
+        }
+        name += ">";
+      }
+      return name;
+    }
     case CTypeKind::Fn: return "fn";
     default: return "<type>";
     }
@@ -408,6 +426,22 @@ struct BodyChecker {
               }
             }
           }
+        }
+
+        // type alias with type args: Alias::method where Alias = Generic<Args>.
+        // use resolve_path to find the alias and extract type args.
+        if (type_args.empty() && ir.nodes.kind[callee_n] == NodeKind::Path) {
+          u32 pls = ir.nodes.b[callee_n];
+          u32 pcnt = ir.nodes.c[callee_n];
+          std::vector<SymId> segs;
+          for (u32 si = 0; si < pcnt; ++si)
+            segs.push_back(static_cast<SymId>(ir.nodes.list[pls + si]));
+          auto rp = resolve_path(segs.data(), pcnt, module_idx,
+                                 import_map ? *import_map
+                                     : std::unordered_map<SymId, u32>{},
+                                 syms, methods, types, module_contexts,
+                                 interner);
+          type_args = std::move(rp.type_args);
         }
 
         // fall back to inference from argument types (for generic free
@@ -675,8 +709,11 @@ struct BodyChecker {
 
       if (first_sid != kInvalidSymbol &&
           syms.get(first_sid).kind == SymbolKind::Type) {
-        // Type::method — static method dispatch
-        SymbolId method_sid = methods.lookup(first_sid, second_seg);
+        // Type::method — static method dispatch. follow alias chain.
+        SymbolId type_for_method = first_sid;
+        if (syms.get(type_for_method).aliased_sym != 0)
+          type_for_method = syms.get(type_for_method).aliased_sym;
+        SymbolId method_sid = methods.lookup(type_for_method, second_seg);
         if (method_sid != kInvalidSymbol) {
           sema.node_symbol[n] = method_sid;
           const Symbol &msym = syms.get(method_sid);
