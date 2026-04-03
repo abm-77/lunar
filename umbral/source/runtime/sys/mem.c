@@ -236,7 +236,22 @@ static slab_t *class_get_slab_for_alloc(uint32_t class_id) {
   return s;
 }
 
+// sentinel class_id for allocations that exceed LAST_POWER_OF_TWO_SIZE.
+// these go directly to os_alloc_pages and bypass the slab layer entirely.
+enum { LARGE_CLASS_ID = UINT32_MAX };
+
 static block_t block_allocate(uint64_t n, uint64_t align) {
+  if (align > n) n = align;
+  if (n == 0) n = MIN_BLOCK_SIZE;
+
+  // large allocation: directly mmap; owner=NULL signals this to block_free
+  if (n > LAST_POWER_OF_TWO_SIZE) {
+    uint64_t alloc_bytes = ceil_to_page(n);
+    byte_t *p = (byte_t *)os_alloc_pages(alloc_bytes);
+    if (!p) return (block_t){0};
+    return (block_t){.ptr = p, .owner = NULL, .class_id = LARGE_CLASS_ID};
+  }
+
   const uint32_t class_id = size_class(n, align);
   class_state_t *cs = &g_alloc.classes[class_id];
 
@@ -281,7 +296,11 @@ static block_t block_allocate(uint64_t n, uint64_t align) {
   return block_allocate(n, align);
 }
 
-static void block_free(uint32_t class_id, slab_t *owner, void *p) {
+static void block_free(uint32_t class_id, slab_t *owner, void *p, uint64_t size) {
+  if (class_id == LARGE_CLASS_ID) {
+    os_free_pages(p, size);
+    return;
+  }
   class_state_t *cs = &g_alloc.classes[class_id];
 
   // push into  free list
@@ -507,7 +526,7 @@ void rt_free(uint64_t h, uint32_t site) {
     return;
   }
 
-  block_free(e->size_class, e->owner, e->ptr);
+  block_free(e->size_class, e->owner, e->ptr, e->size);
 
   e->ptr = NULL;
   e->owner = NULL;

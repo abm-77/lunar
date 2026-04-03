@@ -1,0 +1,76 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: and=ok
+# CHECK: or=ok
+# CHECK: xor=ok
+# CHECK: shl=ok
+# CHECK: shr=ok
+# CHECK: mod=ok
+# CHECK: compound_and=ok
+# CHECK: compound_or=ok
+# CHECK: compound_xor=ok
+# CHECK: compound_mod=ok
+# CHECK: const_fold=ok
+
+import sys.io.fmt;
+
+const ok := fn(label: []u8) -> void {
+  fmt::println("{}=ok", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+const fail := fn(label: []u8) -> void {
+  fmt::println("{}=FAIL", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+const check := fn(label: []u8, cond: bool) -> void {
+  if (cond) { ok(label); } else { fail(label); }
+};
+
+# const-to-const folding with new ops
+const A: u64 = 255;
+const B: u64 = A & 15;
+const C: u64 = A | 256;
+const D: u64 = A ^ 170;
+const E: u64 = @shl(1, 10);
+const F: u64 = @shr(1024, 3);
+const G: u64 = 17 % 5;
+
+const main := fn() -> i32 {
+  # bitwise AND
+  check("and", (12 & 10) == 8);
+
+  # bitwise OR
+  check("or", (12 | 10) == 14);
+
+  # bitwise XOR
+  check("xor", (12 ^ 10) == 6);
+
+  # shift left
+  check("shl", @shl(1, 4) == 16);
+
+  # shift right
+  check("shr", @shr(256, 3) == 32);
+
+  # modulo
+  check("mod", (17 % 5) == 2);
+
+  # compound assignment
+  var a: u32 = 15;
+  a &= 9;
+  check("compound_and", a == 9);
+
+  var b: u32 = 12;
+  b |= 3;
+  check("compound_or", b == 15);
+
+  var c: u32 = 255;
+  c ^= 170;
+  check("compound_xor", c == 85);
+
+  var f: u32 = 17;
+  f %= 5;
+  check("compound_mod", f == 2);
+
+  # const-to-const folding
+  check("const_fold",
+    B == 15 && C == 511 && D == 85 && E == 1024 && F == 128 && G == 2);
+
+  return 0;
+};

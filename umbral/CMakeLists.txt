@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(GLFW_ROOT "" CACHE PATH "GLFW install prefix")
 set(DEPS_VK_HEADERS "" CACHE PATH "Vulkan-Headers include path")
 set(LZ4_DIR "" CACHE PATH "lz4 source root (third_party/lz4)")
+set(MINIAUDIO_DIR "" CACHE PATH "miniaudio source root (third_party/miniaudio)")
 set(COMPILER_DIR "${CMAKE_SOURCE_DIR}/source")
 
 # Vulkan loader from system / SDK
@@ -37,7 +38,7 @@ endif()
 find_path(GLFW_INCLUDE_DIR GLFW/glfw3.h HINTS "${GLFW_ROOT}/include" REQUIRED)
 find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 
-# ---- runtime library (GLFW + Vulkan) ----
+# ---- runtime library (GLFW + Vulkan + audio) ----
 add_library(runtime STATIC
 ./source/runtime/sys/fmt.c
 ./source/runtime/sys/mem.c
@@ -45,13 +46,18 @@ add_library(runtime STATIC
 ./source/runtime/sys/window.c
 ./source/runtime/asset/asset.c
 ./source/runtime/gfx/gfx_vulkan.c
+./source/runtime/audio/audio.c
+./source/runtime/audio/audio_thread.c
+./source/runtime/audio/audio_device.c
 )
 target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
 "${GLFW_INCLUDE_DIR}"
+"${MINIAUDIO_DIR}"
 ${COMPILER_DIR}
 ./source/runtime
 ./source/runtime/gfx
+./source/runtime/audio
 )
 target_link_libraries(runtime PUBLIC
 "${GLFW_LIB}"
@@ -63,6 +69,8 @@ target_link_libraries(runtime PUBLIC
 "-framework Cocoa"
 "-framework IOKit"
 "-framework CoreFoundation"
+"-framework CoreAudio"
+"-framework AudioToolbox"
 )
 endif()
 
@@ -242,6 +250,22 @@ target_compile_definitions(runtime_tests PRIVATE UM_TESTING=1)
 target_link_libraries(runtime_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(runtime_tests)
 
+add_executable(audio_tests
+  ${UNIT_TEST_DIR}/audio_test.cc
+  ${UNIT_TEST_DIR}/audio_test_stubs.c
+  ./source/runtime/audio/audio.c
+  ./source/runtime/sys/mem.c
+)
+target_include_directories(audio_tests PRIVATE
+  "${MINIAUDIO_DIR}"
+  ./source/runtime
+  ./source/runtime/audio
+  ${COMPILER_DIR}
+)
+target_compile_definitions(audio_tests PRIVATE UM_TESTING=1 UM_DEBUG=1)
+target_link_libraries(audio_tests PRIVATE GTest::gtest_main)
+gtest_discover_tests(audio_tests)
+
 add_executable(fmt_tests
   ${UNIT_TEST_DIR}/fmt_test.cc
   ./source/runtime/sys/fmt.c
@@ -326,6 +350,7 @@ file(GLOB EXAMPLE_DIRS "${EXAMPLES_DIR}/*/")
 foreach(EXAMPLE_DIR ${EXAMPLE_DIRS})
   get_filename_component(EXAMPLE_NAME ${EXAMPLE_DIR} NAME)
   if(EXISTS "${EXAMPLE_DIR}/main.um")
+    file(GLOB EXAMPLE_UM_SOURCES "${EXAMPLE_DIR}/*.um")
     add_custom_command(
       OUTPUT ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
@@ -334,8 +359,7 @@ foreach(EXAMPLE_DIR ${EXAMPLE_DIRS})
         --root ${CMAKE_SOURCE_DIR}/source/std
         --shader-out ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
         -o ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME}
-      COMMAND sh -c "$<TARGET_FILE:ul> --pack ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/assets.umpack ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/*.umsh"
-      DEPENDS uc ul
+      DEPENDS uc ul ${EXAMPLE_UM_SOURCES}
       COMMENT "Building example: ${EXAMPLE_NAME}"
     )
     list(APPEND EXAMPLE_OUTPUTS ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME})

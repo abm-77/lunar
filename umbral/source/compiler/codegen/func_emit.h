@@ -207,6 +207,10 @@ struct FuncEmitter {
     case TokenKind::MinusEqual: base_op = TokenKind::Minus; break;
     case TokenKind::StarEqual: base_op = TokenKind::Star; break;
     case TokenKind::SlashEqual: base_op = TokenKind::Slash; break;
+    case TokenKind::PercentEqual: base_op = TokenKind::Percent; break;
+    case TokenKind::AmpEqual: base_op = TokenKind::Ampersand; break;
+    case TokenKind::PipeEqual: base_op = TokenKind::Pipe; break;
+    case TokenKind::CaretEqual: base_op = TokenKind::Caret; break;
     default: assert(false && "unhandled compound assignment operator"); return;
     }
     llvm::Value *result =
@@ -313,6 +317,8 @@ struct FuncEmitter {
     case NodeKind::StrLit: return emit_str_lit(n);
     case NodeKind::Ident: return emit_ident(n);
     case NodeKind::Binary: return emit_binary(n);
+    case NodeKind::Shl: return emit_shift(n, true);
+    case NodeKind::Shr: return emit_shift(n, false);
     case NodeKind::Unary: return emit_unary(n);
     case NodeKind::Call: return emit_call(n);
     case NodeKind::Field: return emit_field(n);
@@ -447,6 +453,16 @@ struct FuncEmitter {
       return fp     ? builder.CreateFDiv(lv, rv)
              : sign ? builder.CreateSDiv(lv, rv)
                     : builder.CreateUDiv(lv, rv);
+    case TokenKind::Percent:
+      return fp     ? builder.CreateFRem(lv, rv)
+             : sign ? builder.CreateSRem(lv, rv)
+                    : builder.CreateURem(lv, rv);
+    case TokenKind::Ampersand:
+      return builder.CreateAnd(lv, rv);
+    case TokenKind::Pipe:
+      return builder.CreateOr(lv, rv);
+    case TokenKind::Caret:
+      return builder.CreateXor(lv, rv);
     case TokenKind::EqualEqual:
       return fp ? builder.CreateFCmpOEQ(lv, rv) : builder.CreateICmpEQ(lv, rv);
     case TokenKind::BangEqual:
@@ -554,6 +570,16 @@ struct FuncEmitter {
     // vec op vec: LLVM vector arith (fadd/fmul/etc work natively on <N x float>)
     bool fp = is_float(lct.kind) || lct.kind == CTypeKind::Vec;
     return emit_arith_op(op, lv, rv, fp, is_signed(lct.kind));
+  }
+
+  llvm::Value *emit_shift(NodeId n, bool left) {
+    llvm::Value *lv = emit_expr(ir.nodes.a[n]);
+    llvm::Value *rv = emit_expr(ir.nodes.b[n]);
+    if (left) return builder.CreateShl(lv, rv);
+    CTypeId ctid = bsema.node_type[ir.nodes.a[n]].concrete;
+    return is_signed(cg.sema.types.types[ctid].kind)
+               ? builder.CreateAShr(lv, rv)
+               : builder.CreateLShr(lv, rv);
   }
 
   // short-circuit &&: if lhs is false, result is false without evaluating rhs.

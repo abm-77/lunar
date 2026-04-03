@@ -55,7 +55,14 @@ enum class TokenKind : u16 {
   Colon,
   ColonColon,
   ColonEqual,
+  Percent,
+  Pipe,
   Ampersand,
+  Caret,
+  PercentEqual,
+  PipeEqual,
+  AmpEqual,
+  CaretEqual,
   PipePipe, // ||
   AmpAmp,   // &&
   At,
@@ -355,6 +362,10 @@ private:
       return (n == '=') ? two(TokenKind::StarEqual) : one(TokenKind::Star);
     case '/':
       return (n == '=') ? two(TokenKind::SlashEqual) : one(TokenKind::Slash);
+    case '%':
+      return (n == '=') ? two(TokenKind::PercentEqual) : one(TokenKind::Percent);
+    case '^':
+      return (n == '=') ? two(TokenKind::CaretEqual) : one(TokenKind::Caret);
     case '=':
       if (n == '=') return two(TokenKind::EqualEqual);
       if (n == '>') return two(TokenKind::FatArrow);
@@ -371,11 +382,12 @@ private:
       if (n == '=') return two(TokenKind::ColonEqual);
       return one(TokenKind::Colon);
     case '|':
-      return (n == '|')
-                 ? two(TokenKind::PipePipe)
-                 : std::optional<std::pair<TokenKind, Span>>{std::nullopt};
+      if (n == '|') return two(TokenKind::PipePipe);
+      if (n == '=') return two(TokenKind::PipeEqual);
+      return one(TokenKind::Pipe);
     case '&':
       if (n == '&') return two(TokenKind::AmpAmp);
+      if (n == '=') return two(TokenKind::AmpEqual);
       return one(TokenKind::Ampersand);
     case '@': return one(TokenKind::At);
     default: return std::nullopt;

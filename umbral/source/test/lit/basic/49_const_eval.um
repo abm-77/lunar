@@ -1,0 +1,51 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: mul=ok
+# CHECK: add=ok
+# CHECK: sub=ok
+# CHECK: div=ok
+# CHECK: chain=ok
+# CHECK: large=ok
+
+import sys.io.fmt;
+
+const ok := fn(label: []u8) -> void {
+  fmt::println("{}=ok", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+const fail := fn(label: []u8) -> void {
+  fmt::println("{}=FAIL", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+const check := fn(label: []u8, cond: bool) -> void {
+  if (cond) { ok(label); } else { fail(label); }
+};
+
+# const-to-const arithmetic: each depends on a previous const
+const RATE: u64 = 48000;
+const DURATION: u64 = 2;
+const FRAMES: u64 = RATE * DURATION;
+const SAMPLES: u64 = FRAMES * 2;
+
+# addition / subtraction / division chains
+const X: u64 = 100;
+const Y: u64 = X + 50;
+const Z: u64 = Y - 30;
+const W: u64 = Z / 4;
+
+# deeper chain: A depends on B depends on C depends on literal
+const C0: u64 = 7;
+const C1: u64 = C0 * 3;
+const C2: u64 = C1 + C0;
+const C3: u64 = C2 * C2;
+
+# large values (regression: const * const was producing 0 for > 64 KiB values)
+const BIG_COUNT: u64 = 192000;
+const BIG_BYTES: u64 = BIG_COUNT * 4;
+
+const main := fn() -> i32 {
+  check("mul", FRAMES == 96000 && SAMPLES == 192000);
+  check("add", Y == 150);
+  check("sub", Z == 120);
+  check("div", W == 30);
+  check("chain", C1 == 21 && C2 == 28 && C3 == 784);
+  check("large", BIG_BYTES == 768000);
+  return 0;
+};

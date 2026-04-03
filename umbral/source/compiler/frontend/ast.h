@@ -99,6 +99,8 @@ enum class NodeKind : u16 {
   MemCmp, // a = lhs NodeId, b = rhs NodeId, c = byte_count NodeId → i32
   MetaIf, // a = cond NodeId, b = then NodeId (Block or type expr), c = else
           // NodeId (0 or next MetaIf or body)
+  Shl,        // a = lhs NodeId, b = rhs NodeId → lhs << rhs
+  Shr,        // a = lhs NodeId, b = rhs NodeId → lhs >> rhs
   MetaAssert, // a = cond NodeId, b = msg NodeId (StrLit or 0)
   MetaField,  // a = obj NodeId, b = field_var SymId
   FieldsOf,   // a = struct_type_name SymId — @fields(TypeName)

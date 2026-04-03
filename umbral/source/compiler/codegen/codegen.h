@@ -84,23 +84,99 @@ inline std::string mangle(SymbolId id, const CodegenCtx &cg) {
   return out;
 }
 
-// try to evaluate a constant init expression to an llvm::Constant.
-// handles int/float/bool literals; returns null for anything else.
-static llvm::Constant *try_const_init(CodegenCtx &cg, const Symbol &sym,
-                                      llvm::Type *ty) {
-  if (!sym.init_expr) return nullptr;
-  const BodyIR &ir = cg.modules[sym.module_idx].ir;
-  NodeId n = sym.init_expr;
+// recursively evaluate a constant expression to an llvm::Constant.
+// handles literals, binary arithmetic, references to other const globals.
+// returns null for anything that can't be const-folded.
+static llvm::Constant *eval_const_expr(CodegenCtx &cg, const BodyIR &ir,
+                                       u32 mod_idx, NodeId n, llvm::Type *ty) {
   if (n >= ir.nodes.kind.size()) return nullptr;
   switch (ir.nodes.kind[n]) {
   case NodeKind::IntLit:
-    return llvm::ConstantInt::get(ty, static_cast<int64_t>(ir.int_lits[ir.nodes.a[n]]));
+    return llvm::ConstantInt::get(ty,
+               static_cast<int64_t>(ir.int_lits[ir.nodes.a[n]]));
   case NodeKind::FloatLit:
     return llvm::ConstantFP::get(ty, ir.float_lits[ir.nodes.a[n]]);
   case NodeKind::BoolLit:
     return llvm::ConstantInt::getBool(ty->getContext(), ir.nodes.a[n] != 0);
+
+  case NodeKind::Ident: {
+    // a = SymId (interned name); resolve to SymbolId via module namespace
+    auto name = static_cast<SymId>(ir.nodes.a[n]);
+    auto &ns = cg.sema.syms.module_namespaces[mod_idx];
+    auto ns_it = ns.find(name);
+    if (ns_it == ns.end()) return nullptr;
+    auto it = cg.global_map.find(ns_it->second);
+    if (it == cg.global_map.end()) return nullptr;
+    return it->second->getInitializer();
+  }
+
+  case NodeKind::Binary: {
+    auto op = static_cast<TokenKind>(ir.nodes.a[n]);
+    auto *lhs = eval_const_expr(cg, ir, mod_idx, ir.nodes.b[n], ty);
+    auto *rhs = eval_const_expr(cg, ir, mod_idx, ir.nodes.c[n], ty);
+    if (!lhs || !rhs) return nullptr;
+
+    if (ty->isIntegerTy()) {
+      auto *li = llvm::cast<llvm::ConstantInt>(lhs);
+      auto *ri = llvm::cast<llvm::ConstantInt>(rhs);
+      switch (op) {
+      case TokenKind::Plus:  return llvm::ConstantInt::get(ty, li->getValue() + ri->getValue());
+      case TokenKind::Minus: return llvm::ConstantInt::get(ty, li->getValue() - ri->getValue());
+      case TokenKind::Star:  return llvm::ConstantInt::get(ty, li->getValue() * ri->getValue());
+      case TokenKind::Slash: {
+        if (ri->isZero()) return nullptr;
+        return llvm::ConstantInt::get(ty, li->getValue().udiv(ri->getValue()));
+      }
+      case TokenKind::Percent: {
+        if (ri->isZero()) return nullptr;
+        return llvm::ConstantInt::get(ty, li->getValue().urem(ri->getValue()));
+      }
+      case TokenKind::Ampersand: return llvm::ConstantInt::get(ty, li->getValue() & ri->getValue());
+      case TokenKind::Pipe:      return llvm::ConstantInt::get(ty, li->getValue() | ri->getValue());
+      case TokenKind::Caret:     return llvm::ConstantInt::get(ty, li->getValue() ^ ri->getValue());
+      default: return nullptr;
+      }
+    }
+
+    if (ty->isFloatingPointTy()) {
+      auto *lf = llvm::cast<llvm::ConstantFP>(lhs);
+      auto *rf = llvm::cast<llvm::ConstantFP>(rhs);
+      const auto &la = lf->getValueAPF(), &ra = rf->getValueAPF();
+      llvm::APFloat result(la);
+      switch (op) {
+      case TokenKind::Plus:  result.add(ra, llvm::APFloat::rmNearestTiesToEven); break;
+      case TokenKind::Minus: result.subtract(ra, llvm::APFloat::rmNearestTiesToEven); break;
+      case TokenKind::Star:  result.multiply(ra, llvm::APFloat::rmNearestTiesToEven); break;
+      case TokenKind::Slash: result.divide(ra, llvm::APFloat::rmNearestTiesToEven); break;
+      default: return nullptr;
+      }
+      return llvm::ConstantFP::get(ty->getContext(), result);
+    }
+
+    return nullptr;
+  }
+
+  case NodeKind::Shl:
+  case NodeKind::Shr: {
+    auto *lhs = eval_const_expr(cg, ir, mod_idx, ir.nodes.a[n], ty);
+    auto *rhs = eval_const_expr(cg, ir, mod_idx, ir.nodes.b[n], ty);
+    if (!lhs || !rhs || !ty->isIntegerTy()) return nullptr;
+    auto *li = llvm::cast<llvm::ConstantInt>(lhs);
+    auto *ri = llvm::cast<llvm::ConstantInt>(rhs);
+    if (ir.nodes.kind[n] == NodeKind::Shl)
+      return llvm::ConstantInt::get(ty, li->getValue().shl(ri->getValue()));
+    return llvm::ConstantInt::get(ty, li->getValue().lshr(ri->getValue()));
+  }
+
   default: return nullptr;
   }
+}
+
+static llvm::Constant *try_const_init(CodegenCtx &cg, const Symbol &sym,
+                                      llvm::Type *ty) {
+  if (!sym.init_expr) return nullptr;
+  const BodyIR &ir = cg.modules[sym.module_idx].ir;
+  return eval_const_expr(cg, ir, sym.module_idx, sym.init_expr, ty);
 }
 
 inline void declare_globals(CodegenCtx &cg) {

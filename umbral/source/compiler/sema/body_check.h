@@ -1493,6 +1493,14 @@ struct BodyChecker {
       result = itype(CTypeKind::I32);
       break;
     }
+    case NodeKind::Shl:
+    case NodeKind::Shr: {
+      // @shl(a, b) / @shr(a, b) → same type as lhs
+      IType lt = check_expr(ir.nodes.a[n], sema);
+      check_expr(ir.nodes.b[n], sema);
+      result = lt;
+      break;
+    }
     case NodeKind::FieldsOf: {
       // @fields(TypeName) — returns a FieldIter for the named struct.
       SymId struct_sym = static_cast<SymId>(ir.nodes.a[n]);

@@ -485,16 +485,21 @@ private:
     case TokenKind::PlusEqual:
     case TokenKind::MinusEqual:
     case TokenKind::StarEqual:
-    case TokenKind::SlashEqual: return true;
+    case TokenKind::SlashEqual:
+    case TokenKind::PercentEqual:
+    case TokenKind::AmpEqual:
+    case TokenKind::PipeEqual:
+    case TokenKind::CaretEqual: return true;
     default: return false;
     }
   }
 
   static std::optional<BP> infix_bp(TokenKind kk) {
     switch (kk) {
-    case TokenKind::Star: return BP{70, 71};
-    case TokenKind::Slash: return BP{70, 71};
-    case TokenKind::Plus: return BP{60, 61};
+    case TokenKind::Star:
+    case TokenKind::Slash:
+    case TokenKind::Percent: return BP{70, 71};
+    case TokenKind::Plus:
     case TokenKind::Minus: return BP{60, 61};
     case TokenKind::Less:
     case TokenKind::LessEqual:
@@ -502,6 +507,9 @@ private:
     case TokenKind::GreaterEqual: return BP{50, 51};
     case TokenKind::EqualEqual:
     case TokenKind::BangEqual: return BP{40, 41};
+    case TokenKind::Ampersand: return BP{38, 39}; // bitwise AND
+    case TokenKind::Caret: return BP{37, 38};      // bitwise XOR
+    case TokenKind::Pipe: return BP{36, 37};        // bitwise OR
     case TokenKind::AmpAmp: return BP{35, 36};
     case TokenKind::PipePipe: return BP{30, 31};
     default: return std::nullopt;
@@ -551,6 +559,16 @@ private:
     TypeId ty = parse_type();
     expect(TokenKind::RParen, "expected ')'");
     return body_ir.nodes.make(nk, s, val, ty);
+  }
+
+  // @intrinsic(expr, expr) — two expression arguments
+  NodeId parse_intrinsic_binary_expr(Span s, NodeKind nk) {
+    expect(TokenKind::LParen, "expected '('");
+    NodeId a = parse_expr();
+    expect(TokenKind::Comma, "expected ','");
+    NodeId b = parse_expr();
+    expect(TokenKind::RParen, "expected ')'");
+    return body_ir.nodes.make(nk, s, a, b);
   }
 
   // @intrinsic(expr, expr, expr) — three expression arguments
@@ -641,6 +659,12 @@ private:
         return parse_intrinsic_triple_expr(s, NodeKind::MemSet);
       case IntrinsicKind::MemCmp:
         return parse_intrinsic_triple_expr(s, NodeKind::MemCmp);
+
+      // binary expr: (expr, expr)
+      case IntrinsicKind::Shl:
+        return parse_intrinsic_binary_expr(s, NodeKind::Shl);
+      case IntrinsicKind::Shr:
+        return parse_intrinsic_binary_expr(s, NodeKind::Shr);
       case IntrinsicKind::Sample:
         return parse_intrinsic_triple_expr(s, NodeKind::ShaderSample);
 

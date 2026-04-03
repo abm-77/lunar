@@ -59,6 +59,21 @@ import sys.gfx.assets;
     present_mode:      PresentMode,
 }
 
+impl GfxConfig {
+  const default := fn() -> GfxConfig {
+    return GfxConfig {
+      frames_in_flight  = 2,
+      max_textures      = 4096,
+      max_samplers      = 256,
+      frame_arena_bytes = 67108864,
+      draw_packets_max  = 65536,
+      enable_validation = false,
+      enable_depth      = false,
+      present_mode      = PresentMode::Mailbox,
+    };
+  };
+}
+
 # init — create the Vulkan device and swapchain.
 #   window_handle: the GLFWwindow* cast to u64; must stay live until gfx::shutdown.
 #   cfg:           device configuration.

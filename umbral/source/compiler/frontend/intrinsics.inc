@@ -35,4 +35,6 @@
   X(DrawId,        "draw_id")       \
   X(DrawPacket,    "draw_packet")   \
   X(FrameRead,     "frame_read")    \
-  X(VertexId,      "vertex_id")
+  X(VertexId,      "vertex_id")     \
+  X(Shl,           "shl")           \
+  X(Shr,           "shr")

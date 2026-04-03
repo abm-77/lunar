@@ -1,0 +1,45 @@
+import sys.audio;
+import sys.time;
+import sys.mem;
+import sys.io.fmt;
+import math.types => math;
+
+# generate a 440 Hz sine wave and play it for 2 seconds.
+
+const DURATION_FRAMES: u64 = 96000;
+const SAMPLE_COUNT: u64 = DURATION_FRAMES * 2;
+
+const main := fn() -> i32 {
+  var pcm := mem::Alloc<f32>::create(SAMPLE_COUNT);
+  var buf := pcm.slice_mut();
+
+  for (var i: u64 = 0; i < DURATION_FRAMES; i += 1) {
+    const t: f32 = @as(i, f32) / 48000.0;
+    buf[i * 2]     = 0.25 * math::sinf(6.2831853 * 440.0 * t);
+    buf[i * 2 + 1] = buf[i * 2];
+  }
+
+  fmt::println("playing 440 Hz sine for 2 seconds...", [0]fmt::Arg{});
+
+  var graph := audio::AudioGraph::default();
+  const sfx := graph.bus_by_name("sfx");
+
+  var ctx := audio::AudioContext::create(graph,
+    audio::AudioContextDesc {
+      sample_rate  = 48000,
+      block_frames = 512,
+      max_voices   = 4,
+    });
+
+  const voice := ctx.play_clip(pcm.slice(), DURATION_FRAMES, sfx, 0.0);
+
+  time::sleep(time::Duration::from_ms(2100));
+
+  fmt::println("done.", [0]fmt::Arg{});
+
+  ctx.destroy();
+  graph.destroy();
+  pcm.destroy();
+
+  return 0;
+};

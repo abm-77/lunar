@@ -1,0 +1,88 @@
+import sys.audio.types;
+
+@extern const rt_audio_builder_create : fn() -> u64;
+@extern const rt_audio_builder_destroy : fn(u64) -> void;
+@extern const rt_audio_builder_create_bus : fn(u64, &u8, u64) -> u64;
+@extern const rt_audio_builder_set_output_bus : fn(u64, u64) -> void;
+@extern const rt_audio_builder_create_route : fn(u64, u64, u64) -> u64;
+@extern const rt_audio_builder_create_route_with_gain : fn(u64, u64, u64, f32) -> u64;
+@extern const rt_audio_builder_add_limiter : fn(u64, u64) -> u64;
+@extern const rt_audio_builder_add_lowpass : fn(u64, u64, f32) -> u64;
+@extern const rt_audio_builder_add_compressor : fn(u64, u64, f32, f32) -> u64;
+@extern const rt_audio_graph_default : fn() -> u64;
+@extern const rt_audio_graph_destroy : fn(u64) -> void;
+@extern const rt_audio_graph_bus_by_name : fn(u64, &u8, u64) -> u64;
+
+@pub const AudioGraphBuilder := struct { handle: u64 }
+
+impl AudioGraphBuilder {
+  const create := fn() -> AudioGraphBuilder {
+    return AudioGraphBuilder { handle = rt_audio_builder_create() };
+  };
+
+  const destroy := fn(&mut self) -> void {
+    rt_audio_builder_destroy(self.handle);
+    self.handle = 0;
+  };
+
+  const create_bus := fn(&mut self, name: []u8) -> types::AudioBus {
+    const h := rt_audio_builder_create_bus(self.handle, name.ptr, name.len);
+    return types::AudioBus { handle = h };
+  };
+
+  const set_output_bus := fn(&mut self, bus: types::AudioBus) -> void {
+    rt_audio_builder_set_output_bus(self.handle, bus.handle);
+  };
+
+  const create_route := fn(&mut self, from: types::AudioBus,
+                             to: types::AudioBus) -> types::AudioRoute {
+    const h := rt_audio_builder_create_route(self.handle,
+                                              from.handle, to.handle);
+    return types::AudioRoute { handle = h };
+  };
+
+  const create_route_with_gain := fn(&mut self, from: types::AudioBus,
+                                       to: types::AudioBus,
+                                       gain: f32) -> types::AudioRoute {
+    const h := rt_audio_builder_create_route_with_gain(
+        self.handle, from.handle, to.handle, gain);
+    return types::AudioRoute { handle = h };
+  };
+
+  const add_limiter := fn(&mut self, bus: types::AudioBus) -> types::AudioLimiter {
+    const h := rt_audio_builder_add_limiter(self.handle, bus.handle);
+    return types::AudioLimiter { handle = h };
+  };
+
+  const add_lowpass := fn(&mut self, bus: types::AudioBus,
+                            cutoff_hz: f32) -> types::AudioLowpass {
+    const h := rt_audio_builder_add_lowpass(self.handle, bus.handle, cutoff_hz);
+    return types::AudioLowpass { handle = h };
+  };
+
+  const add_compressor := fn(&mut self, bus: types::AudioBus,
+                               threshold_db: f32,
+                               ratio: f32) -> types::AudioCompressor {
+    const h := rt_audio_builder_add_compressor(self.handle, bus.handle,
+                                                threshold_db, ratio);
+    return types::AudioCompressor { handle = h };
+  };
+}
+
+@pub const AudioGraph := struct { handle: u64 }
+
+impl AudioGraph {
+  const default := fn() -> AudioGraph {
+    return AudioGraph { handle = rt_audio_graph_default() };
+  };
+
+  const destroy := fn(&mut self) -> void {
+    rt_audio_graph_destroy(self.handle);
+    self.handle = 0;
+  };
+
+  const bus_by_name := fn(&self, name: []u8) -> types::AudioBus {
+    const h := rt_audio_graph_bus_by_name(self.handle, name.ptr, name.len);
+    return types::AudioBus { handle = h };
+  };
+}

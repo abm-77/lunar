@@ -66,16 +66,10 @@ const main := fn() -> i32 {
 
   var win := window::Window::create("cube", 800, 600);
 
-  const dev := gfx::init(win.handle, gfx::GfxConfig {
-    frames_in_flight  = 2,
-    max_textures      = 64,
-    max_samplers      = 16,
-    frame_arena_bytes = 1048576,
-    draw_packets_max  = 1024,
-    enable_validation = true,
-    enable_depth      = true,
-    present_mode      = types::PresentMode::Fifo,
-  });
+  var cfg := gfx::GfxConfig::default();
+  cfg.enable_validation = true;
+  cfg.enable_depth = true;
+  const dev := gfx::init(win.handle, cfg);
 
   const pipeline := assets::pipeline_create<CubeShader>(dev);
 

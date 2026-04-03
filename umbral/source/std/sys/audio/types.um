@@ -1,0 +1,10 @@
+# audio/types.um — opaque handle wrappers with no impl blocks.
+# each wraps a u64 where 0 is always the null/invalid handle.
+
+@pub const AudioBus          := struct { handle: u64 }
+@pub const AudioRoute        := struct { handle: u64 }
+@pub const AudioVoice        := struct { handle: u64 }
+@pub const AudioStream       := struct { handle: u64 }
+@pub const AudioLimiter      := struct { handle: u64 }
+@pub const AudioLowpass      := struct { handle: u64 }
+@pub const AudioCompressor   := struct { handle: u64 }

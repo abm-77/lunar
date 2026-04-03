@@ -1,0 +1,36 @@
+import sys.audio.types;
+import sys.audio.builder;
+import sys.audio.context;
+
+# audio.um — top-level entry point for the Umbral audio layer.
+#
+# typical usage:
+#   1. var g := audio::AudioGraph::default()
+#   2. const sfx := g.bus_by_name("sfx")
+#   3. var ctx := audio::AudioContext::create(g, audio::AudioContextDesc { max_voices = 64 })
+#   4. const voice := ctx.play_clip(pcm_slice, sfx, 0.0)
+#   5. ctx.stop_voice(voice)
+#   6. ctx.destroy()
+#   7. g.destroy()
+
+@pub const AudioBus          := types::AudioBus;
+@pub const AudioRoute        := types::AudioRoute;
+@pub const AudioVoice        := types::AudioVoice;
+@pub const AudioStream       := types::AudioStream;
+@pub const AudioLimiter      := types::AudioLimiter;
+@pub const AudioLowpass      := types::AudioLowpass;
+@pub const AudioCompressor   := types::AudioCompressor;
+
+@pub const AudioGraphBuilder := builder::AudioGraphBuilder;
+@pub const AudioGraph        := builder::AudioGraph;
+
+@pub const AudioContext      := context::AudioContext;
+@pub const AudioContextDesc  := context::AudioContextDesc;
+
+@extern const rt_audio_compile_graph : fn(u64) -> u64;
+
+# compile_graph — validate and freeze a builder, returning an immutable AudioGraph.
+@pub const compile_graph := fn(b: AudioGraphBuilder) -> AudioGraph {
+    const h := rt_audio_compile_graph(b.handle);
+    return AudioGraph { handle = h };
+};

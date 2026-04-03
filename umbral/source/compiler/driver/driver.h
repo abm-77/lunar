@@ -16,6 +16,7 @@
 #include <compiler/frontend/parser.h>
 #include <compiler/sema/sema.h>
 #include <compiler/shader/shader_compile.h>
+#include <llvm/Support/Program.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/MLIRContext.h>
 
@@ -56,6 +57,7 @@ private:
                     const std::filesystem::path &runtime_path,
                     const std::filesystem::path &glfw_path,
                     const std::string &out_path);
+  DriverResult pack_assets(const std::filesystem::path &shader_dir);
 };
 
 inline DriverResult Driver::run(const std::string &src_path,
@@ -120,6 +122,10 @@ inline DriverResult Driver::run(const std::string &src_path,
                                       {opts.shader_out}))
         return {false, "shader compilation failed"};
     }
+    // pack .umsh files into an .umpack asset bundle
+    auto pack_r = pack_assets(opts.shader_out);
+    if (!pack_r.ok) return pack_r;
+
     // shader-only mode: stop here unless -o was explicitly given
     if (!opts.has_out) return {true};
   }
@@ -189,18 +195,75 @@ inline DriverResult Driver::link(const std::filesystem::path &obj,
                                  const std::filesystem::path &runtime_a,
                                  const std::filesystem::path &glfw_a,
                                  const std::string &out_path) {
-  std::string cmd = "cc ";
-  cmd += obj.string() + " ";
-  cmd += runtime_a.string() + " ";
-  cmd += glfw_a.string() + " ";
-#if defined(__linux__)
-  cmd += "-ldl -lpthread -lX11 -lXrandr -lXi -lXcursor -lm -lvulkan ";
-#elif defined(__APPLE__)
-  cmd +=
-      "-framework Cocoa -framework IOKit -framework CoreFoundation -lvulkan ";
-#endif
-  cmd += "-o " + out_path;
+  auto cc = llvm::sys::findProgramByName("cc");
+  if (!cc) return {false, "cannot find 'cc' on PATH"};
 
-  if (std::system(cmd.c_str()) != 0) return {false, "linker invocation failed"};
+  llvm::SmallVector<llvm::StringRef, 32> args;
+  args.push_back(*cc);
+  std::string obj_s = obj.string(), rt_s = runtime_a.string(),
+              glfw_s = glfw_a.string();
+  args.push_back(obj_s);
+  args.push_back(rt_s);
+  args.push_back(glfw_s);
+#if defined(__linux__)
+  args.push_back("-ldl");
+  args.push_back("-lpthread");
+  args.push_back("-lX11");
+  args.push_back("-lXrandr");
+  args.push_back("-lXi");
+  args.push_back("-lXcursor");
+  args.push_back("-lm");
+  args.push_back("-lvulkan");
+#elif defined(__APPLE__)
+  args.push_back("-framework"); args.push_back("Cocoa");
+  args.push_back("-framework"); args.push_back("IOKit");
+  args.push_back("-framework"); args.push_back("CoreFoundation");
+  args.push_back("-framework"); args.push_back("CoreAudio");
+  args.push_back("-framework"); args.push_back("AudioToolbox");
+  args.push_back("-lvulkan");
+#endif
+  args.push_back("-o");
+  args.push_back(out_path);
+
+  std::string err;
+  int rc = llvm::sys::ExecuteAndWait(*cc, args, std::nullopt, {}, 0, 0, &err);
+  if (rc != 0) return {false, "linker invocation failed" +
+                               (err.empty() ? "" : ": " + err)};
+  return {true, {}};
+}
+
+inline DriverResult Driver::pack_assets(const std::filesystem::path &shader_dir) {
+  // collect .umsh files in the shader output directory
+  std::vector<std::filesystem::path> umsh_files;
+  for (const auto &e : std::filesystem::directory_iterator(shader_dir))
+    if (e.path().extension() == ".umsh") umsh_files.push_back(e.path());
+
+  // nothing to pack — not an error (e.g. audio-only programs)
+  if (umsh_files.empty()) return {true, {}};
+
+  // find ul next to uc (same build directory)
+  auto self_path = llvm::sys::fs::getMainExecutable("uc", nullptr);
+  auto ul_path =
+      (std::filesystem::path(self_path).parent_path() / "ul").string();
+
+  auto pack_path = (shader_dir / "assets.umpack").string();
+
+  llvm::SmallVector<llvm::StringRef, 32> args;
+  args.push_back(ul_path);
+  args.push_back("--pack");
+  args.push_back(pack_path);
+  // keep string storage alive for the duration of the call
+  std::vector<std::string> file_strs;
+  file_strs.reserve(umsh_files.size());
+  for (const auto &f : umsh_files) {
+    file_strs.push_back(f.string());
+    args.push_back(file_strs.back());
+  }
+
+  std::string err;
+  int rc = llvm::sys::ExecuteAndWait(ul_path, args, std::nullopt, {}, 0, 0,
+                                     &err);
+  if (rc != 0)
+    return {false, "asset pack failed" + (err.empty() ? "" : ": " + err)};
   return {true, {}};
 }

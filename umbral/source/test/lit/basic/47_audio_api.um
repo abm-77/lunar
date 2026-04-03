@@ -1,0 +1,56 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: builder=ok
+# CHECK: graph=ok
+# CHECK: ctx=ok
+# CHECK: default_graph=ok
+# CHECK: bus_lookup=ok
+# CHECK: cleanup=ok
+
+import sys.audio;
+import sys.io.fmt;
+
+const ok := fn(label: []u8) -> void {
+  fmt::println("{}=ok", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+
+const main := fn() -> i32 {
+  # custom graph path
+  var builder := audio::AudioGraphBuilder::create();
+
+  var master := builder.create_bus("master");
+  var music  := builder.create_bus("music");
+  var sfx    := builder.create_bus("sfx");
+  const r0 := builder.create_route(music, master);
+  const r1 := builder.create_route(sfx,   master);
+  const lim := builder.add_limiter(master);
+  builder.set_output_bus(master);
+
+  var graph := audio::compile_graph(builder);
+  builder.destroy();
+
+  if (graph.handle != 0) {
+    ok("builder");
+    ok("graph");
+  }
+
+  # headless context: max_voices=0 skips device open
+  var ctx := audio::AudioContext::create(graph,
+    audio::AudioContextDesc { sample_rate = 0, block_frames = 0, max_voices = 0 });
+  if (ctx.handle != 0) { ok("ctx"); }
+
+  ctx.destroy();
+  graph.destroy();
+
+  # default graph path
+  var def_graph := audio::AudioGraph::default();
+  if (def_graph.handle != 0) { ok("default_graph"); }
+
+  # bus lookup by name
+  const sfx_bus := def_graph.bus_by_name("sfx");
+  if (sfx_bus.handle != 0) { ok("bus_lookup"); }
+
+  def_graph.destroy();
+
+  ok("cleanup");
+  return 0;
+};

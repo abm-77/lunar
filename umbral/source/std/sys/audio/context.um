@@ -1,0 +1,83 @@
+import sys.audio.types;
+import sys.audio.builder;
+import sys.time;
+
+@extern const rt_audio_ctx_create : fn(u64, u32, u32, u32) -> u64;
+@extern const rt_audio_ctx_destroy : fn(u64) -> void;
+@extern const rt_audio_ctx_play_clip : fn(u64, u64, u64, u64, f32) -> u64;
+@extern const rt_audio_ctx_play_stream : fn(u64, u64, u64, u64, f32) -> u64;
+@extern const rt_audio_ctx_stop_voice : fn(u64, u64) -> void;
+@extern const rt_audio_ctx_set_voice_gain_db : fn(u64, u64, f32) -> void;
+@extern const rt_audio_ctx_set_voice_pan : fn(u64, u64, f32) -> void;
+@extern const rt_audio_ctx_set_voice_pitch : fn(u64, u64, f32) -> void;
+@extern const rt_audio_ctx_set_bus_gain_db : fn(u64, u64, f32) -> void;
+@extern const rt_audio_ctx_set_bus_gain_db_ramp : fn(u64, u64, f32, u64) -> void;
+
+@pub const AudioContextDesc := struct {
+  sample_rate:  u32,
+  block_frames: u32,
+  max_voices:   u32,
+}
+
+@pub const AudioContext := struct { handle: u64 }
+
+impl AudioContext {
+  const create := fn(graph: builder::AudioGraph,
+                      desc: AudioContextDesc) -> AudioContext {
+    const h := rt_audio_ctx_create(
+        graph.handle, desc.sample_rate, desc.block_frames, desc.max_voices);
+    return AudioContext { handle = h };
+  };
+
+  const destroy := fn(&mut self) -> void {
+    rt_audio_ctx_destroy(self.handle);
+    self.handle = 0;
+  };
+
+  const play_clip := fn(&mut self, pcm: []f32, frame_count: u64,
+                          target: types::AudioBus,
+                          gain_db: f32) -> types::AudioVoice {
+    const h := rt_audio_ctx_play_clip(
+        self.handle, @as(pcm.ptr, u64), frame_count, target.handle, gain_db);
+    return types::AudioVoice { handle = h };
+  };
+
+  const play_stream := fn(&mut self, pcm: []f32, frame_count: u64,
+                            target: types::AudioBus,
+                            gain_db: f32) -> types::AudioStream {
+    const h := rt_audio_ctx_play_stream(
+        self.handle, @as(pcm.ptr, u64), frame_count, target.handle, gain_db);
+    return types::AudioStream { handle = h };
+  };
+
+  const stop_voice := fn(&mut self, voice: types::AudioVoice) -> void {
+    rt_audio_ctx_stop_voice(self.handle, voice.handle);
+  };
+
+  const set_voice_gain_db := fn(&mut self, voice: types::AudioVoice,
+                                  gain_db: f32) -> void {
+    rt_audio_ctx_set_voice_gain_db(self.handle, voice.handle, gain_db);
+  };
+
+  const set_voice_pan := fn(&mut self, voice: types::AudioVoice,
+                              pan: f32) -> void {
+    rt_audio_ctx_set_voice_pan(self.handle, voice.handle, pan);
+  };
+
+  const set_voice_pitch := fn(&mut self, voice: types::AudioVoice,
+                                pitch: f32) -> void {
+    rt_audio_ctx_set_voice_pitch(self.handle, voice.handle, pitch);
+  };
+
+  const set_bus_gain_db := fn(&mut self, bus: types::AudioBus,
+                                gain_db: f32) -> void {
+    rt_audio_ctx_set_bus_gain_db(self.handle, bus.handle, gain_db);
+  };
+
+  const set_bus_gain_db_ramp := fn(&mut self, bus: types::AudioBus,
+                                     gain_db: f32,
+                                     ramp: time::Duration) -> void {
+    rt_audio_ctx_set_bus_gain_db_ramp(
+        self.handle, bus.handle, gain_db, ramp.ns);
+  };
+}
