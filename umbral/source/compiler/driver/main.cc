@@ -6,7 +6,8 @@
 int main(int argc, char **argv) {
   if (argc < 2) {
     std::fprintf(stderr,
-                 "usage: uc <file>.um [-o <output>] [--root <dir>] [--dump-ir] "
+                 "usage: uc <file>.um [-o <output>] [--root <dir>] "
+                 "[--asset-dir <dir>] [--dump-ir] "
                  "[--dump-shader-mlir] [--shader-out <dir>]\n");
     return 1;
   }
@@ -26,6 +27,8 @@ int main(int argc, char **argv) {
       opts.dump_shader_mlir = true;
     } else if (flag == "--shader-out" && i + 1 < argc) {
       opts.shader_out = argv[++i];
+    } else if (flag == "--asset-dir" && i + 1 < argc) {
+      opts.asset_dir = argv[++i];
     }
   }
 

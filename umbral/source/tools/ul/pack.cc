@@ -30,33 +30,40 @@ static std::vector<uint8_t> load_file(const char *path) {
 int pack_build(const pack_input_t *inputs, uint32_t input_count,
                const char *out_path, int compress) {
   struct Entry {
-    std::string name;             // basename written into the manifest
-    std::vector<uint8_t> payload; // bytes stored on disk (compressed or raw)
+    std::string name;
+    std::vector<uint8_t> payload; // on-disk bytes (compressed or raw)
     uint32_t original_len;
-    uint32_t compressed_len; // equals original_len when not compressed
+    uint32_t compressed_len;
+    uint32_t meta_type;
+    uint32_t meta[4];
   };
 
-  // load each file and optionally LZ4-compress it.
-  // prefer compressed only when it is strictly smaller than the original;
-  // otherwise store raw and set compressed_len == original_len.
   std::vector<Entry> entries;
   entries.reserve(input_count);
 
   for (uint32_t i = 0; i < input_count; ++i) {
-    std::vector<uint8_t> raw = load_file(inputs[i].path);
-    if (raw.empty()) {
-      // distinguish a missing file (error) from a legitimately empty asset
-      FILE *probe = fopen(inputs[i].path, "rb");
-      if (!probe) {
-        fprintf(stderr, "pack_build: cannot open %s\n", inputs[i].path);
-        return -1;
+    // get the raw data: either from decoded_data or by reading the file
+    std::vector<uint8_t> raw;
+    if (inputs[i].decoded_data && inputs[i].decoded_len > 0) {
+      raw.assign(inputs[i].decoded_data,
+                 inputs[i].decoded_data + inputs[i].decoded_len);
+    } else {
+      raw = load_file(inputs[i].path);
+      if (raw.empty()) {
+        FILE *probe = fopen(inputs[i].path, "rb");
+        if (!probe) {
+          fprintf(stderr, "pack_build: cannot open %s\n", inputs[i].path);
+          return -1;
+        }
+        fclose(probe);
       }
-      fclose(probe);
     }
 
     Entry e;
     e.name = path_basename(inputs[i].path);
     e.original_len = static_cast<uint32_t>(raw.size());
+    e.meta_type = inputs[i].meta_type;
+    memcpy(e.meta, inputs[i].meta, sizeof(e.meta));
 
     if (compress && !raw.empty()) {
       int bound = LZ4_compressBound(static_cast<int>(raw.size()));
@@ -70,7 +77,6 @@ int pack_build(const pack_input_t *inputs, uint32_t input_count,
         e.compressed_len = static_cast<uint32_t>(comp_sz);
         e.payload = std::move(comp);
       } else {
-        // compression failed or expanded the data; store raw
         e.compressed_len = e.original_len;
         e.payload = std::move(raw);
       }
@@ -82,14 +88,12 @@ int pack_build(const pack_input_t *inputs, uint32_t input_count,
     entries.push_back(std::move(e));
   }
 
-  // compute manifest size so data offsets can be computed before writing.
-  // header: 4(magic)+2(version)+2(endian)+4(flags)+4(entry_count) = 16 bytes
-  // per entry: 4(name_len) + name_len + 8(data_offset) + 4(compressed_len) +
-  // 4(original_len)
+  // header: 16 bytes
+  // per entry: 4(name_len) + name_len + 8(offset) + 4(comp) + 4(orig) + 4(meta_type) + 16(meta)
   const uint32_t HEADER_BYTES = 16;
   uint32_t manifest_bytes = 0;
   for (const auto &e : entries)
-    manifest_bytes += 4 + static_cast<uint32_t>(e.name.size()) + 8 + 4 + 4;
+    manifest_bytes += 4 + static_cast<uint32_t>(e.name.size()) + 8 + 4 + 4 + 4 + 16;
 
   BinWriter w;
   w.u32(UMPACK_MAGIC);
@@ -105,6 +109,8 @@ int pack_build(const pack_input_t *inputs, uint32_t input_count,
     w.u64(cur_offset);
     w.u32(e.compressed_len);
     w.u32(e.original_len);
+    w.u32(e.meta_type);
+    for (int j = 0; j < 4; ++j) w.u32(e.meta[j]);
     cur_offset += e.compressed_len;
   }
 

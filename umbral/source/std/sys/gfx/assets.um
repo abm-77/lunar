@@ -5,11 +5,10 @@ import sys.gfx.types;
 @extern const rt_gfx_pipeline_destroy : fn(u64, u64) -> void;
 
 # load the .umsh for @shader type T and create a raster pipeline.
-@pub const pipeline_create<T: type>(dev: types::Device) -> types::Pipeline {
+@pub const pipeline_create<T: type>(dev: types::Device, pack: asset::Pack) -> types::Pipeline {
     const shader_id: u64 = @shader_ref(T);
-    const bytes := asset::rt_asset_load(shader_id);
+    const bytes := pack.load_by_id(shader_id);
     const h := rt_gfx_pipeline_create_from_umsh(dev.handle, bytes, 0);
-    asset::rt_asset_release(shader_id);
     return types::Pipeline { handle = h };
 }
 

@@ -62,7 +62,7 @@ const cv := fn(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32) -> CubeVertex {
 };
 
 const main := fn() -> i32 {
-  asset::init("assets.umpack");
+  var pack := asset::Pack::init("assets.umpack");
 
   var win := window::Window::create("cube", 800, 600);
 
@@ -71,7 +71,7 @@ const main := fn() -> i32 {
   cfg.enable_depth = true;
   const dev := gfx::init(win.handle, cfg);
 
-  const pipeline := assets::pipeline_create<CubeShader>(dev);
+  const pipeline := assets::pipeline_create<CubeShader>(dev, pack);
 
   const h: f32 = 0.5;
   const verts := [36]CubeVertex{
@@ -130,6 +130,7 @@ const main := fn() -> i32 {
   gfx::pipeline_destroy(dev, pipeline);
   gfx::shutdown(dev);
   win.destroy();
+  pack.cleanup();
 
   return 0;
 };

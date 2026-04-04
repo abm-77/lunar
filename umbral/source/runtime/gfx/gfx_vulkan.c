@@ -1,3 +1,4 @@
+#include "../sys/log.h"
 #include "../sys/window.h"
 #include "gfx.h"
 #include "gfx_handles.h"
@@ -222,8 +223,7 @@ static bool create_instance(gfx_device_ctx_t *d, bool validation) {
       }
     }
     if (!found) {
-      fprintf(stderr, "rt_gfx: VK_LAYER_KHRONOS_validation not available; "
-                      "disabling validation\n");
+      RT_LOG_WARN("gfx", "VK_LAYER_KHRONOS_validation not available; disabling validation");
       validation = false;
     }
   }
@@ -262,7 +262,7 @@ static bool create_instance(gfx_device_ctx_t *d, bool validation) {
   }
 
   if (vkCreateInstance(&ci, NULL, &d->instance) != VK_SUCCESS) {
-    fprintf(stderr, "rt_gfx: vkCreateInstance failed\n");
+    RT_LOG_ERROR("gfx", "vkCreateInstance failed");
     return false;
   }
 
@@ -274,8 +274,7 @@ static bool create_instance(gfx_device_ctx_t *d, bool validation) {
     if (fn) {
       fn(d->instance, &dbg_ci, NULL, &d->debug_messenger);
     } else {
-      fprintf(stderr, "rt_gfx: vkCreateDebugUtilsMessengerEXT not found; "
-                      "debug callback unavailable\n");
+      RT_LOG_WARN("gfx", "vkCreateDebugUtilsMessengerEXT not found; debug callback unavailable");
     }
   }
 
@@ -286,7 +285,7 @@ static bool select_physical_device(gfx_device_ctx_t *d) {
   uint32_t count = 0;
   vkEnumeratePhysicalDevices(d->instance, &count, NULL);
   if (count == 0) {
-    fprintf(stderr, "rt_gfx: no Vulkan-capable GPU found\n");
+    RT_LOG_ERROR("gfx", "no Vulkan-capable GPU found");
     return false;
   }
 
@@ -316,16 +315,15 @@ static bool select_physical_device(gfx_device_ctx_t *d) {
   vkGetPhysicalDeviceFeatures2(d->physical_device, &f2);
 
   if (!di.descriptorBindingPartiallyBound) {
-    fprintf(stderr, "rt_gfx: GPU missing descriptorBindingPartiallyBound\n");
+    RT_LOG_ERROR("gfx", "GPU missing descriptorBindingPartiallyBound");
     return false;
   }
   if (!di.runtimeDescriptorArray) {
-    fprintf(stderr, "rt_gfx: GPU missing runtimeDescriptorArray\n");
+    RT_LOG_ERROR("gfx", "GPU missing runtimeDescriptorArray");
     return false;
   }
   if (!di.shaderSampledImageArrayNonUniformIndexing) {
-    fprintf(stderr,
-            "rt_gfx: GPU missing shaderSampledImageArrayNonUniformIndexing\n");
+    RT_LOG_ERROR("gfx", "GPU missing shaderSampledImageArrayNonUniformIndexing");
     return false;
   }
 
@@ -333,7 +331,7 @@ static bool select_physical_device(gfx_device_ctx_t *d) {
   vkGetPhysicalDeviceProperties(d->physical_device, &props);
   d->min_ssbo_alignment = props.limits.minStorageBufferOffsetAlignment;
 
-  fprintf(stderr, "rt_gfx: selected GPU: %s\n", props.deviceName);
+  RT_LOG_INFO("gfx", "selected GPU: %s", props.deviceName);
   return true;
 }
 
@@ -356,7 +354,7 @@ static bool create_device(gfx_device_ctx_t *d) {
     }
   }
   if (d->graphics_family_index == UINT32_MAX) {
-    fprintf(stderr, "rt_gfx: no graphics queue family found\n");
+    RT_LOG_ERROR("gfx", "no graphics queue family found");
     return false;
   }
 
@@ -414,7 +412,7 @@ static bool create_device(gfx_device_ctx_t *d) {
   }
 
   if (vkCreateDevice(d->physical_device, &ci, NULL, &d->device) != VK_SUCCESS) {
-    fprintf(stderr, "rt_gfx: vkCreateDevice failed\n");
+    RT_LOG_ERROR("gfx", "vkCreateDevice failed");
     return false;
   }
 
@@ -429,9 +427,8 @@ static bool create_swapchain(gfx_device_ctx_t *d,
   if (sr != VK_SUCCESS) {
     const char *glfw_desc = NULL;
     int glfw_err = glfwGetError(&glfw_desc);
-    fprintf(stderr,
-            "glfwCreateWindowSurface failed: VkResult=%d glfw_err=0x%x (%s)\n",
-            sr, glfw_err, glfw_desc ? glfw_desc : "none");
+    RT_LOG_ERROR("gfx", "glfwCreateWindowSurface failed: VkResult=%d glfw_err=0x%x (%s)",
+                 sr, glfw_err, glfw_desc ? glfw_desc : "none");
     return false;
   }
 
@@ -1154,6 +1151,108 @@ void rt_gfx_end_frame(gfx_device_handle_t dev, gfx_cmd_handle_t cmd) {
   };
   vkQueuePresentKHR(d->graphics_queue, &present);
 
+  // one-shot framebuffer dump on frame 5 (debug/trace level only)
+  if (d->current_frame == 5 && rt_log_level >= RT_LOG_LEVEL_TRACE) {
+    vkDeviceWaitIdle(d->device);
+    VkImage src = d->swapchain_images[d->current_image_index];
+    uint32_t w = d->swapchain_extent.width;
+    uint32_t h = d->swapchain_extent.height;
+
+    // create a host-visible buffer
+    VkBufferCreateInfo buf_ci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = (VkDeviceSize)w * h * 4,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    };
+    VkBuffer readback_buf;
+    vkCreateBuffer(d->device, &buf_ci, NULL, &readback_buf);
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(d->device, readback_buf, &req);
+    uint32_t mt = find_memory_type(d->physical_device, req.memoryTypeBits,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkMemoryAllocateInfo ai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = req.size,
+        .memoryTypeIndex = mt,
+    };
+    VkDeviceMemory readback_mem;
+    vkAllocateMemory(d->device, &ai, NULL, &readback_mem);
+    vkBindBufferMemory(d->device, readback_buf, readback_mem, 0);
+
+    // record copy commands
+    VkCommandBuffer cb = d->command_buffers[slot];
+    VkCommandBufferBeginInfo cbi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkResetCommandBuffer(cb, 0);
+    vkBeginCommandBuffer(cb, &cbi);
+
+    // transition swapchain image to transfer src
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .image = src,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                         1, &barrier);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageExtent = {w, h, 1},
+    };
+    vkCmdCopyImageToBuffer(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           readback_buf, 1, &region);
+
+    // transition back
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &barrier);
+    vkEndCommandBuffer(cb);
+
+    VkSubmitInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cb,
+    };
+    vkQueueSubmit(d->graphics_queue, 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(d->graphics_queue);
+
+    // read pixels
+    void *mapped;
+    vkMapMemory(d->device, readback_mem, 0, VK_WHOLE_SIZE, 0, &mapped);
+
+    // write PPM (assumes BGRA8 swapchain — swap channels)
+    FILE *ppm = fopen("/tmp/frame_dump.ppm", "wb");
+    if (ppm) {
+      fprintf(ppm, "P6\n%u %u\n255\n", w, h);
+      const uint8_t *px = (const uint8_t *)mapped;
+      for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) {
+          uint32_t i = (y * w + x) * 4;
+          // BGRA → RGB
+          uint8_t rgb[3] = {px[i + 2], px[i + 1], px[i + 0]};
+          fwrite(rgb, 1, 3, ppm);
+        }
+      fclose(ppm);
+      RT_LOG_DEBUG("gfx", "frame dump: /tmp/frame_dump.ppm (%ux%u)", w, h);
+    }
+
+    vkUnmapMemory(d->device, readback_mem);
+    vkFreeMemory(d->device, readback_mem, NULL);
+    vkDestroyBuffer(d->device, readback_buf, NULL);
+  }
+
   d->current_frame++;
   d->frame_open = false;
 }
@@ -1166,7 +1265,7 @@ rt_gfx_pipeline_create(gfx_device_handle_t dev, const uint8_t *vs_spv,
 
   umrf_parsed_t umrf = {0};
   if (!umrf_parse(refl, refl_len, &umrf)) {
-    fprintf(stderr, "rt_gfx_pipeline_create: invalid UMRF blob\n");
+    RT_LOG_ERROR("gfx", "pipeline_create: invalid UMRF blob");
     return GFX_NULL_HANDLE;
   }
 
@@ -1314,15 +1413,14 @@ gfx_pipeline_handle_t rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
   const umsh_header_t *hdr = NULL;
   uint32_t section_count = 0;
   if (!umsh_parse_header(umsh.ptr, umsh.len, &hdr, &section_count)) {
-    fprintf(stderr, "rt_gfx_pipeline_create_from_umsh: invalid .umsh header\n");
+    RT_LOG_ERROR("gfx", "pipeline_create_from_umsh: invalid .umsh header");
     return GFX_NULL_HANDLE;
   }
 
   umsh_section_view_t stages_view = {0};
   if (!umsh_find_section(umsh.ptr, umsh.len, section_count, UMSH_SECTION_STAGES,
                          &stages_view)) {
-    fprintf(stderr,
-            "rt_gfx_pipeline_create_from_umsh: STAGES section not found\n");
+    RT_LOG_ERROR("gfx", "pipeline_create_from_umsh: STAGES section not found");
     return GFX_NULL_HANDLE;
   }
 
@@ -1353,8 +1451,7 @@ gfx_pipeline_handle_t rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
     memcpy(&input_rate, refl_view.data + 4, 4);
     memcpy(&attr_count, refl_view.data + 8, 4);
     if (refl_view.size < 12 + (uint64_t)attr_count * 12) {
-      fprintf(stderr,
-              "rt_gfx_pipeline_create_from_umsh: truncated REFL section\n");
+      RT_LOG_ERROR("gfx", "pipeline_create_from_umsh: truncated REFL section");
       return GFX_NULL_HANDLE;
     }
   }
@@ -1379,10 +1476,13 @@ gfx_pipeline_handle_t rt_gfx_pipeline_create_from_umsh(gfx_device_handle_t dev,
   if (attr_count > 0)
     memcpy(umrf_buf + 28, refl_view.data + 12, (size_t)attr_count * 12);
 
-  return rt_gfx_pipeline_create(
+  gfx_pipeline_handle_t ph = rt_gfx_pipeline_create(
       dev, (const uint8_t *)vs_words, (uint64_t)vs_word_count * 4,
       (const uint8_t *)fs_words, (uint64_t)fs_word_count * 4, umrf_buf,
       (uint64_t)umrf_total);
+  RT_LOG_DEBUG("gfx", "pipeline_create_from_umsh: VS=%u words, FS=%u words, handle=0x%lx",
+               vs_word_count, fs_word_count, (unsigned long)ph);
+  return ph;
 }
 
 void rt_gfx_pipeline_destroy(gfx_device_handle_t dev,
@@ -1407,10 +1507,13 @@ gfx_texture_handle_t rt_gfx_texture2d_create_rgba8(gfx_device_handle_t dev,
                                                    uint64_t rgba_len,
                                                    um_slice_u8_t debug_name) {
   gfx_device_ctx_t *d = dev_from_handle(dev);
+  RT_LOG_DEBUG("gfx", "texture2d_create: %ux%u, %lu bytes, data=%p",
+               w, h, (unsigned long)rgba_len, (void*)rgba);
   assert(rgba != NULL);
   assert(rgba_len == (uint64_t)w * h * 4);
 
   uint32_t slot = gfx_tex_alloc_slot(&d->resources);
+  RT_LOG_TRACE("gfx", "  tex slot=%u", slot);
   if (slot == 0) return GFX_NULL_HANDLE;
 
   VkImageCreateInfo img_ci = {
@@ -1550,7 +1653,9 @@ gfx_texture_handle_t rt_gfx_texture2d_create_rgba8(gfx_device_handle_t dev,
   vk_set_debug_name(d->device, VK_OBJECT_TYPE_IMAGE_VIEW, (uint64_t)image_view,
                     dbg);
 
-  return gfx_handle_make(slot, d->resources.tex_slots[slot].gen);
+  gfx_texture_handle_t ret = gfx_handle_make(slot, d->resources.tex_slots[slot].gen);
+  RT_LOG_TRACE("gfx", "  tex handle=0x%lx (lower32=%u)", (unsigned long)ret, (uint32_t)ret);
+  return ret;
 }
 
 void rt_gfx_texture_destroy(gfx_device_handle_t dev, gfx_texture_handle_t tex) {
@@ -1597,6 +1702,48 @@ gfx_sampler_handle_t rt_gfx_sampler_create_linear(gfx_device_handle_t dev,
   const char *sdbg = debug_name.len ? (const char *)debug_name.ptr : NULL;
   vk_set_debug_name(d->device, VK_OBJECT_TYPE_SAMPLER, (uint64_t)sampler, sdbg);
 
+  gfx_sampler_handle_t ret = gfx_handle_make(slot, d->resources.samp_slots[slot].gen);
+  RT_LOG_DEBUG("gfx", "sampler_create: slot=%u handle=0x%lx (lower32=%u)",
+               slot, (unsigned long)ret, (uint32_t)ret);
+  return ret;
+}
+
+gfx_sampler_handle_t rt_gfx_sampler_create_nearest(gfx_device_handle_t dev,
+                                                   um_slice_u8_t debug_name) {
+  gfx_device_ctx_t *d = dev_from_handle(dev);
+
+  uint32_t slot = gfx_samp_alloc_slot(&d->resources);
+  if (slot == 0) return GFX_NULL_HANDLE;
+
+  VkSamplerCreateInfo samp_ci = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = VK_FILTER_NEAREST,
+      .minFilter = VK_FILTER_NEAREST,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .anisotropyEnable = VK_FALSE,
+      .compareEnable = VK_FALSE,
+      .minLod = 0.0f,
+      .maxLod = VK_LOD_CLAMP_NONE,
+      .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
+  };
+  VkSampler sampler;
+  if (vkCreateSampler(d->device, &samp_ci, NULL, &sampler) != VK_SUCCESS) {
+    gfx_samp_free_slot(&d->resources, slot);
+    return GFX_NULL_HANDLE;
+  }
+
+  d->resources.samplers[slot] = (gfx_sampler_entry_t){.sampler = sampler};
+  for (uint32_t i = 0; i < d->cfg.frames_in_flight; i++)
+    gfx_resources_update_descriptors(&d->resources, d->device,
+                                     d->descriptor_sets[i], i);
+
+  const char *sdbg = debug_name.len ? (const char *)debug_name.ptr : NULL;
+  vk_set_debug_name(d->device, VK_OBJECT_TYPE_SAMPLER, (uint64_t)sampler, sdbg);
+
   return gfx_handle_make(slot, d->resources.samp_slots[slot].gen);
 }
 
@@ -1619,22 +1766,38 @@ void rt_gfx_submit_draw_packets(gfx_cmd_handle_t cmd,
                                 gfx_pipeline_handle_t pipe,
                                 const draw_packet_t *packets,
                                 uint32_t packet_count) {
-  assert(g_dev_alive && g_dev.frame_open);
-  assert(packets != NULL && packet_count > 0);
+  assert(g_dev_alive && "submit called but device not alive");
+  assert(g_dev.frame_open && "submit called outside begin_frame/end_frame");
+  assert(packets != NULL && "null packet array");
+  assert(packet_count > 0 && "zero packets");
   gfx_device_ctx_t *d = &g_dev;
   uint32_t slot = d->current_frame % d->cfg.frames_in_flight;
   (void)cmd;
 
-  assert(packet_count <= d->cfg.draw_packets_max);
+  assert(packet_count <= d->cfg.draw_packets_max && "too many packets");
   memcpy(d->draw_packets_mapped[slot], packets,
          sizeof(draw_packet_t) * packet_count);
 
   uint32_t pipe_slot = gfx_handle_index(pipe);
+  assert(pipe_slot > 0 && pipe_slot < GFX_MAX_PIPELINES && "bad pipeline slot");
+  assert(d->pipeline_slots[pipe_slot].allocated && "pipeline slot not allocated");
+  assert(d->pipeline_table[pipe_slot] != VK_NULL_HANDLE && "pipeline is null");
+
+  RT_LOG_TRACE("gfx", "submit_draw: pipe_slot=%u packets=%u", pipe_slot, packet_count);
+  for (uint32_t i = 0; i < packet_count; i++) {
+    const draw_packet_t *p_dbg = &packets[i];
+    RT_LOG_TRACE("gfx", "  pkt[%u]: verts=%u inst=%u flags=%u tex=%u samp=%u",
+                 i, p_dbg->vertex_count, p_dbg->instance_count, p_dbg->flags,
+                 p_dbg->tex2d_index, p_dbg->sampler_index);
+  }
+
   vkCmdBindPipeline(d->command_buffers[slot], VK_PIPELINE_BIND_POINT_GRAPHICS,
                     d->pipeline_table[pipe_slot]);
 
   for (uint32_t i = 0; i < packet_count; i++) {
     const draw_packet_t *p = &packets[i];
+    assert(p->vertex_count > 0 && "zero vertex count");
+    assert(p->instance_count > 0 && "zero instance count");
     if (p->flags & GFX_DRAW_FLAG_INDEXED) {
       vkCmdDrawIndexed(d->command_buffers[slot], p->index_count,
                        p->instance_count, p->first_index, 0, p->first_instance);
@@ -1755,50 +1918,46 @@ void gfx_resources_update_descriptors(gfx_resource_table_t *rt, void *vk_device,
   VkDevice dev = (VkDevice)vk_device;
   VkDescriptorSet set = (VkDescriptorSet)vk_descriptor_set;
 
-  VkDescriptorImageInfo tex_infos[GFX_MAX_TEXTURES];
-  uint32_t tex_count = 0;
+  // write each allocated texture/sampler at its correct array element (slot index)
+  VkWriteDescriptorSet writes[GFX_MAX_TEXTURES + GFX_MAX_SAMPLERS];
+  VkDescriptorImageInfo infos[GFX_MAX_TEXTURES + GFX_MAX_SAMPLERS];
+  uint32_t write_count = 0;
+
   for (uint32_t i = 1; i < GFX_MAX_TEXTURES; i++) {
     if (!rt->tex_slots[i].allocated) continue;
-    tex_infos[tex_count++] = (VkDescriptorImageInfo){
+    infos[write_count] = (VkDescriptorImageInfo){
         .sampler = VK_NULL_HANDLE,
         .imageView = (VkImageView)rt->textures[i].view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
+    writes[write_count] = (VkWriteDescriptorSet){
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = set,
+        .dstBinding = 0,
+        .dstArrayElement = i,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .pImageInfo = &infos[write_count],
+    };
+    write_count++;
   }
-  VkDescriptorImageInfo samp_infos[GFX_MAX_SAMPLERS];
-  uint32_t samp_count = 0;
   for (uint32_t i = 1; i < GFX_MAX_SAMPLERS; i++) {
     if (!rt->samp_slots[i].allocated) continue;
-    samp_infos[samp_count++] = (VkDescriptorImageInfo){
+    infos[write_count] = (VkDescriptorImageInfo){
         .sampler = (VkSampler)rt->samplers[i].sampler,
         .imageView = VK_NULL_HANDLE,
         .imageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-  }
-
-  VkWriteDescriptorSet writes[2];
-  uint32_t write_count = 0;
-  if (tex_count > 0) {
-    writes[write_count++] = (VkWriteDescriptorSet){
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = set,
-        .dstBinding = 0,
-        .dstArrayElement = 0,
-        .descriptorCount = tex_count,
-        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-        .pImageInfo = tex_infos,
-    };
-  }
-  if (samp_count > 0) {
-    writes[write_count++] = (VkWriteDescriptorSet){
+    writes[write_count] = (VkWriteDescriptorSet){
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
         .dstSet = set,
         .dstBinding = 1,
-        .dstArrayElement = 0,
-        .descriptorCount = samp_count,
+        .dstArrayElement = i,
+        .descriptorCount = 1,
         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-        .pImageInfo = samp_infos,
+        .pImageInfo = &infos[write_count],
     };
+    write_count++;
   }
   if (write_count > 0)
     vkUpdateDescriptorSets(dev, write_count, writes, 0, NULL);
@@ -1851,7 +2010,7 @@ void *gfx_arena_alloc(gfx_frame_arena_t *arena, uint64_t size, uint64_t align,
   uint64_t mask = align - 1;
   uint64_t aligned = (arena->head + mask) & ~mask;
   if (aligned + size > arena->frame_size) {
-    fprintf(stderr, "rt_gfx_frame_alloc: frame arena exhausted\n");
+    RT_LOG_ERROR("gfx", "frame_alloc: frame arena exhausted");
     *out_offset = 0;
     return NULL;
   }

@@ -42,6 +42,15 @@ impl AudioContext {
     return types::AudioVoice { handle = h };
   };
 
+  # play_clip_raw — play from a raw float32 pointer (e.g. from asset::decode_audio).
+  const play_clip_raw := fn(&mut self, pcm_ptr: u64, frame_count: u64,
+                              target: types::AudioBus,
+                              gain_db: f32) -> types::AudioVoice {
+    const h := rt_audio_ctx_play_clip(
+        self.handle, pcm_ptr, frame_count, target.handle, gain_db);
+    return types::AudioVoice { handle = h };
+  };
+
   const play_stream := fn(&mut self, pcm: []f32, frame_count: u64,
                             target: types::AudioBus,
                             gain_db: f32) -> types::AudioStream {

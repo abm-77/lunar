@@ -1,0 +1,56 @@
+import sys.audio;
+import sys.asset;
+import sys.time;
+import sys.io.fmt;
+
+# load a sound file from the asset pack and play it.
+# expects assets/sound.wav (or .ogg) in the asset directory.
+
+const SAMPLE_RATE: u32 = 48000;
+
+const main := fn() -> i32 {
+  var pack := asset::Pack::init("assets.umpack");
+
+  # load decoded float32 PCM directly from the pack
+  const pcm := pack.load("sound.wav");
+  if (pcm.len == 0) {
+    fmt::println("error: could not load sound.wav from pack", [0]fmt::Arg{});
+    pack.cleanup();
+    return 1;
+  }
+
+  const meta := pack.audio_meta("sound.wav");
+  fmt::println("loaded: {} frames, {} ch, {} Hz",
+    [3]fmt::Arg{
+      fmt::arg_u64(meta.frame_count),
+      fmt::arg_u64(@as(meta.channels, u64)),
+      fmt::arg_u64(@as(meta.sample_rate, u64)),
+    });
+
+  # set up audio
+  var graph := audio::AudioGraph::default();
+  const sfx := graph.bus_by_name("sfx");
+  var ctx := audio::AudioContext::create(graph,
+    audio::AudioContextDesc {
+      sample_rate  = meta.sample_rate,
+      block_frames = 512,
+      max_voices   = 4,
+    });
+
+  for (var i := 0; i < 5; i += 1) {
+    fmt::println("playing sound...", [0]fmt::Arg{});
+    const voice := ctx.play_clip_raw(
+      @as(pcm.ptr, u64), meta.frame_count, sfx, 0.0);
+    # wait for the clip to finish
+    const duration_ms: u64 = (meta.frame_count * 1000) /
+                              @as(meta.sample_rate, u64) + 100;
+    time::sleep(time::Duration::from_ms(duration_ms));
+    fmt::println("done.", [0]fmt::Arg{});
+  }
+
+  ctx.destroy();
+  graph.destroy();
+  pack.cleanup();
+
+  return 0;
+};

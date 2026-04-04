@@ -235,7 +235,7 @@ stmt := 'const' ident (':=' expr | [':' type] ['=' expr]) ';'
       | expr (assign_op expr)? ';'
 
 for_part   := ('const' | 'var') ident ':=' expr | expr assign_op expr
-assign_op  := '=' | '+=' | '-=' | '*=' | '/='
+assign_op  := '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^='
 ```
 
 ```
@@ -296,10 +296,13 @@ Operator precedence (low to high):
 |-----------------------|------------|
 | `\|\|`                | 30         |
 | `&&`                  | 35         |
+| `\|` (bitwise OR)     | 36         |
+| `^` (bitwise XOR)     | 37         |
+| `&` (bitwise AND)     | 38         |
 | `==` `!=`             | 40         |
 | `<` `<=` `>` `>=`     | 50         |
 | `+` `-`               | 60         |
-| `*` `/`               | 70         |
+| `*` `/` `%`           | 70         |
 | unary `-` `!` `*` `&` | 80         |
 | postfix `.` `[]` `()` | 90         |
 
@@ -451,6 +454,8 @@ All `@name` forms are intrinsics — there are no separate keywords for visibili
 | `@memmov(dst, src, n)` | move `n` bytes (handles overlap) |
 | `@memset(dst, val, n)` | fill `n` bytes at `dst` with `val` |
 | `@memcmp(a, b, n)` | compare `n` bytes; returns `i32` (same as C `memcmp`) |
+| `@shl(a, b)` | left bit shift `a << b` → same type as `a` |
+| `@shr(a, b)` | right bit shift `a >> b` → same type as `a` (logical for unsigned, arithmetic for signed) |
 
 **Shader expression intrinsics** (valid only inside `@stage` methods):
 
@@ -767,22 +772,58 @@ Additional utilities: `U64_MAX`, `saturating_add_u64(a, b)`, `saturating_sub_u64
 
 ---
 
-#### `sys.asset` — general asset loading
+#### `sys.asset` — asset pack loading
 
-Assets are immutable byte blobs identified by a `u64` ID. IDs are FNV-1a 64-bit hashes of the asset's basename (e.g., `fnv1a64("TriShader.umsh")`). Call `asset::init("my.umpack")` at startup before any loads.
+Assets are stored in `.umpack` v2 bundles. Images (PNG/JPEG/BMP) and audio (WAV/OGG) are decoded at pack time by `ul` and stored as raw pixels/PCM. `pack.load(name)` returns decompressed bytes directly — zero runtime decode cost.
 
 ```
-import sys.asset => asset;
+import sys.asset;
 
-asset::init("game.umpack");   # load the asset pack once at startup
+var pack := asset::Pack::init("assets.umpack");
 
-# ids come from @shader_ref (for shaders) or are computed manually
-const bytes := asset::rt_asset_load(some_id);  # []u8 borrowed slice
-# use bytes.ptr and bytes.len ...
-asset::rt_asset_release(some_id);
+# load decoded RGBA8 pixels directly
+const pixels := pack.load("texture.png");
+const meta := pack.image_meta("texture.png");  # ImageMeta { width, height }
+
+# load decoded float32 stereo PCM directly
+const pcm := pack.load("sound.wav");
+const ameta := pack.audio_meta("sound.wav");  # AudioMeta { frame_count, channels, sample_rate }
+
+# load a shader by @shader_ref
+const pipeline := assets::pipeline_create<MyShader>(dev, pack);
+
+pack.cleanup();  # frees all decompressed buffers and the pack data
 ```
 
-The byte slice is valid until `rt_assets_init` is called again or the process exits.
+---
+
+#### `sys.audio` — audio playback
+
+Two-phase API: build a graph, compile it, create a context, play clips.
+
+```
+import sys.audio;
+
+# default graph: music/sfx/ui → master (with limiter)
+var graph := audio::AudioGraph::default();
+const sfx := graph.bus_by_name("sfx");
+
+var ctx := audio::AudioContext::create(graph,
+    audio::AudioContextDesc { sample_rate = 48000, block_frames = 512, max_voices = 16 });
+
+# play decoded PCM from the asset pack
+const voice := ctx.play_clip_raw(@as(pcm.ptr, u64), ameta.frame_count, sfx, 0.0);
+
+# control
+ctx.set_voice_gain_db(voice, -6.0);
+ctx.set_bus_gain_db(sfx, -3.0);
+ctx.stop_voice(voice);
+
+ctx.destroy();
+graph.destroy();
+```
+
+Custom graphs: `AudioGraphBuilder::create()` → `create_bus` → `create_route` → `add_limiter`/`add_lowpass`/`add_compressor` → `set_output_bus` → `audio::compile_graph(builder)`.
 
 ---
 
@@ -795,16 +836,9 @@ All GPU state is hidden behind opaque `u64` handles. Import `sys.gfx` for the fu
 import sys.gfx => gfx;
 import sys.window => window;
 
-const cfg := gfx::GfxConfig {
-    frames_in_flight  = 2,
-    max_textures      = 4096,
-    max_samplers      = 256,
-    frame_arena_bytes = 64 * 1024 * 1024,
-    draw_packets_max  = 65536,
-    enable_depth      = true,
-    enable_validation = false,
-    present_mode      = gfx::PresentMode::Mailbox,
-};
+var cfg := gfx::GfxConfig::default();
+cfg.enable_validation = true;
+cfg.enable_depth = true;
 
 var win := window::Window::create("My App", 1280, 720);
 const dev := gfx::init(win.handle, cfg);
@@ -897,29 +931,31 @@ gfx::shutdown(dev);
 
 ### Examples
 
-Example programs live in `examples/` and are built via `ninja build_examples`.
+Example programs live in `examples/` and are built via `ninja build_examples`. CMake tracks `.um` source files and asset directories — touching a source or asset triggers a rebuild.
 
 | Example | Description |
 |---------|-------------|
-| `examples/triangle/` | textured triangle using the sprite draw stream |
-| `examples/cube/` | 3D spinning cube using storage buffer API, `mat * vec` operator, and depth buffer |
+| `examples/triangle/` | procedural triangle with solid color |
+| `examples/cube/` | 3D spinning cube with storage buffer API, `mat * vec`, depth buffer |
+| `examples/interactive_cube/` | WASD + mouse camera with delta-time |
+| `examples/sine_wave/` | audio: procedural 440 Hz sine wave via `sys.audio` |
+| `examples/textured_quad/` | textured quad loaded from `.umpack` asset pipeline |
+| `examples/sound_player/` | audio: play a `.wav` file from the asset pack |
 
 ---
 
 ### Asset Linker (`ul`)
 
-`ul` converts compiler sidecar files and raw assets into runtime-ready binary formats, optionally bundled into a compressed `.umpack` archive.
+`ul` bundles assets into `.umpack` v2 archives. Image files (`.png`/`.jpg`/`.jpeg`/`.bmp`) are decoded to RGBA8 at pack time via stb_image. Audio files (`.wav`/`.ogg`) are decoded to float32 stereo PCM via miniaudio. All other files (`.umsh`, etc.) are stored as raw bytes. LZ4 compression is applied with `--compress`.
 
 ```sh
-# convert a shader sidecar to SPIR-V + UMRF
-ul --out-dir build/assets game/sprite.umshaders
+# pack shaders + assets together
+ul --pack build/assets.umpack --compress \
+    build/MyShader.umsh assets/texture.png assets/sound.wav
 
-# convert textures and audio
-ul --out-dir build/assets textures/tile.png sounds/hit.wav
-
-# bundle everything into a compressed pack
-ul --out-dir build/assets --pack build/game.umpack --compress \
-    game/sprite.umshaders textures/tile.png sounds/hit.wav
+# the uc driver invokes ul automatically when --shader-out is given:
+uc main.um --root std --shader-out build/ --asset-dir assets/ -o build/game
+# this compiles shaders to .umsh, packs .umsh + asset files into assets.umpack
 ```
 
 **Output formats:**

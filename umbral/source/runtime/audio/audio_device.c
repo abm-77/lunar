@@ -2,8 +2,16 @@
 // this is the ONLY file that defines MINIAUDIO_IMPLEMENTATION; all other files
 // include miniaudio.h for type definitions only.
 
+// enable stb_vorbis for OGG decoding in miniaudio's decoder
+#define STB_VORBIS_HEADER_ONLY
+#include "stb_vorbis.c"
+
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
+
+// stb_vorbis implementation (after miniaudio, per miniaudio docs)
+#undef STB_VORBIS_HEADER_ONLY
+#include "stb_vorbis.c"
 
 #include <audio_internal.h>
 #include <stddef.h>

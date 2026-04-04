@@ -2,20 +2,23 @@
 #include "umpack.h"
 #include <stdint.h>
 
-// build a .umpack bundle from a list of already-processed asset files.
-// inputs must be in their final runtime form (.umtex, .umaudio, .spv, .umrf,
-// etc.).
+// input to pack_build. path is the original source file. if decoded_data is
+// non-null, it replaces the file contents (used when ul decodes images/audio
+// at pack time). meta_type and meta are written into the manifest.
 
 typedef struct {
-  const char *path; // null-terminated path to source asset file
+  const char *path;                // null-terminated path to source file
+  const uint8_t *decoded_data;     // if non-null, use this instead of reading path
+  uint32_t decoded_len;            // byte length of decoded_data
+  uint32_t meta_type;              // UMPACK_META_RAW / IMAGE / AUDIO
+  uint32_t meta[4];                // type-specific metadata
 } pack_input_t;
 
-// pack_build — assemble a .umpack file.
-//   inputs:      array of input file paths (processed assets)
-//   input_count: number of entries in inputs
-//   out_path:    null-terminated destination path for the .umpack file
-//   compress:    non-zero to attempt LZ4 compression per entry;
-//                compressed only when result is strictly smaller than original
+// pack_build — assemble a .umpack v2 file.
+//   inputs:      array of input entries
+//   input_count: number of entries
+//   out_path:    null-terminated destination path
+//   compress:    non-zero to LZ4-compress each entry when smaller
 //   returns 0 on success; -1 on error (prints reason to stderr)
 int pack_build(const pack_input_t *inputs, uint32_t input_count,
                const char *out_path, int compress);

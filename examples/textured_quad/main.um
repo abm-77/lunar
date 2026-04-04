@@ -1,0 +1,101 @@
+import sys.window;
+import sys.gfx;
+import sys.gfx.types;
+import sys.gfx.draw;
+import sys.gfx.assets;
+import sys.asset;
+import math.types => math;
+
+@shader_pod const QuadVsOut := struct {
+  @builtin(position) clip: math::vec4,
+  @location(0) uv: math::vec2,
+};
+
+@shader_pod const QuadFsOut := struct {
+  @location(0) color: math::vec4,
+};
+
+@shader const QuadShader := struct {
+  @vs_out vout: QuadVsOut,
+  @fs_in  fin:  QuadVsOut,
+  @fs_out fout: QuadFsOut,
+};
+
+impl QuadShader {
+  @stage(vertex)
+  const vert := fn(&mut self) -> void {
+    const vid := @vertex_id();
+    var x: f32 = 0.0;
+    var y: f32 = 0.0;
+    var u: f32 = 0.0;
+    var v: f32 = 0.0;
+    # CCW winding; v flipped so texture is right-side up
+    if (vid == 0) {
+      x = -0.5; y =  0.5; u = 0.0; v = 1.0;
+    } else if (vid == 1) {
+      x =  0.5; y =  0.5; u = 1.0; v = 1.0;
+    } else if (vid == 2) {
+      x =  0.5; y = -0.5; u = 1.0; v = 0.0;
+    } else if (vid == 3) {
+      x = -0.5; y =  0.5; u = 0.0; v = 1.0;
+    } else if (vid == 4) {
+      x =  0.5; y = -0.5; u = 1.0; v = 0.0;
+    } else {
+      x = -0.5; y = -0.5; u = 0.0; v = 0.0;
+    }
+    self.vout.clip = math::vec4(x, y, 0.0, 1.0);
+    self.vout.uv = math::vec2(u, v);
+  };
+
+  @stage(fragment)
+  const frag := fn(&mut self) -> void {
+    const tex  := @texture2d(1);
+    const samp := @sampler(1);
+    self.fout.color = @sample(tex, samp, self.fin.uv);
+  };
+}
+
+const main := fn() -> i32 {
+  var pack := asset::Pack::init("assets.umpack");
+
+  var win := window::Window::create("textured quad", 800, 600);
+
+  var cfg := gfx::GfxConfig::default();
+  cfg.enable_validation = true;
+  const dev := gfx::init(win.handle, cfg);
+
+  const pipeline := assets::pipeline_create<QuadShader>(dev, pack);
+
+  const pixels := pack.load("texture.png");
+  const meta := pack.image_meta("texture.png");
+  const tex := gfx::texture2d_from_pixels(dev, meta.width, meta.height,
+                                            @as(pixels.ptr, u64));
+  const samp := gfx::sampler_nearest(dev);
+
+  for (; !window::Window::should_close(&win);) {
+    window::Window::poll_events();
+
+    const cmd := gfx::begin_frame(dev);
+    if (cmd.handle != 0) {
+      var ds := draw::DrawStream::create(dev, cmd, pipeline, 16);
+      ds.push_draw_packet(types::DrawPacket {
+        vertex_count   = 6,
+        instance_count = 1,
+        tex2d_index    = @as(tex.handle, u32),
+        sampler_index  = @as(samp.handle, u32),
+      });
+      ds.submit();
+      ds.destroy();
+      gfx::end_frame(dev, cmd);
+    }
+  }
+
+  gfx::sampler_destroy(dev, samp);
+  gfx::texture_destroy(dev, tex);
+  gfx::pipeline_destroy(dev, pipeline);
+  gfx::shutdown(dev);
+  win.destroy();
+  pack.cleanup();
+
+  return 0;
+};

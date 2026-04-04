@@ -9,6 +9,7 @@ import sys.gfx.assets;
 @extern const rt_gfx_texture2d_create_rgba8 : fn(u64, u32, u32, &u8, u64, []u8) -> u64;
 @extern const rt_gfx_texture_destroy : fn(u64, u64) -> void;
 @extern const rt_gfx_sampler_create_linear : fn(u64, []u8) -> u64;
+@extern const rt_gfx_sampler_create_nearest : fn(u64, []u8) -> u64;
 @extern const rt_gfx_sampler_destroy : fn(u64, u64) -> void;
 @extern const rt_gfx_frame_alloc : fn(u64, u64, u64, &mut u32) -> u64;
 
@@ -135,6 +136,20 @@ impl GfxConfig {
     return Texture2d { handle = h_tex };
 }
 
+# texture2d_from_pixels — create a 2D RGBA8 texture from a raw pixel pointer.
+#   use with asset::AssetImage: gfx::texture2d_from_pixels(dev, img.width, img.height, img.pixels)
+@pub const texture2d_from_pixels := fn(dev: Device, w: u32, h: u32,
+                                        pixel_ptr: u64) -> Texture2d {
+    var no_name: []u8 = "";
+    const byte_count: u64 = @as(w, u64) * @as(h, u64) * 4;
+    const h_tex := rt_gfx_texture2d_create_rgba8(
+        dev.handle, w, h,
+        @as(pixel_ptr, &u8), byte_count,
+        no_name
+    );
+    return Texture2d { handle = h_tex };
+}
+
 # texture_destroy — queue a texture for deferred destruction.
 #   safe to call while frames are in flight; runtime delays GPU destroy by frames_in_flight.
 #   the texture's descriptor index must not appear in new draw packets after this call.
@@ -147,6 +162,14 @@ impl GfxConfig {
 @pub const sampler_linear := fn(dev: Device) -> Sampler {
     var no_name: []u8 = "";
     const h_s := rt_gfx_sampler_create_linear(dev.handle, no_name);
+    return Sampler { handle = h_s };
+}
+
+# sampler_nearest — create a nearest-neighbor clamp-to-edge sampler.
+#   returns Sampler { handle = 0 } on failure.
+@pub const sampler_nearest := fn(dev: Device) -> Sampler {
+    var no_name: []u8 = "";
+    const h_s := rt_gfx_sampler_create_nearest(dev.handle, no_name);
     return Sampler { handle = h_s };
 }
 

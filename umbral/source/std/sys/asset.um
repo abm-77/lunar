@@ -1,10 +1,64 @@
+@extern const rt_assets_init : fn(&u8, u64) -> u64;
+@extern const rt_assets_cleanup : fn(u64) -> void;
+@extern const rt_asset_load : fn(u64, u64) -> []u8;
+@extern const rt_asset_id_from_name : fn(&u8, u64) -> u64;
+@extern const rt_asset_image_meta : fn(u64, u64, &mut u32, &mut u32) -> void;
+@extern const rt_asset_audio_meta : fn(u64, u64, &mut u64, &mut u32, &mut u32) -> void;
+
 @pub const AssetId := u64;
 @pub const ASSET_NULL: AssetId = 0;
 
-@pub @extern const rt_assets_init   : fn(&u8, u64) -> void;
-@pub @extern const rt_asset_load    : fn(AssetId) -> []u8;
-@pub @extern const rt_asset_release : fn(AssetId) -> void;
+@pub const ImageMeta := struct { width: u32, height: u32 }
+@pub const AudioMeta := struct { frame_count: u64, channels: u32, sample_rate: u32 }
 
-@pub const init := fn(pack_path: []u8) -> void {
-    rt_assets_init(pack_path.ptr, pack_path.len);
+# Pack — handle to a loaded .umpack asset bundle.
+@pub const Pack := struct { handle: u64 }
+
+impl Pack {
+    # init — load a .umpack file and return a pack handle.
+    const init := fn(path: []u8) -> Pack {
+        return Pack { handle = rt_assets_init(path.ptr, path.len) };
+    };
+
+    # cleanup — free all decompressed buffers and close the pack.
+    const cleanup := fn(&mut self) -> void {
+        rt_assets_cleanup(self.handle);
+        self.handle = 0;
+    };
+
+    # load — get the decompressed bytes of an asset by name.
+    # for images this is raw RGBA8 pixels; for audio, float32 interleaved PCM.
+    const load := fn(&self, name: []u8) -> []u8 {
+        const id := rt_asset_id_from_name(name.ptr, name.len);
+        return rt_asset_load(self.handle, id);
+    };
+
+    # load_by_id — get decompressed bytes by pre-computed asset id.
+    const load_by_id := fn(&self, id: AssetId) -> []u8 {
+        return rt_asset_load(self.handle, id);
+    };
+
+    # id — compute the asset id for a name string.
+    const id := fn(name: []u8) -> AssetId {
+        return rt_asset_id_from_name(name.ptr, name.len);
+    };
+
+    # image_meta — get width and height for a decoded image asset.
+    const image_meta := fn(&self, name: []u8) -> ImageMeta {
+        const aid := rt_asset_id_from_name(name.ptr, name.len);
+        var w: u32 = 0;
+        var h: u32 = 0;
+        rt_asset_image_meta(self.handle, aid, &mut w, &mut h);
+        return ImageMeta { width = w, height = h };
+    };
+
+    # audio_meta — get frame_count, channels, sample_rate for a decoded audio asset.
+    const audio_meta := fn(&self, name: []u8) -> AudioMeta {
+        const aid := rt_asset_id_from_name(name.ptr, name.len);
+        var fc: u64 = 0;
+        var ch: u32 = 0;
+        var sr: u32 = 0;
+        rt_asset_audio_meta(self.handle, aid, &mut fc, &mut ch, &mut sr);
+        return AudioMeta { frame_count = fc, channels = ch, sample_rate = sr };
+    };
 }

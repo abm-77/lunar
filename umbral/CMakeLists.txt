@@ -10,6 +10,7 @@ set(GLFW_ROOT "" CACHE PATH "GLFW install prefix")
 set(DEPS_VK_HEADERS "" CACHE PATH "Vulkan-Headers include path")
 set(LZ4_DIR "" CACHE PATH "lz4 source root (third_party/lz4)")
 set(MINIAUDIO_DIR "" CACHE PATH "miniaudio source root (third_party/miniaudio)")
+set(STB_DIR "" CACHE PATH "stb source root (third_party/stb)")
 set(COMPILER_DIR "${CMAKE_SOURCE_DIR}/source")
 
 # Vulkan loader from system / SDK
@@ -40,6 +41,7 @@ find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 
 # ---- runtime library (GLFW + Vulkan + audio) ----
 add_library(runtime STATIC
+./source/runtime/sys/log.c
 ./source/runtime/sys/fmt.c
 ./source/runtime/sys/mem.c
 ./source/runtime/sys/time.c
@@ -54,14 +56,17 @@ target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
 "${GLFW_INCLUDE_DIR}"
 "${MINIAUDIO_DIR}"
+"${STB_DIR}"
 ${COMPILER_DIR}
 ./source/runtime
 ./source/runtime/gfx
 ./source/runtime/audio
+./source/runtime/asset
 )
 target_link_libraries(runtime PUBLIC
 "${GLFW_LIB}"
 Vulkan::Vulkan
+lz4_static
 )
 
 if(APPLE)
@@ -90,6 +95,18 @@ add_custom_command(
     -P ${CMAKE_SOURCE_DIR}/cmake/embed_blob.cmake
   DEPENDS runtime
   COMMENT "Embedding libruntime.a into uc"
+)
+
+# ---- Embed liblz4.a into uc as a byte array ----
+add_custom_command(
+  OUTPUT ${CMAKE_BINARY_DIR}/lz4_blob.cc
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=$<TARGET_FILE:lz4_static>
+    -DOUTPUT=${CMAKE_BINARY_DIR}/lz4_blob.cc
+    -DSYMBOL=umbral_lz4_blob
+    -P ${CMAKE_SOURCE_DIR}/cmake/embed_blob.cmake
+  DEPENDS lz4_static
+  COMMENT "Embedding liblz4.a into uc"
 )
 
 # ---- Embed libglfw3.a into uc as a byte array ----
@@ -181,6 +198,7 @@ add_executable(uc
   ${UM_SHADER_DSL_SOURCES}
   ${CMAKE_BINARY_DIR}/runtime_blob.cc
   ${CMAKE_BINARY_DIR}/glfw_blob.cc
+  ${CMAKE_BINARY_DIR}/lz4_blob.cc
 )
 add_dependencies(uc UmShaderTableGen)
 target_include_directories(uc PRIVATE ${UM_SHADER_INCLUDE_DIRS})
@@ -250,6 +268,21 @@ target_compile_definitions(runtime_tests PRIVATE UM_TESTING=1)
 target_link_libraries(runtime_tests PRIVATE GTest::gtest_main)
 gtest_discover_tests(runtime_tests)
 
+add_executable(asset_tests
+  ${UNIT_TEST_DIR}/asset_test.cc
+  ${UNIT_TEST_DIR}/asset_test_stubs.c
+  ./source/runtime/asset/asset.c
+  ./source/runtime/sys/mem.c
+)
+target_include_directories(asset_tests PRIVATE
+  ./source/runtime
+  ./source/runtime/asset
+  ${COMPILER_DIR}
+)
+target_compile_definitions(asset_tests PRIVATE UM_TESTING=1 UM_DEBUG=1)
+target_link_libraries(asset_tests PRIVATE GTest::gtest_main lz4_static)
+gtest_discover_tests(asset_tests)
+
 add_executable(audio_tests
   ${UNIT_TEST_DIR}/audio_test.cc
   ${UNIT_TEST_DIR}/audio_test_stubs.c
@@ -293,9 +326,12 @@ llvm_map_components_to_libnames(UL_LLVM_LIBS
 add_executable(ul
   ./source/tools/ul/main.cc
   ./source/tools/ul/pack.cc
+  ./source/tools/ul/decode.cc
 )
 target_include_directories(ul PRIVATE
   ${COMPILER_DIR}
+  "${MINIAUDIO_DIR}"
+  "${STB_DIR}"
   ./source/tools/ul
   ./source          # runtime/gfx/umshader.h
 )
@@ -351,6 +387,11 @@ foreach(EXAMPLE_DIR ${EXAMPLE_DIRS})
   get_filename_component(EXAMPLE_NAME ${EXAMPLE_DIR} NAME)
   if(EXISTS "${EXAMPLE_DIR}/main.um")
     file(GLOB EXAMPLE_UM_SOURCES "${EXAMPLE_DIR}/*.um")
+    file(GLOB EXAMPLE_ASSETS "${EXAMPLE_DIR}/assets/*")
+    set(ASSET_DIR_ARG "")
+    if(EXISTS "${EXAMPLE_DIR}/assets")
+      set(ASSET_DIR_ARG --asset-dir ${EXAMPLE_DIR}/assets)
+    endif()
     add_custom_command(
       OUTPUT ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
@@ -358,8 +399,9 @@ foreach(EXAMPLE_DIR ${EXAMPLE_DIRS})
         ${EXAMPLE_DIR}/main.um
         --root ${CMAKE_SOURCE_DIR}/source/std
         --shader-out ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
+        ${ASSET_DIR_ARG}
         -o ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME}
-      DEPENDS uc ul ${EXAMPLE_UM_SOURCES}
+      DEPENDS uc ul ${EXAMPLE_UM_SOURCES} ${EXAMPLE_ASSETS}
       COMMENT "Building example: ${EXAMPLE_NAME}"
     )
     list(APPEND EXAMPLE_OUTPUTS ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}/${EXAMPLE_NAME})
