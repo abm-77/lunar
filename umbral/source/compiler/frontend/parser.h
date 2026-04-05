@@ -501,6 +501,8 @@ private:
     case TokenKind::Percent: return BP{70, 71};
     case TokenKind::Plus:
     case TokenKind::Minus: return BP{60, 61};
+    case TokenKind::KwShl:
+    case TokenKind::KwShr: return BP{55, 56};
     case TokenKind::Less:
     case TokenKind::LessEqual:
     case TokenKind::Greater:
@@ -661,10 +663,6 @@ private:
         return parse_intrinsic_triple_expr(s, NodeKind::MemCmp);
 
       // binary expr: (expr, expr)
-      case IntrinsicKind::Shl:
-        return parse_intrinsic_binary_expr(s, NodeKind::Shl);
-      case IntrinsicKind::Shr:
-        return parse_intrinsic_binary_expr(s, NodeKind::Shr);
       case IntrinsicKind::Sample:
         return parse_intrinsic_triple_expr(s, NodeKind::ShaderSample);
 
@@ -863,22 +861,29 @@ private:
     if (match(TokenKind::Int)) {
       u32 idx = static_cast<u32>(body_ir.int_lits.size());
       body_ir.int_lits.push_back(t.payload[i - 1]);
-      return body_ir.nodes.make(NodeKind::IntLit, s, idx);
+      auto sf = static_cast<u32>(t.num_suffix[i - 1]);
+      return body_ir.nodes.make(NodeKind::IntLit, s, idx, sf);
     }
     if (match(TokenKind::Float)) {
       u32 idx = static_cast<u32>(body_ir.float_lits.size());
       Span fs = {t.start[i - 1], t.end[i - 1]};
+      auto sf = static_cast<u32>(t.num_suffix[i - 1]);
       double val = 0.0;
       if (!src.empty()) {
         std::string raw(src.data() + fs.start, fs.end - fs.start);
+        // strip underscores; float suffixes (f32/f64) are always 3 chars
+        std::string clean;
+        clean.reserve(raw.size());
+        for (char ch : raw) if (ch != '_') clean += ch;
+        if (sf != 0 && clean.size() >= 3) clean.resize(clean.size() - 3);
         try {
-          val = std::stod(raw);
+          val = std::stod(clean);
         } catch (...) {
           val = 0.0;
         }
       }
       body_ir.float_lits.push_back(val);
-      return body_ir.nodes.make(NodeKind::FloatLit, s, idx);
+      return body_ir.nodes.make(NodeKind::FloatLit, s, idx, sf);
     }
     if (match(TokenKind::String))
       return body_ir.nodes.make(NodeKind::StrLit, s, t.payload[i - 1]);

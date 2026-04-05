@@ -19,6 +19,23 @@
 #include "method_table.h"
 #include "symbol.h"
 
+// maps a non-None LitSuffix to a concrete CTypeId
+static CTypeId suffix_ctid(LitSuffix s, const TypeTable &types) {
+  switch (s) {
+  case LitSuffix::U8:  return types.builtin(CTypeKind::U8);
+  case LitSuffix::U16: return types.builtin(CTypeKind::U16);
+  case LitSuffix::U32: return types.builtin(CTypeKind::U32);
+  case LitSuffix::U64: return types.builtin(CTypeKind::U64);
+  case LitSuffix::I8:  return types.builtin(CTypeKind::I8);
+  case LitSuffix::I16: return types.builtin(CTypeKind::I16);
+  case LitSuffix::I32: return types.builtin(CTypeKind::I32);
+  case LitSuffix::I64: return types.builtin(CTypeKind::I64);
+  case LitSuffix::F32: return types.builtin(CTypeKind::F32);
+  case LitSuffix::F64: return types.builtin(CTypeKind::F64);
+  default: return 0;
+  }
+}
+
 struct BodyChecker {
   const BodyIR &ir;
   const Module &mod;
@@ -1156,16 +1173,26 @@ struct BodyChecker {
 
     switch (nk) {
     case NodeKind::IntLit: {
-      TypeVarId tv = unifier.fresh();
-      int_default_vars.push_back(
-          {tv, n}); // default to i32 at end of check() if unresolved
-      result = IType::fresh(tv);
+      auto sf = static_cast<LitSuffix>(ir.nodes.b[n]);
+      if (sf != LitSuffix::None) {
+        result = itype(suffix_ctid(sf, types));
+      } else {
+        TypeVarId tv = unifier.fresh();
+        int_default_vars.push_back(
+            {tv, n}); // default to i32 at end of check() if unresolved
+        result = IType::fresh(tv);
+      }
       break;
     }
     case NodeKind::FloatLit: {
-      TypeVarId tv = unifier.fresh();
-      float_default_vars.push_back({tv, n}); // default to f64 if unresolved
-      result = IType::fresh(tv);
+      auto sf = static_cast<LitSuffix>(ir.nodes.b[n]);
+      if (sf != LitSuffix::None) {
+        result = itype(suffix_ctid(sf, types));
+      } else {
+        TypeVarId tv = unifier.fresh();
+        float_default_vars.push_back({tv, n}); // default to f64 if unresolved
+        result = IType::fresh(tv);
+      }
       break;
     }
     case NodeKind::StrLit: {
@@ -1231,6 +1258,11 @@ struct BodyChecker {
       IType lt = check_expr(ir.nodes.b[n], sema);
       IType rt = check_expr(ir.nodes.c[n], sema);
       auto op = static_cast<TokenKind>(ir.nodes.a[n]);
+      // shifts: rhs is shift amount; types need not match; result = lhs type
+      if (op == TokenKind::KwShl || op == TokenKind::KwShr) {
+        result = lt;
+        break;
+      }
       if (!unifier.unify(lt, rt, types)) {
         auto lres = unifier.resolve(lt);
         auto rres = unifier.resolve(rt);

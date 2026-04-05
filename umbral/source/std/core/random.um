@@ -1,0 +1,93 @@
+
+@pub const splitmix64 := struct {
+  state: u64,
+}
+
+impl splitmix64 {
+  const from_seed := fn (seed: u64) -> splitmix64 {
+    return splitmix64(seed);
+  }
+
+  const next_u64 := fn (&mut self) -> u64 {
+    self.state += 0x9e3779b97f4a7c15;
+    var z := self.state;
+    z = (z ^ (z shr 30)) * 0xbf58476d1ce4e5b9;
+    z = (z ^ (z shr 27)) * 0x94d049bb133111eb;
+    return z ^ (z shr 31);
+  }
+}
+
+const rotl_u64 := fn (x: u64, k: u32) -> u64 {
+  return (x shl k) | (x shr (64 - k));
+}
+
+# xoshiro256**
+@pub const Random := struct {
+  s0: u64,
+  s1: u64,
+  s2: u64,
+  s3: u64,
+}
+
+impl Random {
+
+  const from_seed := fn(seed: u64) -> Random {
+    var sm := splitmix64::from_seed(seed);
+    return Random(
+      sm.next_u64(),
+      sm.next_u64(),
+      sm.next_u64(),
+      sm.next_u64()
+    );
+  }
+
+  const next_u64 := fn(&mut self) -> u64 {
+    const result := rotl_u64(self.s1 * 5u64, 7u32) * 9u64;
+
+    const t := self.s1 shl 17;
+
+    self.s2 = self.s2 ^ self.s0;
+    self.s3 = self.s3 ^ self.s1;
+    self.s1 = self.s1 ^ self.s2;
+    self.s0 = self.s0 ^ self.s3;
+
+    self.s2 = self.s2 ^ t;
+    self.s3 = rotl_u64(self.s3, 45);
+
+    return result;
+  }
+
+  const next_u32 := fn (&mut self) -> u32 {
+    return @as(self.next_u64(), u32);
+  }
+
+  const next_f64 := fn(&mut self) -> f64 {
+    const x := self.next_u64() shr 11;
+    return @as(x, f64) * (1.0 / 9007199254740992.0);
+  }
+
+  const next_f32 := fn(&mut self) -> f32 {
+    const x := @as((self.next_u64() shr 40), u32);
+    return @as(x, f32) * (1.0 / 16777216.0);
+  }
+
+  const range_u64 := fn(&mut self, min: u64, max: u64) -> u64 {
+    if (min >= max) {
+      # panic (caller must ensure min < max)
+      # TODO: add panic here when we support it
+    }
+
+    const span := max - min;
+    const threshold := (0u64 - span) % span;
+
+    for (;;) {
+      const x := self.next_u64();
+      if (x >= threshold) {
+          return min + (x % span);
+      }
+    }
+
+    return 0;
+  }
+
+}

@@ -536,6 +536,23 @@ struct FuncEmitter {
     if (op == TokenKind::AmpAmp) return emit_and(n);
     if (op == TokenKind::PipePipe) return emit_or(n);
 
+    // shifts: zero-extend rhs to lhs width if needed (LLVM requires same type)
+    if (op == TokenKind::KwShl || op == TokenKind::KwShr) {
+      llvm::Value *lv = emit_expr(ir.nodes.b[n]);
+      llvm::Value *rv = emit_expr(ir.nodes.c[n]);
+      auto *lty = llvm::cast<llvm::IntegerType>(lv->getType());
+      auto *rty = llvm::dyn_cast<llvm::IntegerType>(rv->getType());
+      if (rty && rty->getBitWidth() < lty->getBitWidth())
+        rv = builder.CreateZExt(rv, lty);
+      else if (rty && rty->getBitWidth() > lty->getBitWidth())
+        rv = builder.CreateTrunc(rv, lty);
+      if (op == TokenKind::KwShl) return builder.CreateShl(lv, rv);
+      CTypeId lctid = bsema.node_type[ir.nodes.b[n]].concrete;
+      return is_signed(cg.sema.types.types[lctid].kind)
+                 ? builder.CreateAShr(lv, rv)
+                 : builder.CreateLShr(lv, rv);
+    }
+
     llvm::Value *lv = emit_expr(ir.nodes.b[n]);
     llvm::Value *rv = emit_expr(ir.nodes.c[n]);
 
@@ -731,11 +748,12 @@ struct FuncEmitter {
     args.reserve(args_count + 1);
     if (ir.nodes.kind[callee_nid] == NodeKind::Field) {
       NodeId base_nid = ir.nodes.a[callee_nid];
-      u32 self_idx = 0;
-      if (self_idx < ft->getNumParams() &&
-          ft->getParamType(self_idx)->isPointerTy())
-        args.push_back(emit_place(base_nid));
-      else args.push_back(emit_expr(base_nid));
+      // if base is already a reference (&T / &mut T) its value is the pointer;
+      // otherwise take the address of the place.
+      CTypeId base_ctid = bsema.node_type[base_nid].concrete;
+      bool base_is_ref =
+          cg.sema.types.types[base_ctid].kind == CTypeKind::Ref;
+      args.push_back(base_is_ref ? emit_expr(base_nid) : emit_place(base_nid));
     }
 
     for (u32 i = 0; i < args_count; ++i)

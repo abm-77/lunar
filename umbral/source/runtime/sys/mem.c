@@ -296,7 +296,8 @@ static block_t block_allocate(uint64_t n, uint64_t align) {
   return block_allocate(n, align);
 }
 
-static void block_free(uint32_t class_id, slab_t *owner, void *p, uint64_t size) {
+static void block_free(uint32_t class_id, slab_t *owner, void *p,
+                       uint64_t size) {
   if (class_id == LARGE_CLASS_ID) {
     os_free_pages(p, size);
     return;
@@ -543,6 +544,30 @@ void rt_free(uint64_t h, uint32_t site) {
     g_free = (uint32_t *)realloc(g_free, sizeof(uint32_t) * g_free_cap);
   }
   g_free[g_free_len++] = idx;
+}
+
+um_alloc_handle_t rt_realloc(uint64_t old_h, uint64_t new_size, uint32_t site) {
+  ensure_tables();
+
+  um_alloc_entry_t *old = get_alloc_entry(old_h, site, "realloc");
+  if (!old) return 0;
+
+  // save fields before rt_alloc: grow_tables() may realloc g_tbl, moving it
+  void *old_ptr = old->ptr;
+  uint64_t old_size = old->size;
+  uint32_t old_align = old->align;
+  uint32_t old_tag = old->tag;
+
+  um_alloc_handle_t new_h = rt_alloc(new_size, old_align, old_tag, site);
+  if (!new_h) return 0;
+
+  um_alloc_entry_t *ne = get_alloc_entry(new_h, site, "realloc");
+  uint64_t copy_size = old_size < new_size ? old_size : new_size;
+  memcpy(ne->ptr, old_ptr, copy_size);
+
+  rt_free(old_h, site);
+
+  return new_h;
 }
 
 um_slice_u8_t rt_slice_from_alloc(uint64_t h, uint64_t elem_size,

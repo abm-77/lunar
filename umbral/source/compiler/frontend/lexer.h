@@ -106,17 +106,27 @@ struct KeywordTable {
   }
 };
 
+// suffix tag on integer/float literals (e.g. 10u32, 1.0f32).
+enum class LitSuffix : u8 {
+  None = 0,
+  U8, U16, U32, U64,
+  I8, I16, I32, I64,
+  F32, F64,
+};
+
 struct TokenStream {
   std::vector<TokenKind> kind;
   std::vector<u32> start;
   std::vector<u32> end;
   std::vector<u64> payload;
+  std::vector<u8> num_suffix; // LitSuffix; non-zero only for Int/Float tokens
 
-  void push(TokenKind k, Span sp, u64 pl = 0) {
+  void push(TokenKind k, Span sp, u64 pl = 0, LitSuffix sf = LitSuffix::None) {
     kind.push_back(k);
     start.push_back(sp.start);
     end.push_back(sp.end);
     payload.push_back(pl);
+    num_suffix.push_back(static_cast<u8>(sf));
   }
 
   size_t size() const { return kind.size(); }
@@ -133,6 +143,7 @@ public:
     out.start.reserve(out.kind.capacity());
     out.end.reserve(out.kind.capacity());
     out.payload.reserve(out.kind.capacity());
+    out.num_suffix.reserve(out.kind.capacity());
 
     while (true) {
       skip_ws_and_comments();
@@ -152,9 +163,9 @@ public:
       }
 
       if (is_digit(c)) {
-        auto [kind, sp, value, err] = lex_number();
+        auto [kind, sp, value, suffix, err] = lex_number();
         if (err) return std::unexpected(Error{sp, err});
-        out.push(kind, sp, value);
+        out.push(kind, sp, value, suffix);
         continue;
       }
 
@@ -234,13 +245,47 @@ private:
   }
 
   // value = parsed integer value (0 for floats); err = non-null on malformed
-  // input
+  // input. underscores within digit sequences are silently skipped.
   struct NumResult {
     TokenKind kind;
     Span span;
     u64 value = 0;
+    LitSuffix suffix = LitSuffix::None;
     const char *err = nullptr;
   };
+
+  // try to parse a type suffix starting at current pos; returns None if no
+  // valid suffix is found (pos is not advanced in that case).
+  LitSuffix lex_lit_suffix(bool is_float) {
+    // valid suffixes: u8 u16 u32 u64 i8 i16 i32 i64 f32 f64
+    char c = peek();
+    if (c != 'u' && c != 'i' && c != 'f') return LitSuffix::None;
+
+    // peek ahead: collect letter + digits
+    size_t start_pos = pos;
+    advance();
+    while (!eof() && is_digit(peek())) advance();
+    std::string_view sv = src.substr(start_pos, pos - start_pos);
+
+    // only 'f' suffixes are valid on floats; only 'u'/'i' on ints
+    if (is_float && c == 'f') {
+      if (sv == "f32") return LitSuffix::F32;
+      if (sv == "f64") return LitSuffix::F64;
+    } else if (!is_float && c != 'f') {
+      if (sv == "u8")  return LitSuffix::U8;
+      if (sv == "u16") return LitSuffix::U16;
+      if (sv == "u32") return LitSuffix::U32;
+      if (sv == "u64") return LitSuffix::U64;
+      if (sv == "i8")  return LitSuffix::I8;
+      if (sv == "i16") return LitSuffix::I16;
+      if (sv == "i32") return LitSuffix::I32;
+      if (sv == "i64") return LitSuffix::I64;
+    }
+
+    // unrecognized — backtrack
+    pos = start_pos;
+    return LitSuffix::None;
+  }
 
   NumResult lex_number() {
     u32 start = pos;
@@ -253,16 +298,18 @@ private:
       if (eof() || !is_hex_digit(peek()))
         return {TokenKind::Int,
                 {start, static_cast<u32>(pos)},
-                0,
+                0, LitSuffix::None,
                 "expected hex digit after '0x'"};
-      while (!eof() && is_hex_digit(peek())) {
+      while (!eof() && (is_hex_digit(peek()) || peek() == '_')) {
         char c = peek();
+        if (c == '_') { advance(); continue; }
         u64 d = is_digit(c) ? static_cast<u64>(c - '0')
                             : static_cast<u64>(std::tolower(c) - 'a' + 10);
         value = value * 16 + d;
         advance();
       }
-      return {TokenKind::Int, {start, static_cast<u32>(pos)}, value};
+      LitSuffix sf = lex_lit_suffix(false);
+      return {TokenKind::Int, {start, static_cast<u32>(pos)}, value, sf};
     }
 
     // Binary: 0b / 0B
@@ -272,28 +319,31 @@ private:
       if (eof() || (peek() != '0' && peek() != '1'))
         return {TokenKind::Int,
                 {start, static_cast<u32>(pos)},
-                0,
+                0, LitSuffix::None,
                 "expected binary digit after '0b'"};
-      while (!eof() && (peek() == '0' || peek() == '1')) {
+      while (!eof() && (peek() == '0' || peek() == '1' || peek() == '_')) {
+        if (peek() == '_') { advance(); continue; }
         value = value * 2 + static_cast<u32>(peek() - '0');
         advance();
       }
-      return {TokenKind::Int, {start, static_cast<u32>(pos)}, value};
+      LitSuffix sf = lex_lit_suffix(false);
+      return {TokenKind::Int, {start, static_cast<u32>(pos)}, value, sf};
     }
 
     // Decimal integer, or float if followed by '.' + digit
-    while (!eof() && is_digit(peek())) {
+    while (!eof() && (is_digit(peek()) || peek() == '_')) {
+      if (peek() == '_') { advance(); continue; }
       u64 prev = value;
       value = value * 10 + static_cast<u64>(peek() - '0');
       if (value < prev)
         return {TokenKind::Int, {start, static_cast<u32>(pos)}, 0,
-                "integer literal overflows u64"};
+                LitSuffix::None, "integer literal overflows u64"};
       advance();
     }
 
     if (!eof() && peek() == '.' && is_digit(peek_next())) {
       advance(); // consume '.'
-      while (!eof() && is_digit(peek())) advance();
+      while (!eof() && (is_digit(peek()) || peek() == '_')) advance();
 
       // Optional exponent: e / E, optional sign, digits
       if (!eof() && (peek() == 'e' || peek() == 'E')) {
@@ -302,14 +352,16 @@ private:
         if (eof() || !is_digit(peek()))
           return {TokenKind::Float,
                   {start, static_cast<u32>(pos)},
-                  0,
+                  0, LitSuffix::None,
                   "expected digit in float exponent"};
-        while (!eof() && is_digit(peek())) advance();
+        while (!eof() && (is_digit(peek()) || peek() == '_')) advance();
       }
-      return {TokenKind::Float, {start, static_cast<u32>(pos)}, 0};
+      LitSuffix sf = lex_lit_suffix(/*is_float=*/true);
+      return {TokenKind::Float, {start, static_cast<u32>(pos)}, 0, sf};
     }
 
-    return {TokenKind::Int, {start, static_cast<u32>(pos)}, value};
+    LitSuffix sf = lex_lit_suffix(false);
+    return {TokenKind::Int, {start, static_cast<u32>(pos)}, value, sf};
   }
 
   std::pair<bool, Span> lex_string() {

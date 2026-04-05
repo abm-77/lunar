@@ -15,6 +15,8 @@ struct um_slice_u8_t {
 um_alloc_handle_t rt_alloc(uint64_t size, uint64_t align, uint32_t tag,
                            uint32_t site);
 void rt_free(uint64_t handle, uint32_t site);
+um_alloc_handle_t rt_realloc(uint64_t handle, uint64_t new_size,
+                             uint32_t site);
 um_slice_u8_t rt_slice_from_alloc(uint64_t handle, uint64_t elem_size,
                                   uint64_t elem_align, uint64_t elem_len,
                                   uint32_t site, uint32_t mut_flag);
@@ -123,4 +125,66 @@ TEST_F(MemTest, AllocWithTagSucceeds) {
   um_alloc_handle_t h = rt_alloc(32, 8, /*tag=*/42, 0);
   EXPECT_NE(h, 0u);
   rt_free(h, 0);
+}
+
+TEST_F(MemTest, ReallocGrowPreservesData) {
+  const uint64_t old_count = 4;
+  const uint64_t new_count = 16;
+  um_alloc_handle_t h = rt_alloc(old_count * 4, 4, 0, 0);
+  ASSERT_NE(h, 0u);
+  um_slice_u8_t s = rt_slice_from_alloc(h, 4, 4, old_count, 0, 1);
+  int32_t *arr = reinterpret_cast<int32_t *>(const_cast<uint8_t *>(s.ptr));
+  for (uint64_t i = 0; i < old_count; ++i) arr[i] = (int32_t)(i + 1) * 10;
+
+  um_alloc_handle_t h2 = rt_realloc(h, new_count * 4, 0);
+  ASSERT_NE(h2, 0u);
+  um_slice_u8_t s2 = rt_slice_from_alloc(h2, 4, 4, new_count, 0, 0);
+  const int32_t *arr2 = reinterpret_cast<const int32_t *>(s2.ptr);
+  for (uint64_t i = 0; i < old_count; ++i)
+    EXPECT_EQ(arr2[i], (int32_t)(i + 1) * 10) << "data mismatch at i=" << i;
+  rt_free(h2, 0);
+}
+
+TEST_F(MemTest, ReallocShrinkPreservesFirstBytes) {
+  const uint64_t old_count = 16;
+  const uint64_t new_count = 4;
+  um_alloc_handle_t h = rt_alloc(old_count * 4, 4, 0, 0);
+  ASSERT_NE(h, 0u);
+  um_slice_u8_t s = rt_slice_from_alloc(h, 4, 4, old_count, 0, 1);
+  int32_t *arr = reinterpret_cast<int32_t *>(const_cast<uint8_t *>(s.ptr));
+  for (uint64_t i = 0; i < old_count; ++i) arr[i] = (int32_t)(i + 1);
+
+  um_alloc_handle_t h2 = rt_realloc(h, new_count * 4, 0);
+  ASSERT_NE(h2, 0u);
+  um_slice_u8_t s2 = rt_slice_from_alloc(h2, 4, 4, new_count, 0, 0);
+  const int32_t *arr2 = reinterpret_cast<const int32_t *>(s2.ptr);
+  for (uint64_t i = 0; i < new_count; ++i)
+    EXPECT_EQ(arr2[i], (int32_t)(i + 1)) << "data mismatch at i=" << i;
+  rt_free(h2, 0);
+}
+
+TEST_F(MemTest, ReallocInvalidatesOldHandle) {
+  um_alloc_handle_t h = rt_alloc(32, 8, 0, 0);
+  ASSERT_NE(h, 0u);
+  um_alloc_handle_t h2 = rt_realloc(h, 64, 0);
+  ASSERT_NE(h2, 0u);
+  // old handle freed by realloc — using it should abort
+  EXPECT_DEATH(rt_free(h, 0), "");
+  rt_free(h2, 0);
+}
+
+TEST_F(MemTest, ReallocAcrossTableGrowth) {
+  // fill past initial capacity, then realloc each one to stress grow_tables
+  const int N = 1100;
+  std::vector<um_alloc_handle_t> handles(N);
+  for (int i = 0; i < N; ++i) {
+    handles[i] = rt_alloc(8, 8, 0, 0);
+    ASSERT_NE(handles[i], 0u);
+  }
+  for (int i = 0; i < N; ++i) {
+    um_alloc_handle_t h2 = rt_realloc(handles[i], 16, 0);
+    ASSERT_NE(h2, 0u) << "realloc failed at i=" << i;
+    handles[i] = h2;
+  }
+  for (int i = 0; i < N; ++i) rt_free(handles[i], 0);
 }

@@ -19,4 +19,6 @@
   X(Mat, "mat")                                                                \
   X(Self_, "self")                                                             \
   X(Break, "break")                                                            \
-  X(Continue, "continue")
+  X(Continue, "continue")                                                       \
+  X(Shl, "shl")                                                                \
+  X(Shr, "shr")

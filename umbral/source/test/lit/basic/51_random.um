@@ -1,0 +1,59 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: splitmix_ok
+# CHECK: seed_nonzero
+# CHECK: distinct
+# CHECK: next_u32_ok
+# CHECK: f64_in_range
+# CHECK: f32_in_range
+# CHECK: range_u64_ok
+
+import sys.io.fmt;
+import core.random;
+
+const ok := fn(label: []u8) -> void {
+  fmt::println("{}",  [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+
+const main := fn() -> i32 {
+  # splitmix64: two consecutive outputs from seed 1 must differ and be nonzero
+  var sm := random::splitmix64::from_seed(1u64);
+  const a := sm.next_u64();
+  const b := sm.next_u64();
+  if (a != 0u64 && b != 0u64) { ok("splitmix_ok"); }
+
+  # Random::from_seed produces a non-zero state
+  var rng := random::Random::from_seed(42u64);
+  const v0 := rng.next_u64();
+  if (v0 != 0u64) { ok("seed_nonzero"); }
+
+  # two successive outputs differ (statistical near-certainty)
+  const v1 := rng.next_u64();
+  if (v0 != v1) { ok("distinct"); }
+
+  # next_u32 fits in 32 bits (upper 32 of u64 cast are always 0 after trunc)
+  var rng2 := random::Random::from_seed(7u64);
+  const r32 := rng2.next_u32();
+  const r32_wide := @as(r32, u64);
+  if (r32_wide <= 4294967295u64) { ok("next_u32_ok"); }
+
+  # next_f64 in [0, 1)
+  var rng3 := random::Random::from_seed(99u64);
+  const f := rng3.next_f64();
+  if (f >= 0.0 && f < 1.0) { ok("f64_in_range"); }
+
+  # next_f32 in [0, 1)
+  var rng4 := random::Random::from_seed(123u64);
+  const g := @as(rng4.next_f32(), f64);
+  if (g >= 0.0 && g < 1.0) { ok("f32_in_range"); }
+
+  # range_u64: 100 draws from [10, 20) all land in range
+  var rng5 := random::Random::from_seed(0xdeadbeefu64);
+  var all_ok := true;
+  for (var j := 0; j < 100; j += 1) {
+    const x := rng5.range_u64(10u64, 20u64);
+    if (x < 10u64 || x >= 20u64) { all_ok = false; }
+  }
+  if (all_ok) { ok("range_u64_ok"); }
+
+  return 0;
+};

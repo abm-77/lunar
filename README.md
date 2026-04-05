@@ -332,6 +332,14 @@ primary := int_lit
 - After `struct {`, if the first field has `= expr` after its type → StructExpr. Otherwise → StructType.
 - After `Ident <`, if `>` is followed by `{` or `::` → generic type args. Otherwise → binary `<`.
 
+**Numeric literals:**
+- Decimal: `42`, `1_000_000` (underscores are ignored and may appear anywhere within digit sequences)
+- Hex: `0xFF`, `0xFF_00`
+- Binary: `0b1010`, `0b1111_0000`
+- Type suffix on integers: `u8` `u16` `u32` `u64` `i8` `i16` `i32` `i64` — e.g. `255u8`, `100_000u32`
+- Type suffix on floats: `f32` `f64` — e.g. `3.14f32`, `2.718_281_828f64`
+- Without a suffix, integer literals default to `i32` and float literals to `f64` if the type cannot be inferred from context.
+
 ```
 # struct initializer — fields assigned by name
 const p := Point { x = 10, y = 20 };

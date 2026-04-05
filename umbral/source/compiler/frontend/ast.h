@@ -41,8 +41,8 @@ template <class IdT, class KindT, class ListElemT = u32> struct NodeStore {
 
 using NodeId = u32;
 enum class NodeKind : u16 {
-  IntLit,
-  FloatLit, // a = index into BodyIR::float_lits (f64 value)
+  IntLit,   // a = index into BodyIR::int_lits (u64 value), b = LitSuffix
+  FloatLit, // a = index into BodyIR::float_lits (f64 value), b = LitSuffix
   StrLit,
   BoolLit,
   Ident,

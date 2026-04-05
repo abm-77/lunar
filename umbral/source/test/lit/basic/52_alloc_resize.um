@@ -1,0 +1,38 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: grow_ok
+# CHECK: shrink_ok
+
+import sys.io.fmt;
+import sys.mem;
+
+const ok := fn(label: []u8) -> void {
+  fmt::println("{}", [1]fmt::Arg{ fmt::arg_bytes(label) });
+};
+
+const main := fn() -> i32 {
+  # allocate 4 i32s, write values, resize to 16, verify data preserved
+  var a := mem::Alloc<i32>::create(4u64);
+  const s0 := a.slice_mut();
+  s0[0] = 10;
+  s0[1] = 20;
+  s0[2] = 30;
+  s0[3] = 40;
+
+  a.resize(16u64);
+  const s1 := a.slice();
+  var grow_ok := true;
+  if (s1[0] != 10 || s1[1] != 20 || s1[2] != 30 || s1[3] != 40) {
+    grow_ok = false;
+  }
+  if (grow_ok) { ok("grow_ok"); }
+
+  # shrink back to 2, verify first elements still correct
+  a.resize(2u64);
+  const s2 := a.slice();
+  var shrink_ok := true;
+  if (s2[0] != 10 || s2[1] != 20) { shrink_ok = false; }
+  if (shrink_ok) { ok("shrink_ok"); }
+
+  a.destroy();
+  return 0;
+};

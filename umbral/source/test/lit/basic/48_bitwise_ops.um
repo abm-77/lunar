@@ -28,8 +28,8 @@ const A: u64 = 255;
 const B: u64 = A & 15;
 const C: u64 = A | 256;
 const D: u64 = A ^ 170;
-const E: u64 = @shl(1, 10);
-const F: u64 = @shr(1024, 3);
+const E: u64 = 1 shl 10;
+const F: u64 = 1024 shr 3;
 const G: u64 = 17 % 5;
 
 const main := fn() -> i32 {
@@ -43,10 +43,10 @@ const main := fn() -> i32 {
   check("xor", (12 ^ 10) == 6);
 
   # shift left
-  check("shl", @shl(1, 4) == 16);
+  check("shl", (1 shl 4) == 16);
 
   # shift right
-  check("shr", @shr(256, 3) == 32);
+  check("shr", (256 shr 3) == 32);
 
   # modulo
   check("mod", (17 % 5) == 2);

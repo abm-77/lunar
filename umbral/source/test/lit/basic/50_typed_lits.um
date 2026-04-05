@@ -1,0 +1,34 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: d=100000000
+# CHECK: hx=65280
+# CHECK: bn=240
+# CHECK: g=2147483647
+
+import sys.io.fmt;
+
+const main := fn() -> i32 {
+    # integer suffixes
+    const a: u8  = 255u8;
+    const b: u16 = 1_000u16;
+    const c: u32 = 4_294_967_295u32;
+    const d: u64 = 100_000_000u64;
+    const e: i8  = 127i8;
+    const f: i16 = 32_767i16;
+    const g: i32 = 2_147_483_647i32;
+    const h: i64 = 9_223_372_036_854_775_807i64;
+
+    # hex and binary with underscores
+    const hx: u32 = 0xFF_00u32;
+    const bn: u8  = 0b1111_0000u8;
+
+    # float suffixes
+    const x: f32 = 3.14f32;
+    const y: f64 = 2.718_281_828f64;
+
+    fmt::println("d={}", [1]fmt::Arg{ fmt::arg_u64(d) });
+    fmt::println("hx={}", [1]fmt::Arg{ fmt::arg_u32(hx) });
+    fmt::println("bn={}", [1]fmt::Arg{ fmt::arg_u8(bn) });
+    fmt::println("g={}", [1]fmt::Arg{ fmt::arg_i32(g) });
+
+    return 0;
+};

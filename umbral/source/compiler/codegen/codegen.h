@@ -134,6 +134,8 @@ static llvm::Constant *eval_const_expr(CodegenCtx &cg, const BodyIR &ir,
       case TokenKind::Ampersand: return llvm::ConstantInt::get(ty, li->getValue() & ri->getValue());
       case TokenKind::Pipe:      return llvm::ConstantInt::get(ty, li->getValue() | ri->getValue());
       case TokenKind::Caret:     return llvm::ConstantInt::get(ty, li->getValue() ^ ri->getValue());
+      case TokenKind::KwShl:     return llvm::ConstantInt::get(ty, li->getValue().shl(ri->getValue()));
+      case TokenKind::KwShr:     return llvm::ConstantInt::get(ty, li->getValue().lshr(ri->getValue()));
       default: return nullptr;
       }
     }
