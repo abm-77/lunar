@@ -1,0 +1,51 @@
+import sys.window;
+import sys.gfx;
+import sys.asset;
+import sys.gfx.text;
+import sys.gfx.quad;
+import math.types => math;
+
+const main := fn() -> i32 {
+    var pack := asset::Pack::init("assets.umpack");
+
+    var win := window::Window::create("font rendering", 800, 600);
+    const sw: f32 = 800.0;
+    const sh: f32 = 600.0;
+
+    var cfg := gfx::GfxConfig::default();
+    cfg.enable_validation = true;
+    const dev := gfx::init(win.handle, cfg);
+
+    var qr := quad::QuadRenderer::create(dev, pack, sw, sh);
+    var tr := text::TextRenderer::create(dev, pack, "LiberationMono-Regular.ttf", sw, sh);
+
+    const white   := math::vec4(1.0, 1.0, 1.0, 1.0);
+    const dk_blue := math::vec4(0.1, 0.1, 0.3, 1.0);
+
+    for (; !window::Window::should_close(&win);) {
+        window::Window::poll_events();
+
+        const cmd := gfx::begin_frame(dev);
+        if (cmd.handle != 0) {
+            # background quad behind the text
+            qr.begin(cmd);
+            qr.draw(20.0, 130.0, 620.0, 230.0, dk_blue);
+            qr.submit();
+
+            # text on top
+            tr.begin(cmd);
+            tr.draw_text("Hello, Umbral!", 30.0, 200.0, white);
+            tr.submit();
+
+            gfx::end_frame(dev, cmd);
+        }
+    }
+
+    qr.destroy();
+    tr.destroy();
+    gfx::shutdown(dev);
+    win.destroy();
+    pack.cleanup();
+
+    return 0;
+};

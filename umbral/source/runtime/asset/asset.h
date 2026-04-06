@@ -42,6 +42,11 @@ void rt_asset_audio_meta(asset_pack_handle_t pack, uint64_t id,
                          uint64_t *out_frame_count, uint32_t *out_channels,
                          uint32_t *out_sample_rate);
 
+// rt_asset_font_meta — get atlas_w, atlas_h, glyph_count for a baked font.
+void rt_asset_font_meta(asset_pack_handle_t pack, uint64_t id,
+                        uint32_t *out_atlas_w, uint32_t *out_atlas_h,
+                        uint32_t *out_glyph_count);
+
 #ifdef __cplusplus
 }
 #endif

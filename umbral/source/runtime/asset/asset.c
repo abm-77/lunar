@@ -32,6 +32,7 @@ um_slice_u8_t     rt_slice_from_alloc(uint64_t h, uint64_t elem_size,
 #define UMPACK_META_RAW    0u
 #define UMPACK_META_IMAGE  1u
 #define UMPACK_META_AUDIO  2u
+#define UMPACK_META_FONT   3u
 
 static uint64_t asset_fnv1a64(const char *s, size_t n) {
     uint64_t h = 14695981039346656037ULL;
@@ -276,4 +277,17 @@ void rt_asset_audio_meta(asset_pack_handle_t pack, uint64_t id,
     *out_frame_count = (uint64_t)e->meta[0] | ((uint64_t)e->meta[1] << 32);
     *out_channels    = e->meta[2];
     *out_sample_rate = e->meta[3];
+}
+
+void rt_asset_font_meta(asset_pack_handle_t pack, uint64_t id,
+                        uint32_t *out_atlas_w, uint32_t *out_atlas_h,
+                        uint32_t *out_glyph_count) {
+    if (!pack) return;
+    asset_pack_t *p = pack_ptr(pack);
+    if (!p) return;
+    asset_entry_t *e = find_entry(p, id);
+    if (!e || e->meta_type != UMPACK_META_FONT) return;
+    *out_atlas_w     = e->meta[0];
+    *out_atlas_h     = e->meta[1];
+    *out_glyph_count = e->meta[2];
 }

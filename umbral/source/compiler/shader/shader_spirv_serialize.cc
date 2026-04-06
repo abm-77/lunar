@@ -369,11 +369,13 @@ static void fixup_spirv_decorations(llvm::SmallVectorImpl<uint32_t> &binary) {
     }
 
     // collect variable IDs by storage class, and struct type IDs for SSBOs
-    std::unordered_set<uint32_t> input_int_var_ids; // Input vars with integer pointee
+    std::unordered_set<uint32_t> input_int_var_ids;  // Input vars with integer pointee
+    std::unordered_set<uint32_t> output_int_var_ids; // Output vars with integer pointee
     std::unordered_set<uint32_t> ssbo_struct_type_ids;
 
     // find integer type IDs, pointer types, and variables
     static constexpr uint32_t SPV_OP_TYPE_INT = 21;
+    static constexpr uint32_t SPV_SC_OUTPUT = 3;
     std::unordered_set<uint32_t> int_type_ids;
     std::unordered_map<uint32_t, uint32_t> ptr_sc;
     std::unordered_map<uint32_t, uint32_t> ptr_pointee;
@@ -399,6 +401,12 @@ static void fixup_spirv_decorations(llvm::SmallVectorImpl<uint32_t> &binary) {
                 int_type_ids.count(pt_it->second))
               input_int_var_ids.insert(var_id);
           }
+          if (sc_it->second == SPV_SC_OUTPUT) {
+            auto pt_it = ptr_pointee.find(type_id);
+            if (pt_it != ptr_pointee.end() &&
+                int_type_ids.count(pt_it->second))
+              output_int_var_ids.insert(var_id);
+          }
           if (sc_it->second == SPV_SC_STORAGE_BUFFER) {
             auto pt_it = ptr_pointee.find(type_id);
             if (pt_it != ptr_pointee.end())
@@ -409,7 +417,21 @@ static void fixup_spirv_decorations(llvm::SmallVectorImpl<uint32_t> &binary) {
       pos += wc;
     }
 
-    // check which input vars already have Flat decoration
+    // collect variables that already have BuiltIn decoration — skip those for Flat
+    // (builtins like gl_Position, gl_VertexIndex must not get Flat)
+    static constexpr uint32_t SPV_DECORATION_BUILTIN = 11;
+    std::unordered_set<uint32_t> builtin_var_ids;
+    pos = 5;
+    while (pos < binary.size()) {
+      uint32_t wc = spv_word_count(binary[pos]);
+      uint32_t oc = spv_opcode(binary[pos]);
+      if (oc == SPV_OP_DECORATE && wc >= 3 &&
+          binary[pos + 2] == SPV_DECORATION_BUILTIN)
+        builtin_var_ids.insert(binary[pos + 1]);
+      pos += wc;
+    }
+
+    // check which vars already have Flat decoration
     std::unordered_set<uint32_t> already_flat;
     pos = 5;
     while (pos < binary.size()) {
@@ -437,8 +459,20 @@ static void fixup_spirv_decorations(llvm::SmallVectorImpl<uint32_t> &binary) {
     // (before the first function). find the insertion point.
     llvm::SmallVector<uint32_t> extra_decorations;
     if (is_fragment) {
+      // Flat on integer Input varyings (required by Vulkan for fragment shaders)
       for (uint32_t vid : input_int_var_ids) {
-        if (already_flat.count(vid)) continue;
+        if (already_flat.count(vid) || builtin_var_ids.count(vid)) continue;
+        extra_decorations.push_back((3u << 16u) | SPV_OP_DECORATE);
+        extra_decorations.push_back(vid);
+        extra_decorations.push_back(SPV_DECORATION_FLAT);
+      }
+    } else {
+      // Flat on integer Output varyings in non-fragment stages (vertex, etc.).
+      // Vulkan requires Flat on both sides of the interface when a fragment
+      // input is Flat — so any integer output that feeds into a Flat fragment
+      // input must itself be Flat.
+      for (uint32_t vid : output_int_var_ids) {
+        if (already_flat.count(vid) || builtin_var_ids.count(vid)) continue;
         extra_decorations.push_back((3u << 16u) | SPV_OP_DECORATE);
         extra_decorations.push_back(vid);
         extra_decorations.push_back(SPV_DECORATION_FLAT);

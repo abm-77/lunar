@@ -756,8 +756,15 @@ struct FuncEmitter {
       args.push_back(base_is_ref ? emit_expr(base_nid) : emit_place(base_nid));
     }
 
-    for (u32 i = 0; i < args_count; ++i)
-      args.push_back(emit_expr(ir.nodes.list[args_start + i]));
+    for (u32 i = 0; i < args_count; ++i) {
+      NodeId arg_nid = ir.nodes.list[args_start + i];
+      llvm::Value *arg_val = emit_expr(arg_nid);
+      // sema may have coerced this arg from [N]T to []T; if so the value is a
+      // raw array — build { ptr, len } instead.
+      if (auto *arr_ty = llvm::dyn_cast<llvm::ArrayType>(arg_val->getType()))
+        arg_val = array_ptr_to_slice(emit_place(arg_nid), arr_ty);
+      args.push_back(arg_val);
+    }
 
     // inject default args if fewer were provided than params.
     if (ft != nullptr && args.size() < ft->getNumParams() &&
@@ -1569,6 +1576,22 @@ struct FuncEmitter {
 
   // widen or truncate val to expected if both are integer types; no-op
   // otherwise.
+  // build a { ptr, i64 } slice from a pointer to an array. arr_ptr is an alloca
+  // (or any pointer); arr_ty is the LLVM array type [N x T]. the len field is N.
+  llvm::Value *array_ptr_to_slice(llvm::Value *arr_ptr, llvm::ArrayType *arr_ty) {
+    auto &ctx = fn.getContext();
+    llvm::Type *slice_ty = llvm::StructType::get(
+        ctx, {llvm::PointerType::getUnqual(ctx),
+              llvm::Type::getInt64Ty(ctx)});
+    llvm::Value *s = llvm::UndefValue::get(slice_ty);
+    s = builder.CreateInsertValue(s, arr_ptr, 0);
+    s = builder.CreateInsertValue(
+        s, llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx),
+                                  arr_ty->getNumElements()),
+        1);
+    return s;
+  }
+
   llvm::Value *coerce_int(llvm::Value *val, llvm::Type *expected,
                           NodeId src_n) {
     if (val->getType() == expected) return val;

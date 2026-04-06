@@ -363,7 +363,9 @@ struct DrawIdPattern : public mlir::OpConversionPattern<DrawIdOp> {
           i32_ty, mlir::spirv::StorageClass::Input);
       auto var = mlir::spirv::GlobalVariableOp::create(rw, 
           loc, ptr_ty, "__draw_index", mlir::FlatSymbolRefAttr{});
-      var->setAttr("built_in", rw.getStringAttr("DrawIndex"));
+      // use InstanceIndex (gl_InstanceIndex = firstInstance + instanceID) so that
+      // non-indirect vkCmdDraw calls can pass the packet index as firstInstance.
+      var->setAttr("built_in", rw.getStringAttr("InstanceIndex"));
       lctx.draw_index_var = "__draw_index";
     }
     auto val = addr_load(rw, loc, lctx.spirv_mod, *lctx.draw_index_var);

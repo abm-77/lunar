@@ -84,6 +84,7 @@ typedef struct {
   VkBuffer draw_packets_buf[GFX_MAX_FRAMES_IN_FLIGHT];
   VkDeviceMemory draw_packets_mem[GFX_MAX_FRAMES_IN_FLIGHT];
   void *draw_packets_mapped[GFX_MAX_FRAMES_IN_FLIGHT];
+  uint32_t draw_packets_used; // running count within a frame, reset at begin_frame
 
   VkPipeline pipeline_table[GFX_MAX_PIPELINES];
   gfx_slot_t pipeline_slots[GFX_MAX_PIPELINES];
@@ -492,7 +493,8 @@ static bool create_swapchain(gfx_device_ctx_t *d,
       .imageColorSpace = chosen_fmt.colorSpace,
       .imageExtent = extent,
       .imageArrayLayers = 1,
-      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
       .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .preTransform = caps.currentTransform,
       .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -932,6 +934,7 @@ gfx_device_handle_t rt_gfx_init(uint64_t window_handle,
                                 uint32_t draw_packets_max,
                                 bool enable_validation, uint32_t present_mode,
                                 bool enable_depth) {
+  rt_log_init();
   assert(!g_dev_alive && "rt_gfx_init called twice");
   memset(&g_dev, 0, sizeof(g_dev));
 
@@ -1115,6 +1118,7 @@ gfx_cmd_handle_t rt_gfx_begin_frame(gfx_device_handle_t dev) {
                           0, 1, &d->descriptor_sets[slot], 0, NULL);
 
   d->frame_open = true;
+  d->draw_packets_used = 0;
   return gfx_handle_make(slot + 1, 1);
 }
 
@@ -1774,9 +1778,13 @@ void rt_gfx_submit_draw_packets(gfx_cmd_handle_t cmd,
   uint32_t slot = d->current_frame % d->cfg.frames_in_flight;
   (void)cmd;
 
-  assert(packet_count <= d->cfg.draw_packets_max && "too many packets");
-  memcpy(d->draw_packets_mapped[slot], packets,
-         sizeof(draw_packet_t) * packet_count);
+  assert(d->draw_packets_used + packet_count <= d->cfg.draw_packets_max &&
+         "too many packets");
+  // append after previously submitted packets so multiple submits per frame
+  // don't clobber each other in the SSBO
+  char *dst = (char *)d->draw_packets_mapped[slot] +
+              (size_t)d->draw_packets_used * sizeof(draw_packet_t);
+  memcpy(dst, packets, sizeof(draw_packet_t) * packet_count);
 
   uint32_t pipe_slot = gfx_handle_index(pipe);
   assert(pipe_slot > 0 && pipe_slot < GFX_MAX_PIPELINES && "bad pipeline slot");
@@ -1794,18 +1802,22 @@ void rt_gfx_submit_draw_packets(gfx_cmd_handle_t cmd,
   vkCmdBindPipeline(d->command_buffers[slot], VK_PIPELINE_BIND_POINT_GRAPHICS,
                     d->pipeline_table[pipe_slot]);
 
+  uint32_t base = d->draw_packets_used;
   for (uint32_t i = 0; i < packet_count; i++) {
     const draw_packet_t *p = &packets[i];
     assert(p->vertex_count > 0 && "zero vertex count");
     assert(p->instance_count > 0 && "zero instance count");
+    // firstInstance = base + i so that InstanceIndex (mapped from @draw_id())
+    // gives the correct index into the draw_packets SSBO.
     if (p->flags & GFX_DRAW_FLAG_INDEXED) {
       vkCmdDrawIndexed(d->command_buffers[slot], p->index_count,
-                       p->instance_count, p->first_index, 0, p->first_instance);
+                       p->instance_count, p->first_index, 0, base + i);
     } else {
       vkCmdDraw(d->command_buffers[slot], p->vertex_count, p->instance_count, 0,
-                p->first_instance);
+                base + i);
     }
   }
+  d->draw_packets_used += packet_count;
 }
 
 uint32_t gfx_slot_alloc(gfx_slot_t *table, uint32_t table_len) {

@@ -27,6 +27,10 @@
 //   data = decoded RGBA8 pixels, width * height * 4 bytes before compression.
 // meta_type=2 (audio): meta = {frame_count_lo, frame_count_hi, channels, sample_rate}.
 //   data = decoded float32 interleaved PCM, frame_count * channels * 4 bytes.
+// meta_type=3 (font): meta = {atlas_w, atlas_h, glyph_count, em_size_bits}.
+//   data = RGBA8 atlas pixels (atlas_w * atlas_h * 4 bytes) followed by
+//   glyph_count * 40-byte PackedGlyphMetrics entries (codepoint + 9 floats).
+//   baked offline by ul using FreeType + msdfgen (MTSDF).
 // clang-format on
 
 #define UMPACK_MAGIC 0x554D504Bu // "UMPK"
@@ -38,6 +42,7 @@
 #define UMPACK_META_RAW   0u
 #define UMPACK_META_IMAGE 1u
 #define UMPACK_META_AUDIO 2u
+#define UMPACK_META_FONT  3u
 
 typedef struct {
   uint32_t magic;

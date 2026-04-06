@@ -27,6 +27,10 @@ static bool is_audio(const char *path) {
     return ends_with(path, ".wav") || ends_with(path, ".ogg");
 }
 
+static bool is_font(const char *path) {
+    return ends_with(path, ".ttf") || ends_with(path, ".otf");
+}
+
 static std::vector<uint8_t> read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return {};
@@ -119,6 +123,29 @@ int main(int argc, char **argv) {
             de.input.meta[2]   = aud.channels;
             de.input.meta[3]   = aud.sample_rate;
             de.data = std::move(aud.samples);
+            de.input.decoded_data = de.data.data();
+            de.input.decoded_len  = (uint32_t)de.data.size();
+        } else if (is_font(in)) {
+            auto raw = read_file(in);
+            if (raw.empty()) {
+                fprintf(stderr, "ul: cannot read %s\n", in);
+                return 1;
+            }
+            auto fnt = decode_font(raw.data(), raw.size());
+            if (fnt.data.empty()) {
+                fprintf(stderr, "ul: failed to bake font atlas %s\n", in);
+                return 1;
+            }
+            fprintf(stderr, "ul: baked font %s → %ux%u atlas, %u glyphs, %.0f em\n",
+                    in, fnt.atlas_w, fnt.atlas_h, fnt.glyph_count, fnt.em_size);
+            de.input.meta_type = UMPACK_META_FONT;
+            de.input.meta[0]   = fnt.atlas_w;
+            de.input.meta[1]   = fnt.atlas_h;
+            de.input.meta[2]   = fnt.glyph_count;
+            uint32_t em_bits;
+            memcpy(&em_bits, &fnt.em_size, sizeof(em_bits));
+            de.input.meta[3]   = em_bits;
+            de.data = std::move(fnt.data);
             de.input.decoded_data = de.data.data();
             de.input.decoded_len  = (uint32_t)de.data.size();
         }

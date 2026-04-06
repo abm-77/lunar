@@ -1,0 +1,209 @@
+import sys.gfx;
+import sys.gfx.types;
+import sys.gfx.draw;
+import sys.gfx.assets;
+import sys.asset;
+import sys.font;
+import math.types => math;
+
+# per-glyph draw data written to the frame arena.
+# layout: color (16 bytes) + 6 GlyphVertex (96 bytes) = 112 bytes.
+const GlyphVertex := struct {
+    pos: math::vec2,
+    uv:  math::vec2,
+}
+
+const GlyphData := struct {
+    color: math::vec4,
+    verts: [6]GlyphVertex,
+}
+
+@shader_pod const TextVsOut := struct {
+    @builtin(position) clip: math::vec4,
+    @location(0) uv: math::vec2,
+    @location(1) draw_data_off: u32,
+    @location(2) tex_idx: u32,
+    @location(3) samp_idx: u32,
+};
+
+@shader_pod const TextFsOut := struct {
+    @location(0) color: math::vec4,
+};
+
+@shader const TextShader := struct {
+    @vs_out vout: TextVsOut,
+    @fs_in  fin:  TextVsOut,
+    @fs_out fout: TextFsOut,
+};
+
+impl TextShader {
+    @stage(vertex)
+    const vert := fn(&mut self) -> void {
+        const pkt  := @draw_packet(@draw_id());
+        const base := pkt.draw_data_offset;
+        const vid  := @vertex_id();
+        const v_off := base + 16u32 + vid * 16u32;
+        const pos   := @frame_read<math::vec2>(v_off);
+        const uv    := @frame_read<math::vec2>(v_off + 8u32);
+        self.vout.clip          = math::vec4(pos.x, pos.y, 0.0, 1.0);
+        self.vout.uv            = uv;
+        self.vout.draw_data_off = base;
+        self.vout.tex_idx       = pkt.tex2d_index;
+        self.vout.samp_idx      = pkt.sampler_index;
+    };
+
+    @stage(fragment)
+    const frag := fn(&mut self) -> void {
+        const color := @frame_read<math::vec4>(self.fin.draw_data_off);
+
+        const tex  := @texture2d(self.fin.tex_idx);
+        const samp := @sampler(self.fin.samp_idx);
+        const s    := @sample(tex, samp, self.fin.uv);
+
+        # median of three: max(min(r,g), min(max(r,g), b))
+        var min_rg: f32 = s.r;
+        if (s.g < s.r) { min_rg = s.g; }
+        var max_rg: f32 = s.r;
+        if (s.g > s.r) { max_rg = s.g; }
+        var min_max_rg_b: f32 = max_rg;
+        if (s.b < max_rg) { min_max_rg_b = s.b; }
+        var med: f32 = min_rg;
+        if (min_max_rg_b > min_rg) { med = min_max_rg_b; }
+
+        # MTSDF: min(median, true_sdf) — conservative at corners
+        var sd: f32 = med;
+        if (s.a < sd) { sd = s.a; }
+
+        # msdfgen formula: screenPxRange * (sd - 0.5) + 0.5
+        const screen_px_range: f32 = 8.0;
+        var cov := screen_px_range * (sd - 0.5) + 0.5;
+        if (cov < 0.0) { cov = 0.0; }
+        if (cov > 1.0) { cov = 1.0; }
+
+        # premultiplied alpha
+        self.fout.color = math::vec4(color.x * cov, color.y * cov, color.z * cov, color.w * cov);
+    };
+}
+
+const px_to_ndc := fn(px: f32, py: f32, sw: f32, sh: f32) -> math::vec2 {
+    return math::vec2(px / sw * 2.0 - 1.0, py / sh * 2.0 - 1.0);
+};
+
+const make_glyph_data := fn(
+    x0: f32, y0: f32, x1: f32, y1: f32,
+    uv_x0: f32, uv_y0: f32, uv_x1: f32, uv_y1: f32,
+    color: math::vec4, sw: f32, sh: f32
+) -> GlyphData {
+    var gd: GlyphData;
+    gd.color = color;
+    # CCW winding (Vulkan y-down clip space): TL→BL→BR, TL→BR→TR
+    gd.verts[0] = GlyphVertex { pos = px_to_ndc(x0, y0, sw, sh), uv = math::vec2(uv_x0, uv_y0) };
+    gd.verts[1] = GlyphVertex { pos = px_to_ndc(x0, y1, sw, sh), uv = math::vec2(uv_x0, uv_y1) };
+    gd.verts[2] = GlyphVertex { pos = px_to_ndc(x1, y1, sw, sh), uv = math::vec2(uv_x1, uv_y1) };
+    gd.verts[3] = GlyphVertex { pos = px_to_ndc(x0, y0, sw, sh), uv = math::vec2(uv_x0, uv_y0) };
+    gd.verts[4] = GlyphVertex { pos = px_to_ndc(x1, y1, sw, sh), uv = math::vec2(uv_x1, uv_y1) };
+    gd.verts[5] = GlyphVertex { pos = px_to_ndc(x1, y0, sw, sh), uv = math::vec2(uv_x1, uv_y0) };
+    return gd;
+};
+
+# TextRenderer — high-level text drawing that composes with existing gfx draw calls.
+#
+# usage:
+#   var tr := text::TextRenderer::create(dev, pack, "MyFont.ttf", 800.0, 600.0);
+#   # in frame loop:
+#   tr.begin(cmd);
+#   tr.draw_text("Hello!", 50.0, 100.0, white);
+#   tr.draw_text("World!", 50.0, 200.0, red);
+#   tr.submit();
+#   # at shutdown:
+#   tr.destroy(dev);
+@pub const TextRenderer := struct {
+    dev:       types::Device,
+    pipeline:  types::Pipeline,
+    atlas:     font::FontAtlas,
+    atlas_tex: types::Texture2d,
+    samp:      types::Sampler,
+    ds:        draw::DrawStream,
+    sw:        f32,
+    sh:        f32,
+}
+
+impl TextRenderer {
+    # create a text renderer for a given font and screen size.
+    # the font must be in the asset pack (baked by ul at build time).
+    const create(dev: types::Device, pack: asset::Pack,
+                      font_name: []u8, screen_w: f32, screen_h: f32) -> TextRenderer {
+        const pipeline  := assets::pipeline_create<TextShader>(dev, pack);
+        var   atlas     := font::FontAtlas::load(pack, font_name, dev);
+        const atlas_tex := atlas.texture();
+        const samp      := gfx::sampler_linear(dev);
+        const ds        := draw::DrawStream::create(dev, types::Cmd { handle = 0 },
+                                                    pipeline, 1024u64);
+        return TextRenderer {
+            dev       = dev,
+            pipeline  = pipeline,
+            atlas     = atlas,
+            atlas_tex = atlas_tex,
+            samp      = samp,
+            ds        = ds,
+            sw        = screen_w,
+            sh        = screen_h,
+        };
+    }
+
+    # begin — start accumulating text draws for this frame.
+    # call once per frame before any draw_text calls.
+    const begin(&mut self, cmd: types::Cmd) -> void {
+        self.ds.reset(cmd, self.pipeline);
+    }
+
+    # draw_text — render a string at pixel position (x, baseline_y) with the given color.
+    # x is the left edge; baseline_y is the typographic baseline.
+    # call between begin() and submit().
+    const draw_text(&mut self, text: []u8, x: f32, baseline_y: f32,
+                         color: math::vec4) -> void {
+        var cursor_x: f32 = x;
+        for (const byte := @iter(text)) {
+            const cp: u32 = @as(byte, u32);
+            var gm: font::GlyphMetrics;
+            if (!self.atlas.glyph_metrics(cp, &mut gm)) {
+                cursor_x += 8.0;
+            }
+
+            if (gm.width > 0.0 && gm.height > 0.0) {
+                const x0 := cursor_x + gm.bearing_x;
+                const y0 := baseline_y - gm.bearing_y;
+                const x1 := x0 + gm.width;
+                const y1 := y0 + gm.height;
+
+                const fa := gfx::frame_alloc(self.dev, @size_of(GlyphData), 256u64);
+                const gd_ptr := @as(fa.ptr, &mut GlyphData);
+                *gd_ptr = make_glyph_data(
+                    x0, y0, x1, y1,
+                    gm.uv_x0, gm.uv_y0, gm.uv_x1, gm.uv_y1,
+                    color, self.sw, self.sh
+                );
+
+                self.ds.push_sprite(self.atlas_tex, self.samp, fa.offset, 1u32, 0u32);
+            }
+
+            cursor_x += gm.advance;
+        }
+    }
+
+    # submit — flush all accumulated text draws to the GPU.
+    # call once per frame after all draw_text calls.
+    const submit(&mut self) -> void {
+        if (self.ds.count > 0u32) {
+            self.ds.submit();
+        }
+    }
+
+    # destroy — free all resources. call once at shutdown.
+    const destroy(&mut self) -> void {
+        self.ds.destroy();
+        self.atlas.destroy(self.dev);
+        gfx::sampler_destroy(self.dev, self.samp);
+        gfx::pipeline_destroy(self.dev, self.pipeline);
+    }
+}

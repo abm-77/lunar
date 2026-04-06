@@ -1,0 +1,57 @@
+import sys.gfx;
+import sys.asset;
+
+# per-glyph UV coordinates + typographic metrics.
+# uv_* are normalized atlas coordinates in [0,1].
+# bearing_*, advance, width, height are in pixels at the atlas em_size.
+@pub const GlyphMetrics := struct {
+    uv_x0:     f32,
+    uv_y0:     f32,
+    uv_x1:     f32,
+    uv_y1:     f32,
+    bearing_x: f32,  # horizontal offset from cursor to glyph left edge
+    bearing_y: f32,  # vertical offset from baseline to glyph top edge
+    advance:   f32,  # cursor advance after this glyph
+    width:     f32,
+    height:    f32,
+}
+
+@pub const FontAtlas := struct { handle: u64, }
+
+@extern const rt_font_atlas_load    : fn([]u8, u32, u32, u32, u64) -> u64;
+@extern const rt_font_atlas_destroy : fn(u64, u64) -> void;
+@extern const rt_font_atlas_glyph   : fn(u64, u32, &mut GlyphMetrics) -> bool;
+@extern const rt_font_atlas_texture : fn(u64) -> u64;
+@extern const rt_asset_font_meta    : fn(u64, u64, &mut u32, &mut u32, &mut u32) -> void;
+
+impl FontAtlas {
+    # load a pre-baked MTSDF font atlas from an asset pack.
+    # the font must have been packed by ul (baked offline).
+    const load(pack: asset::Pack, name: []u8, dev: gfx::Device) -> FontAtlas {
+        const data := pack.load(name);
+        const id := asset::Pack::id(name);
+        var aw: u32 = 0u32;
+        var ah: u32 = 0u32;
+        var gc: u32 = 0u32;
+        rt_asset_font_meta(pack.handle, id, &mut aw, &mut ah, &mut gc);
+        const h := rt_font_atlas_load(data, aw, ah, gc, dev.handle);
+        return FontAtlas { handle = h };
+    }
+
+    # texture — returns the GPU texture handle for binding in draw packets.
+    const texture(&self) -> gfx::Texture2d {
+        return gfx::Texture2d { handle = rt_font_atlas_texture(self.handle) };
+    }
+
+    # glyph_metrics — look up UV + metrics for a Unicode codepoint.
+    #   returns false if the codepoint was not baked into this atlas.
+    const glyph_metrics(&self, codepoint: u32, out: &mut GlyphMetrics) -> bool {
+        return rt_font_atlas_glyph(self.handle, codepoint, out);
+    }
+
+    # destroy — release atlas memory and queue GPU texture for deferred destruction.
+    const destroy(&mut self, dev: gfx::Device) -> void {
+        rt_font_atlas_destroy(self.handle, dev.handle);
+        self.handle = 0;
+    }
+}

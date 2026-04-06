@@ -11,6 +11,8 @@ set(DEPS_VK_HEADERS "" CACHE PATH "Vulkan-Headers include path")
 set(LZ4_DIR "" CACHE PATH "lz4 source root (third_party/lz4)")
 set(MINIAUDIO_DIR "" CACHE PATH "miniaudio source root (third_party/miniaudio)")
 set(STB_DIR "" CACHE PATH "stb source root (third_party/stb)")
+set(FREETYPE_DIR "" CACHE PATH "freetype source root (third_party/freetype)")
+set(MSDFGEN_DIR  "" CACHE PATH "msdfgen source root (third_party/msdfgen)")
 set(COMPILER_DIR "${CMAKE_SOURCE_DIR}/source")
 
 # Vulkan loader from system / SDK
@@ -30,6 +32,10 @@ include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
 
+# clang 18 reports __cpp_concepts=201907L but libstdc++ 13's <expected> requires
+# 202002L; patch it up so standard C++23 headers work correctly.
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__cpp_concepts=202002L -Wno-builtin-macro-redefined")
+
 # match LLVM's RTTI setting — LLVM is built with -fno-rtti
 if(NOT LLVM_ENABLE_RTTI)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
@@ -39,7 +45,35 @@ endif()
 find_path(GLFW_INCLUDE_DIR GLFW/glfw3.h HINTS "${GLFW_ROOT}/include" REQUIRED)
 find_library(GLFW_LIB NAMES glfw3 glfw HINTS "${GLFW_ROOT}/lib" REQUIRED)
 
-# ---- runtime library (GLFW + Vulkan + audio) ----
+# freetype — strip optional deps for a standalone static build.
+# clear any stale find_package results from the cmake cache before FreeType
+# runs its own detection, otherwise a cached ZLIB_FOUND=TRUE will override
+# FT_DISABLE_ZLIB and link against the system zlib.
+unset(ZLIB_FOUND)
+unset(ZLIB_FOUND CACHE)
+unset(BZIP2_FOUND CACHE)
+unset(PNG_FOUND CACHE)
+unset(HarfBuzz_FOUND CACHE)
+unset(BROTLI_FOUND CACHE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2    ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI   ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_ZLIB     ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG      ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HVF      ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS_SAVE ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
+add_subdirectory(${FREETYPE_DIR} ${CMAKE_BINARY_DIR}/freetype EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVE})
+
+# msdfgen — core only; no FreeType integration, no standalone executable
+set(MSDFGEN_CORE_ONLY        ON  CACHE BOOL "" FORCE)
+set(MSDFGEN_BUILD_STANDALONE OFF CACHE BOOL "" FORCE)
+set(MSDFGEN_USE_VCPKG        OFF CACHE BOOL "" FORCE)
+set(MSDFGEN_USE_OPENMP       OFF CACHE BOOL "" FORCE)
+add_subdirectory(${MSDFGEN_DIR}  ${CMAKE_BINARY_DIR}/msdfgen  EXCLUDE_FROM_ALL)
+
+# ---- runtime library (GLFW + Vulkan + audio + font) ----
 add_library(runtime STATIC
 ./source/runtime/sys/log.c
 ./source/runtime/sys/fmt.c
@@ -51,6 +85,7 @@ add_library(runtime STATIC
 ./source/runtime/audio/audio.c
 ./source/runtime/audio/audio_thread.c
 ./source/runtime/audio/audio_device.c
+./source/runtime/font/font.c
 )
 target_include_directories(runtime PUBLIC
 "${DEPS_VK_HEADERS}"
@@ -62,6 +97,7 @@ ${COMPILER_DIR}
 ./source/runtime/gfx
 ./source/runtime/audio
 ./source/runtime/asset
+./source/runtime/font
 )
 target_link_libraries(runtime PUBLIC
 "${GLFW_LIB}"
@@ -120,6 +156,7 @@ add_custom_command(
   DEPENDS ${GLFW_LIB}
   COMMENT "Embedding libglfw3.a into uc"
 )
+
 
 # ---- um.shader dialect tablegen ----
 set(UM_SHADER_DIR "${CMAKE_SOURCE_DIR}/source/compiler/shader")
@@ -202,7 +239,8 @@ add_executable(uc
 )
 add_dependencies(uc UmShaderTableGen)
 target_include_directories(uc PRIVATE ${UM_SHADER_INCLUDE_DIRS})
-target_compile_definitions(uc PRIVATE ${LLVM_DEFINITIONS})
+separate_arguments(_llvm_defs UNIX_COMMAND "${LLVM_DEFINITIONS}")
+target_compile_options(uc PRIVATE ${_llvm_defs})
 target_link_libraries(uc PRIVATE ${LLVM_LIBS} ${MLIR_SHADER_LIBS})
 
 # ---- Testing ----
@@ -327,15 +365,18 @@ add_executable(ul
   ./source/tools/ul/main.cc
   ./source/tools/ul/pack.cc
   ./source/tools/ul/decode.cc
+  ./source/tools/ul/decode_font.cc
 )
 target_include_directories(ul PRIVATE
   ${COMPILER_DIR}
   "${MINIAUDIO_DIR}"
   "${STB_DIR}"
+  "${FREETYPE_DIR}/include"
+  "${MSDFGEN_DIR}"
   ./source/tools/ul
-  ./source          # runtime/gfx/umshader.h
+  ./source
 )
-target_link_libraries(ul PRIVATE lz4_static)
+target_link_libraries(ul PRIVATE lz4_static freetype msdfgen-core)
 
 add_executable(shader_mlir_tests
   ${UM_SHADER_DSL_SOURCES}
@@ -343,7 +384,8 @@ add_executable(shader_mlir_tests
 )
 add_dependencies(shader_mlir_tests UmShaderTableGen)
 target_include_directories(shader_mlir_tests PRIVATE ${UM_SHADER_INCLUDE_DIRS})
-target_compile_definitions(shader_mlir_tests PRIVATE ${LLVM_DEFINITIONS})
+separate_arguments(_llvm_defs_tests UNIX_COMMAND "${LLVM_DEFINITIONS}")
+target_compile_options(shader_mlir_tests PRIVATE ${_llvm_defs_tests})
 target_link_libraries(shader_mlir_tests PRIVATE GTest::gtest_main ${LLVM_LIBS} ${MLIR_SHADER_LIBS})
 gtest_discover_tests(shader_mlir_tests)
 

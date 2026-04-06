@@ -167,22 +167,19 @@ inline DriverResult Driver::run(const std::string &src_path,
   std::filesystem::path rt_path, glfw_path, lz4_path;
   auto rt_r = write_blob(umbral_runtime_blob, umbral_runtime_blob_size,
                          "umbral_runtime_", rt_path);
-  if (!rt_r.ok) {
-    std::filesystem::remove(obj_path);
-    return rt_r;
-  }
+  if (!rt_r.ok) { std::filesystem::remove(obj_path); return rt_r; }
+
   auto glfw_r = write_blob(umbral_glfw_blob, umbral_glfw_blob_size,
                            "umbral_glfw_", glfw_path);
   if (!glfw_r.ok) {
-    std::filesystem::remove(obj_path);
-    std::filesystem::remove(rt_path);
+    std::filesystem::remove(obj_path); std::filesystem::remove(rt_path);
     return glfw_r;
   }
+
   auto lz4_r = write_blob(umbral_lz4_blob, umbral_lz4_blob_size,
                            "umbral_lz4_", lz4_path);
   if (!lz4_r.ok) {
-    std::filesystem::remove(obj_path);
-    std::filesystem::remove(rt_path);
+    std::filesystem::remove(obj_path); std::filesystem::remove(rt_path);
     std::filesystem::remove(glfw_path);
     return lz4_r;
   }
@@ -223,8 +220,8 @@ inline DriverResult Driver::link(const std::filesystem::path &obj,
 
   llvm::SmallVector<llvm::StringRef, 32> args;
   args.push_back(*cc);
-  std::string obj_s = obj.string(), rt_s = runtime_a.string(),
-              glfw_s = glfw_a.string(), lz4_s = lz4_a.string();
+  std::string obj_s  = obj.string(),       rt_s   = runtime_a.string(),
+              glfw_s = glfw_a.string(),    lz4_s  = lz4_a.string();
   args.push_back(obj_s);
   args.push_back(rt_s);
   args.push_back(glfw_s);
@@ -237,8 +234,10 @@ inline DriverResult Driver::link(const std::filesystem::path &obj,
   args.push_back("-lXi");
   args.push_back("-lXcursor");
   args.push_back("-lm");
+  args.push_back("-lz");
   args.push_back("-lvulkan");
 #elif defined(__APPLE__)
+  args.push_back("-lz");
   args.push_back("-framework"); args.push_back("Cocoa");
   args.push_back("-framework"); args.push_back("IOKit");
   args.push_back("-framework"); args.push_back("CoreFoundation");
@@ -270,7 +269,8 @@ inline DriverResult Driver::pack_assets(const std::filesystem::path &shader_dir,
     for (const auto &e : std::filesystem::directory_iterator(asset_dir)) {
       auto ext = e.path().extension().string();
       if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
-          ext == ".wav" || ext == ".ogg")
+          ext == ".wav" || ext == ".ogg" ||
+          ext == ".ttf" || ext == ".otf")
         files.push_back(e.path());
     }
   }
