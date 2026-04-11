@@ -25,6 +25,32 @@
 @pub const F32_EPSILON: f32 = 0.00000011920929;
 @pub const F64_EPSILON: f64 = 0.00000000000000022204460492503131;
 
+@pub @extern const fabsf : fn(f32) -> f32;
+
+@pub const minf := fn(a: f32, b: f32) -> f32 {
+  if (a < b) { return a; }
+  return b;
+};
+
+@pub const maxf := fn(a: f32, b: f32) -> f32 {
+  if (a > b) { return a; }
+  return b;
+};
+
+@pub const clamp := fn(v: f32, lo: f32, hi: f32) -> f32 {
+  if (v < lo) { return lo; }
+  if (v > hi) { return hi; }
+  return v;
+};
+
+@pub const lerp := fn(a: f32, b: f32, t: f32) -> f32 {
+  return a + (b - a) * t;
+};
+
+@pub const absf := fn(v: f32) -> f32 {
+  return fabsf(v);
+};
+
 @pub const mat4_identity := fn() -> mat4 {
   return mat4 {
     col0 = vec4(1.0, 0.0, 0.0, 0.0),

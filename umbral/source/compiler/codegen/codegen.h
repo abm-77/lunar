@@ -15,6 +15,8 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Passes/OptimizationLevel.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 // LLVM ≥17: llvm/TargetParser/Host.h; LLVM ≤16: llvm/Support/Host.h
@@ -92,12 +94,29 @@ static llvm::Constant *eval_const_expr(CodegenCtx &cg, const BodyIR &ir,
   if (n >= ir.nodes.kind.size()) return nullptr;
   switch (ir.nodes.kind[n]) {
   case NodeKind::IntLit:
-    return llvm::ConstantInt::get(ty,
-               static_cast<int64_t>(ir.int_lits[ir.nodes.a[n]]));
+    return llvm::ConstantInt::get(
+        ty, static_cast<int64_t>(ir.int_lits[ir.nodes.a[n]]));
   case NodeKind::FloatLit:
     return llvm::ConstantFP::get(ty, ir.float_lits[ir.nodes.a[n]]);
   case NodeKind::BoolLit:
     return llvm::ConstantInt::getBool(ty->getContext(), ir.nodes.a[n] != 0);
+
+  case NodeKind::Unary: {
+    auto op = static_cast<TokenKind>(ir.nodes.a[n]);
+    auto *child = eval_const_expr(cg, ir, mod_idx, ir.nodes.b[n], ty);
+    if (!child) return nullptr;
+    if (op == TokenKind::Minus) {
+      if (ty->isIntegerTy())
+        return llvm::ConstantExpr::getNeg(child);
+      if (ty->isFloatingPointTy())
+        return llvm::ConstantFP::get(
+            ty->getContext(),
+            llvm::cast<llvm::ConstantFP>(child)->getValueAPF().operator-());
+    }
+    if (op == TokenKind::Bang)
+      return llvm::ConstantExpr::getNot(child);
+    return nullptr;
+  }
 
   case NodeKind::Ident: {
     // a = SymId (interned name); resolve to SymbolId via module namespace
@@ -120,9 +139,12 @@ static llvm::Constant *eval_const_expr(CodegenCtx &cg, const BodyIR &ir,
       auto *li = llvm::cast<llvm::ConstantInt>(lhs);
       auto *ri = llvm::cast<llvm::ConstantInt>(rhs);
       switch (op) {
-      case TokenKind::Plus:  return llvm::ConstantInt::get(ty, li->getValue() + ri->getValue());
-      case TokenKind::Minus: return llvm::ConstantInt::get(ty, li->getValue() - ri->getValue());
-      case TokenKind::Star:  return llvm::ConstantInt::get(ty, li->getValue() * ri->getValue());
+      case TokenKind::Plus:
+        return llvm::ConstantInt::get(ty, li->getValue() + ri->getValue());
+      case TokenKind::Minus:
+        return llvm::ConstantInt::get(ty, li->getValue() - ri->getValue());
+      case TokenKind::Star:
+        return llvm::ConstantInt::get(ty, li->getValue() * ri->getValue());
       case TokenKind::Slash: {
         if (ri->isZero()) return nullptr;
         return llvm::ConstantInt::get(ty, li->getValue().udiv(ri->getValue()));
@@ -131,11 +153,16 @@ static llvm::Constant *eval_const_expr(CodegenCtx &cg, const BodyIR &ir,
         if (ri->isZero()) return nullptr;
         return llvm::ConstantInt::get(ty, li->getValue().urem(ri->getValue()));
       }
-      case TokenKind::Ampersand: return llvm::ConstantInt::get(ty, li->getValue() & ri->getValue());
-      case TokenKind::Pipe:      return llvm::ConstantInt::get(ty, li->getValue() | ri->getValue());
-      case TokenKind::Caret:     return llvm::ConstantInt::get(ty, li->getValue() ^ ri->getValue());
-      case TokenKind::KwShl:     return llvm::ConstantInt::get(ty, li->getValue().shl(ri->getValue()));
-      case TokenKind::KwShr:     return llvm::ConstantInt::get(ty, li->getValue().lshr(ri->getValue()));
+      case TokenKind::Ampersand:
+        return llvm::ConstantInt::get(ty, li->getValue() & ri->getValue());
+      case TokenKind::Pipe:
+        return llvm::ConstantInt::get(ty, li->getValue() | ri->getValue());
+      case TokenKind::Caret:
+        return llvm::ConstantInt::get(ty, li->getValue() ^ ri->getValue());
+      case TokenKind::KwShl:
+        return llvm::ConstantInt::get(ty, li->getValue().shl(ri->getValue()));
+      case TokenKind::KwShr:
+        return llvm::ConstantInt::get(ty, li->getValue().lshr(ri->getValue()));
       default: return nullptr;
       }
     }
@@ -146,10 +173,18 @@ static llvm::Constant *eval_const_expr(CodegenCtx &cg, const BodyIR &ir,
       const auto &la = lf->getValueAPF(), &ra = rf->getValueAPF();
       llvm::APFloat result(la);
       switch (op) {
-      case TokenKind::Plus:  result.add(ra, llvm::APFloat::rmNearestTiesToEven); break;
-      case TokenKind::Minus: result.subtract(ra, llvm::APFloat::rmNearestTiesToEven); break;
-      case TokenKind::Star:  result.multiply(ra, llvm::APFloat::rmNearestTiesToEven); break;
-      case TokenKind::Slash: result.divide(ra, llvm::APFloat::rmNearestTiesToEven); break;
+      case TokenKind::Plus:
+        result.add(ra, llvm::APFloat::rmNearestTiesToEven);
+        break;
+      case TokenKind::Minus:
+        result.subtract(ra, llvm::APFloat::rmNearestTiesToEven);
+        break;
+      case TokenKind::Star:
+        result.multiply(ra, llvm::APFloat::rmNearestTiesToEven);
+        break;
+      case TokenKind::Slash:
+        result.divide(ra, llvm::APFloat::rmNearestTiesToEven);
+        break;
       default: return nullptr;
       }
       return llvm::ConstantFP::get(ty->getContext(), result);
@@ -170,6 +205,144 @@ static llvm::Constant *eval_const_expr(CodegenCtx &cg, const BodyIR &ir,
     return llvm::ConstantInt::get(ty, li->getValue().lshr(ri->getValue()));
   }
 
+  case NodeKind::Call: {
+    // positional type constructor with constant args:
+    // vec4(1.0, ...), mat2(col0, col1), MyStruct(a, b, c)
+    NodeId callee_nid = ir.nodes.a[n];
+    u32 args_start = ir.nodes.b[n], args_count = ir.nodes.c[n];
+
+    // resolve callee to a Type symbol (local or cross-module).
+    SymbolId callee_sym = 0;
+    if (callee_nid < ir.nodes.kind.size()) {
+      if (ir.nodes.kind[callee_nid] == NodeKind::Ident) {
+        SymId name = ir.nodes.a[callee_nid];
+        auto &ns = cg.sema.syms.module_namespaces[mod_idx];
+        auto it = ns.find(name);
+        if (it != ns.end()) callee_sym = it->second;
+      } else if (ir.nodes.kind[callee_nid] == NodeKind::Path) {
+        u32 ls = ir.nodes.b[callee_nid], cnt = ir.nodes.c[callee_nid];
+        if (cnt >= 2) {
+          SymId mod_seg = static_cast<SymId>(ir.nodes.list[ls]);
+          SymId type_seg = static_cast<SymId>(ir.nodes.list[ls + cnt - 1]);
+          auto &imp = cg.modules[mod_idx].import_map;
+          auto mit = imp.find(mod_seg);
+          if (mit != imp.end())
+            callee_sym = cg.sema.syms.lookup_pub(mit->second, type_seg);
+        }
+      }
+    }
+    // inline vec<T,N>(...) or mat<T,N,M>(...) — callee is a type node, not a symbol.
+    if (callee_sym == 0 && callee_nid < ir.nodes.kind.size()) {
+      NodeKind cnk = ir.nodes.kind[callee_nid];
+      if (cnk == NodeKind::VecType && llvm::isa<llvm::FixedVectorType>(ty)) {
+        auto *vty = llvm::cast<llvm::FixedVectorType>(ty);
+        std::vector<llvm::Constant *> elems;
+        for (u32 k = 0; k < args_count; ++k) {
+          auto *c = eval_const_expr(cg, ir, mod_idx,
+                                    ir.nodes.list[args_start + k],
+                                    vty->getElementType());
+          if (!c) return nullptr;
+          elems.push_back(c);
+        }
+        return llvm::ConstantVector::get(elems);
+      }
+      if (cnk == NodeKind::MatType && llvm::isa<llvm::ArrayType>(ty)) {
+        auto *aty = llvm::cast<llvm::ArrayType>(ty);
+        std::vector<llvm::Constant *> cols;
+        for (u32 k = 0; k < args_count; ++k) {
+          auto *c = eval_const_expr(cg, ir, mod_idx,
+                                    ir.nodes.list[args_start + k],
+                                    aty->getElementType());
+          if (!c) return nullptr;
+          cols.push_back(c);
+        }
+        return llvm::ConstantArray::get(aty, cols);
+      }
+    }
+
+    if (callee_sym == 0) return nullptr;
+    const Symbol &csym = cg.sema.syms.get(callee_sym);
+    if (csym.kind != SymbolKind::Type) return nullptr;
+    SymbolId real_sym = csym.aliased_sym ? csym.aliased_sym : callee_sym;
+    const Symbol &rsym = cg.sema.syms.get(real_sym);
+    const BodyIR &rsym_ir = cg.modules[rsym.module_idx].ir;
+    if (rsym.type_node == 0) return nullptr;
+    NodeKind tnk = rsym_ir.nodes.kind[rsym.type_node];
+
+    if (tnk == NodeKind::VecType) {
+      auto *vty = llvm::cast<llvm::FixedVectorType>(ty);
+      std::vector<llvm::Constant *> elems;
+      for (u32 k = 0; k < args_count; ++k) {
+        auto *c = eval_const_expr(cg, ir, mod_idx,
+                                  ir.nodes.list[args_start + k],
+                                  vty->getElementType());
+        if (!c) return nullptr;
+        elems.push_back(c);
+      }
+      return llvm::ConstantVector::get(elems);
+    }
+    if (tnk == NodeKind::MatType) {
+      auto *aty = llvm::cast<llvm::ArrayType>(ty);
+      std::vector<llvm::Constant *> cols;
+      for (u32 k = 0; k < args_count; ++k) {
+        auto *c = eval_const_expr(cg, ir, mod_idx,
+                                  ir.nodes.list[args_start + k],
+                                  aty->getElementType());
+        if (!c) return nullptr;
+        cols.push_back(c);
+      }
+      return llvm::ConstantArray::get(aty, cols);
+    }
+    if (tnk == NodeKind::StructType) {
+      auto *sty = llvm::cast<llvm::StructType>(ty);
+      if (args_count != sty->getNumElements()) return nullptr;
+      std::vector<llvm::Constant *> fields;
+      for (u32 k = 0; k < args_count; ++k) {
+        auto *c = eval_const_expr(cg, ir, mod_idx,
+                                  ir.nodes.list[args_start + k],
+                                  sty->getElementType(k));
+        if (!c) return nullptr;
+        fields.push_back(c);
+      }
+      return llvm::ConstantStruct::get(sty, fields);
+    }
+    return nullptr;
+  }
+
+  case NodeKind::StructInit: {
+    // named struct init: TypeName { field = val, ... }
+    u32 fields_start = ir.nodes.b[n], fields_count = ir.nodes.c[n];
+    auto *sty = llvm::dyn_cast<llvm::StructType>(ty);
+    if (!sty) return nullptr;
+
+    // a = TypeId in the module's TypeAst; extract the type name from it.
+    TypeId tid = ir.nodes.a[n];
+    const TypeAst &ta = cg.modules[mod_idx].type_ast;
+    if (tid >= ta.kind.size()) return nullptr;
+    SymId type_name = ta.a[tid];
+    SymbolId sid = cg.sema.syms.lookup(mod_idx, type_name);
+    if (sid == kInvalidSymbol) return nullptr;
+    const Symbol &tsym = cg.sema.syms.get(sid);
+    if (tsym.aliased_sym) sid = tsym.aliased_sym;
+    const Symbol &rsym = cg.sema.syms.get(sid);
+
+    // start with all zeros, then fill in provided fields.
+    std::vector<llvm::Constant *> vals(sty->getNumElements(), nullptr);
+    for (u32 k = 0; k < sty->getNumElements(); ++k)
+      vals[k] = llvm::Constant::getNullValue(sty->getElementType(k));
+
+    for (u32 k = 0; k < fields_count; ++k) {
+      SymId fname = ir.nodes.list[fields_start + k * 2];
+      NodeId val_nid = ir.nodes.list[fields_start + k * 2 + 1];
+      u32 idx = cg.type_lower.field_index(sid, fname);
+      auto *c = eval_const_expr(cg, ir, mod_idx, val_nid,
+                                sty->getElementType(idx));
+      if (!c) return nullptr;
+      vals[idx] = c;
+    }
+    return llvm::ConstantStruct::get(sty, vals);
+  }
+
   default: return nullptr;
   }
 }
@@ -181,7 +354,7 @@ static llvm::Constant *try_const_init(CodegenCtx &cg, const Symbol &sym,
   return eval_const_expr(cg, ir, sym.module_idx, sym.init_expr, ty);
 }
 
-inline void declare_globals(CodegenCtx &cg) {
+inline Result<void> declare_globals(CodegenCtx &cg) {
   for (SymbolId i = 1; i < cg.sema.syms.symbols.size(); ++i) {
     const Symbol &sym = cg.sema.syms.symbols[i];
     if (sym.kind != SymbolKind::GlobalVar) continue;
@@ -204,6 +377,14 @@ inline void declare_globals(CodegenCtx &cg) {
                                     llvm::StringRef{sv.data(), sv.size()});
     } else {
       llvm::Constant *init = try_const_init(cg, sym, ty);
+      if (!init && sym.init_expr) {
+        const BodyIR &sym_ir = cg.modules[sym.module_idx].ir;
+        Span sp{sym_ir.nodes.span_s[sym.init_expr],
+                sym_ir.nodes.span_e[sym.init_expr]};
+        return std::unexpected(Error{sp,
+            "global initializer must be a compile-time constant",
+            sym.module_idx});
+      }
       if (!init) init = llvm::Constant::getNullValue(ty);
       gv = new llvm::GlobalVariable(
           *cg.module, ty, !has(sym.flags, SymFlags::Mut),
@@ -211,6 +392,7 @@ inline void declare_globals(CodegenCtx &cg) {
     }
     cg.global_map[i] = gv;
   }
+  return {};
 }
 
 inline void declare_functions(CodegenCtx &cg) {
@@ -314,6 +496,20 @@ inline void declare_functions(CodegenCtx &cg) {
           cg.interner.view(mod2.params[sym.sig.params_start + j].name));
 
     cg.fn_map[i] = fn;
+
+    if (cg.debug_info && cg.dibuilder && sym.body != 0) {
+      llvm::DIFile *di_file = cg.get_di_file(sym.module_idx);
+      auto [line, col] = cg.get_line_col(
+          sym.module_idx, cg.modules[sym.module_idx].ir.nodes.span_s[sym.body]);
+      (void)col;
+      llvm::DISubroutineType *di_fn_ty = cg.dibuilder->createSubroutineType(
+          cg.dibuilder->getOrCreateTypeArray({}));
+      llvm::DISubprogram *sp = cg.dibuilder->createFunction(
+          di_file, fn->getName(), fn->getName(), di_file, line, di_fn_ty,
+          /*ScopeLine=*/line, llvm::DINode::FlagPrototyped,
+          llvm::DISubprogram::SPFlagDefinition);
+      fn->setSubprogram(sp);
+    }
   }
 }
 
@@ -328,11 +524,32 @@ inline void emit_function_bodies(CodegenCtx &cg) {
   }
 }
 
+inline llvm::OptimizationLevel to_llvm_opt(u32 level) {
+  switch (level) {
+  default:
+  case 0: return llvm::OptimizationLevel::O0;
+  case 1: return llvm::OptimizationLevel::O1;
+  case 2: return llvm::OptimizationLevel::O2;
+  case 3: return llvm::OptimizationLevel::O3;
+  }
+}
+
+inline llvm::CodeGenOptLevel to_codegen_opt(u32 level) {
+  switch (level) {
+  default:
+  case 0: return llvm::CodeGenOptLevel::None;
+  case 1: return llvm::CodeGenOptLevel::Less;
+  case 2: return llvm::CodeGenOptLevel::Default;
+  case 3: return llvm::CodeGenOptLevel::Aggressive;
+  }
+}
+
 // compile mod to a native object file at obj_path.
-// Call this on CodegenResult::context / CodegenResult::module after
+// call this on CodegenResult::context / CodegenResult::module after
 // run_codegen() succeeds (and only when not in --dump-ir mode).
 inline Result<void> emit_object(llvm::LLVMContext & /*ctx*/, llvm::Module &mod,
-                                const std::string &obj_path) {
+                                const std::string &obj_path,
+                                u32 opt_level = 0) {
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
 
@@ -346,7 +563,7 @@ inline Result<void> emit_object(llvm::LLVMContext & /*ctx*/, llvm::Module &mod,
 
   std::unique_ptr<llvm::TargetMachine> TM(target->createTargetMachine(
       triple, llvm::sys::getHostCPUName(), "", {}, llvm::Reloc::PIC_,
-      llvm::CodeModel::Small, llvm::CodeGenOptLevel::None));
+      llvm::CodeModel::Small, to_codegen_opt(opt_level)));
 
   mod.setDataLayout(TM->createDataLayout());
 
@@ -412,12 +629,14 @@ inline void emit_site_table(CodegenCtx &cg) {
 
 inline Result<CodegenResult>
 run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
-            const Interner &interner, std::string_view module_name = "umbral") {
-  CodegenCtx cg(sema, modules, interner, module_name);
-  declare_globals(cg);
+            const Interner &interner, std::string_view module_name = "umbral",
+            bool debug_info = false, u32 opt_level = 0) {
+  CodegenCtx cg(sema, modules, interner, module_name, debug_info);
+  auto globals_r = declare_globals(cg);
+  if (!globals_r) return std::unexpected(globals_r.error());
   declare_functions(cg);
 
-  // Set DataLayout so @size_of/@align_of can use it during body emission.
+  // set DataLayout so @size_of/@align_of can use it during body emission.
   {
     llvm::InitializeNativeTarget();
     llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
@@ -427,24 +646,42 @@ run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
     if (!tgt) return std::unexpected{Error{{0, 0}, "codegen: " + err2}};
     std::unique_ptr<llvm::TargetMachine> tm(tgt->createTargetMachine(
         triple, llvm::sys::getHostCPUName(), "", {}, llvm::Reloc::PIC_,
-        llvm::CodeModel::Small, llvm::CodeGenOptLevel::None));
+        llvm::CodeModel::Small, to_codegen_opt(opt_level)));
     cg.module->setDataLayout(tm->createDataLayout());
   }
 
   emit_function_bodies(cg);
   emit_site_table(cg);
 
+  if (cg.debug_info && cg.dibuilder) cg.dibuilder->finalize();
+
   std::string err;
   llvm::raw_string_ostream es(err);
   if (llvm::verifyModule(*cg.module, &es))
     return std::unexpected{Error{{0, 0}, "LLVM verification failed: " + err}};
 
-  // Serialise IR text (only used by --dump-ir; always populated for now).
+  // run LLVM optimization passes when opt_level > 0.
+  if (opt_level > 0) {
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    llvm::PassBuilder pb;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+    auto mpm = pb.buildPerModuleDefaultPipeline(to_llvm_opt(opt_level));
+    mpm.run(*cg.module, mam);
+  }
+
+  // serialise IR text (only used by --dump-ir; always populated for now).
   std::string ir_str;
   llvm::raw_string_ostream os(ir_str);
   cg.module->print(os, nullptr);
 
-  // Transfer ownership of context+module to the result so the caller can
+  // transfer ownership of context+module to the result so the caller can
   // use them for object-file emission without the context dying here.
   return CodegenResult{ir_str, std::move(cg.ctx_owned), std::move(cg.module)};
 }

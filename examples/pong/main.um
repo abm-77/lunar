@@ -1,0 +1,213 @@
+import core.random;
+import sys.asset;
+import sys.gfx;
+import sys.gfx.quad;
+import sys.gfx.text;
+import sys.input;
+import sys.time;
+import sys.window;
+import math.types => math;
+
+# screen
+const SCREEN_W : f32 = 1600.0;
+const SCREEN_H : f32 = 1200.0;
+
+# paddle
+const PADDLE_W     : f32 = 32.0;
+const PADDLE_H     : f32 = 256.0;
+const PADDLE_HALF_W: f32 = 16.0;
+const PADDLE_HALF_H: f32 = 128.0;
+const PADDLE_MARGIN: f32 = 96.0;
+
+# ball
+const BALL_SIZE  : f32 = 32.0;
+const BALL_HALF  : f32 = 16.0;
+const BALL_SPEED : f32 = 400.0;
+
+# player physics
+const PLAYER_ACCEL  : f32 = 3000.0;
+const PLAYER_MAX_VEL: f32 = 800.0;
+const FRICTION      : f32 = 0.9;
+
+# opponent physics
+const OPP_ACCEL      : f32 = 2500.0;
+const OPP_MAX_VEL    : f32 = 600.0;
+const OPP_MIN_MAX_VEL: f32 = 200.0;
+const OPP_DEADZONE   : f32 = 4.0;
+
+# colors
+const WHITE : math::vec4 = math::vec4(1.0, 1.0, 1.0, 1.0);
+
+const App := struct {
+  window: window::Window,
+  device: gfx::Device,
+  pack: asset::Pack,
+  qr: quad::QuadRenderer,
+  tr: text::TextRenderer,
+  last_time: time::Instant,
+
+  player_y:   f32,
+  player_vel: f32,
+
+  opp_y:       f32,
+  opp_vel:     f32,
+  opp_cur_max: f32,
+
+  ball_pos: math::vec2,
+  ball_vel: math::vec2,
+
+  rng: random::Random,
+}
+
+const random_ball_dir := fn(rng: &mut random::Random) -> math::vec2 {
+  var dx: f32 = BALL_SPEED;
+  if (rng.next_u32() % 2u32 == 0u32) { dx = -BALL_SPEED; }
+  return math::vec2(dx, 0f32);
+};
+
+const hits_paddle := fn(bx: f32, by: f32, px: f32, py: f32) -> bool {
+  return bx - BALL_HALF < px + PADDLE_HALF_W &&
+         bx + BALL_HALF > px - PADDLE_HALF_W &&
+         by + BALL_HALF > py - PADDLE_HALF_H &&
+         by - BALL_HALF < py + PADDLE_HALF_H;
+};
+
+const clamp_paddle := fn(y: f32) -> f32 {
+  return math::clamp(y, PADDLE_HALF_H, SCREEN_H - PADDLE_HALF_H);
+};
+
+impl App {
+  const create := fn() -> App {
+    var win := window::Window::create("pong", 1600, 1200);
+    const cfg := gfx::GfxConfig::default();
+    var pack := asset::Pack::init("assets.umpack");
+    var dev := gfx::init(win.handle, cfg);
+    var rng := random::Random::from_seed(time::Instant::now().ns);
+
+    return App {
+      window   = win,
+      device   = dev,
+      pack     = pack,
+      qr       = quad::QuadRenderer::create(dev, pack, SCREEN_W, SCREEN_H),
+      tr       = text::TextRenderer::create(dev, pack, "LiberationMono-Regular.ttf", SCREEN_W, SCREEN_H),
+      last_time  = time::Instant::now(),
+      player_y   = SCREEN_H * 0.5,
+      opp_y      = SCREEN_H * 0.5,
+      opp_cur_max = OPP_MAX_VEL,
+      ball_pos   = math::vec2(SCREEN_W * 0.5, SCREEN_H * 0.5),
+      ball_vel   = random_ball_dir(&mut rng),
+      rng        = rng
+    };
+  }
+
+  const draw := fn(&mut self) -> void {
+    const cmd := gfx::begin_frame(self.device);
+    if (cmd.handle == 0) { return; }
+
+    self.qr.begin(cmd);
+    self.qr.draw(PADDLE_MARGIN, self.player_y, PADDLE_W, PADDLE_H, WHITE, quad::Origin::Center);
+    self.qr.draw(SCREEN_W - PADDLE_MARGIN, self.opp_y, PADDLE_W, PADDLE_H, WHITE, quad::Origin::Center);
+    self.qr.draw(self.ball_pos.x, self.ball_pos.y, BALL_SIZE, BALL_SIZE, WHITE, quad::Origin::Center);
+    self.qr.submit();
+
+    gfx::end_frame(self.device, cmd);
+  }
+
+  const tick_player := fn(&mut self, dt: f32) -> void {
+    if (input::key_down(&self.window, input::Key::W)) {
+      self.player_vel = self.player_vel - PLAYER_ACCEL * dt;
+    }
+    if (input::key_down(&self.window, input::Key::S)) {
+      self.player_vel = self.player_vel + PLAYER_ACCEL * dt;
+    }
+    if (!input::key_down(&self.window, input::Key::W) &&
+        !input::key_down(&self.window, input::Key::S)) {
+      self.player_vel = self.player_vel * FRICTION;
+    }
+    self.player_vel = math::clamp(self.player_vel, -PLAYER_MAX_VEL, PLAYER_MAX_VEL);
+    self.player_y = clamp_paddle(self.player_y + self.player_vel * dt);
+  }
+
+  const tick_opponent := fn(&mut self, dt: f32) -> void {
+    const diff := self.ball_pos.y - self.opp_y;
+    if (diff > OPP_DEADZONE) {
+      self.opp_vel = self.opp_vel + OPP_ACCEL * dt;
+    } else if (diff < -OPP_DEADZONE) {
+      self.opp_vel = self.opp_vel - OPP_ACCEL * dt;
+    } else {
+      self.opp_vel = self.opp_vel * FRICTION;
+    }
+    self.opp_vel = math::clamp(self.opp_vel, -self.opp_cur_max, self.opp_cur_max);
+    self.opp_y = clamp_paddle(self.opp_y + self.opp_vel * dt);
+  }
+
+  const tick_ball := fn(&mut self, dt: f32) -> void {
+    self.ball_pos.x = self.ball_pos.x + self.ball_vel.x * dt;
+    self.ball_pos.y = self.ball_pos.y + self.ball_vel.y * dt;
+
+    # top/bottom wall bounce
+    if (self.ball_pos.y < BALL_HALF) {
+      self.ball_pos.y = BALL_HALF;
+      self.ball_vel.y = -self.ball_vel.y;
+    }
+    if (self.ball_pos.y > SCREEN_H - BALL_HALF) {
+      self.ball_pos.y = SCREEN_H - BALL_HALF;
+      self.ball_vel.y = -self.ball_vel.y;
+    }
+
+    # player paddle
+    if (self.ball_vel.x < 0f32 &&
+        hits_paddle(self.ball_pos.x, self.ball_pos.y, PADDLE_MARGIN, self.player_y)) {
+      self.ball_pos.x = PADDLE_MARGIN + PADDLE_HALF_W + BALL_HALF;
+      self.ball_vel.x = -self.ball_vel.x;
+      self.ball_vel.y = ((self.ball_pos.y - self.player_y) / PADDLE_HALF_H) * BALL_SPEED;
+      self.opp_cur_max = math::lerp(OPP_MIN_MAX_VEL, OPP_MAX_VEL, self.rng.next_f32());
+    }
+
+    # opponent paddle
+    if (self.ball_vel.x > 0f32 &&
+        hits_paddle(self.ball_pos.x, self.ball_pos.y, SCREEN_W - PADDLE_MARGIN, self.opp_y)) {
+      self.ball_pos.x = SCREEN_W - PADDLE_MARGIN - PADDLE_HALF_W - BALL_HALF;
+      self.ball_vel.x = -self.ball_vel.x;
+      self.ball_vel.y = ((self.ball_pos.y - self.opp_y) / PADDLE_HALF_H) * BALL_SPEED;
+    }
+
+    # score: ball went past a paddle — reset
+    if (self.ball_pos.x < 0f32 || self.ball_pos.x > SCREEN_W) {
+      self.ball_pos = math::vec2(SCREEN_W * 0.5, SCREEN_H * 0.5);
+      self.ball_vel = random_ball_dir(&mut self.rng);
+      self.opp_cur_max = OPP_MAX_VEL;
+    }
+  }
+
+  const update := fn(&mut self) -> void {
+    for (; !window::Window::should_close(&self.window); ) {
+      window::Window::poll_events();
+      input::begin_frame(&self.window);
+
+      const now := time::Instant::now();
+      const dt := now.elapsed_since(self.last_time).as_secs_f32();
+      self.last_time = now;
+
+      self.tick_player(dt);
+      self.tick_opponent(dt);
+      self.tick_ball(dt);
+      self.draw();
+    }
+  }
+
+  const destroy := fn(&mut self) -> void {
+    self.qr.destroy();
+    self.tr.destroy();
+    gfx::shutdown(self.device);
+    self.window.destroy();
+    self.pack.cleanup();
+  }
+}
+
+const main := fn() -> i32 {
+  var app := App::create();
+  app.update();
+  app.destroy();
+  return 0;
+}

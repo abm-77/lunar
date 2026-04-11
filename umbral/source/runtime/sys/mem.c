@@ -602,16 +602,23 @@ static void report_leaks(void) {
   uint64_t leaks = 0, bytes = 0;
   for (uint32_t i = 0; i < g_tbl_cap; ++i) {
     um_alloc_entry_t *e = &g_tbl[i];
-    if (e->live) {
-      leaks++;
-      bytes += e->size;
+    if (!e->live) continue;
+    if (!leaks) fprintf(stderr, "LEAKS DETECTED:\n");
+    leaks++;
+    bytes += e->size;
+    if (e->alloc_site < __um_sites_count) {
+      const um_site_info_t *s = &__um_sites[e->alloc_site];
+      fprintf(stderr, "  %llu bytes at %s:%u:%u\n",
+              (unsigned long long)e->size, s->file, s->line, s->col);
+    } else {
+      fprintf(stderr, "  %llu bytes (unknown site)\n",
+              (unsigned long long)e->size);
     }
   }
 
-  if (!leaks) return;
-
-  fprintf(stderr, "LEAKS DETECTED: %llu allocations, %llu bytes total\n",
-          (unsigned long long)leaks, (unsigned long long)bytes);
+  if (leaks)
+    fprintf(stderr, "total: %llu allocations, %llu bytes\n",
+            (unsigned long long)leaks, (unsigned long long)bytes);
 }
 #endif
 

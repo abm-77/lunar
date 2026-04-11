@@ -1,0 +1,10 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# without -g, no debug metadata should be emitted.
+
+const main := fn() -> void {
+  var x: i32 = 1;
+}
+
+# CHECK-NOT: !DICompileUnit
+# CHECK-NOT: llvm.dbg.declare

@@ -368,6 +368,7 @@ add_executable(ul
   ./source/tools/ul/decode_font.cc
 )
 target_include_directories(ul PRIVATE
+  ${LLVM_INCLUDE_DIRS}
   ${COMPILER_DIR}
   "${MINIAUDIO_DIR}"
   "${STB_DIR}"
@@ -376,7 +377,8 @@ target_include_directories(ul PRIVATE
   ./source/tools/ul
   ./source
 )
-target_link_libraries(ul PRIVATE lz4_static freetype msdfgen-core)
+target_compile_options(ul PRIVATE ${_llvm_defs})
+target_link_libraries(ul PRIVATE ${UL_LLVM_LIBS} lz4_static freetype msdfgen-core)
 
 add_executable(shader_mlir_tests
   ${UM_SHADER_DSL_SOURCES}

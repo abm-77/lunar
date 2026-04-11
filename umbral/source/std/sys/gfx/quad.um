@@ -5,6 +5,11 @@ import sys.gfx.assets;
 import sys.asset;
 import math.types => math;
 
+@pub const Origin := enum {
+    TopLeft,
+    Center,
+}
+
 const QuadVertex := struct {
     pos: math::vec2,
     uv:  math::vec2,
@@ -80,6 +85,14 @@ const make_quad_data := fn(
     return qd;
 };
 
+# compute top-left corner from position, size, and origin.
+const origin_to_tl := fn(x: f32, y: f32, w: f32, h: f32, o: Origin) -> math::vec2 {
+    if (o == Origin::Center) {
+        return math::vec2(x - w * 0.5, y - h * 0.5);
+    }
+    return math::vec2(x, y);
+};
+
 # QuadRenderer — draw colored or textured quads.
 #
 # usage:
@@ -130,33 +143,39 @@ impl QuadRenderer {
         self.ds.reset(cmd, self.pipeline);
     }
 
-    # draw a solid-color quad. (x0,y0) is top-left, (x1,y1) is bottom-right in pixels.
-    const draw(&mut self, x0: f32, y0: f32, x1: f32, y1: f32,
-               color: math::vec4) -> void {
+    # draw a solid-color quad at (x,y) with size (w,h). origin defaults to top-left.
+    const draw(&mut self, x: f32, y: f32, w: f32, h: f32,
+               color: math::vec4, origin: Origin = Origin::TopLeft) -> void {
+        const tl := origin_to_tl(x, y, w, h, origin);
         const fa := gfx::frame_alloc(self.dev, @size_of(QuadData), 256u64);
         const ptr := @as(fa.ptr, &mut QuadData);
-        *ptr = make_quad_data(x0, y0, x1, y1, 0.0, 0.0, 1.0, 1.0,
+        *ptr = make_quad_data(tl.x, tl.y, tl.x + w, tl.y + h, 0.0, 0.0, 1.0, 1.0,
                               color, self.sw, self.sh);
         self.ds.push_sprite(self.white_tex, self.samp, fa.offset, 1u32, 0u32);
     }
 
     # draw a textured quad tinted by color. use white for no tint.
-    const draw_textured(&mut self, x0: f32, y0: f32, x1: f32, y1: f32,
-                        tex: types::Texture2d, color: math::vec4) -> void {
+    const draw_textured(&mut self, x: f32, y: f32, w: f32, h: f32,
+                        tex: types::Texture2d, color: math::vec4,
+                        origin: Origin = Origin::TopLeft) -> void {
+        const tl := origin_to_tl(x, y, w, h, origin);
         const fa := gfx::frame_alloc(self.dev, @size_of(QuadData), 256u64);
         const ptr := @as(fa.ptr, &mut QuadData);
-        *ptr = make_quad_data(x0, y0, x1, y1, 0.0, 0.0, 1.0, 1.0,
+        *ptr = make_quad_data(tl.x, tl.y, tl.x + w, tl.y + h, 0.0, 0.0, 1.0, 1.0,
                               color, self.sw, self.sh);
         self.ds.push_sprite(tex, self.samp, fa.offset, 1u32, 0u32);
     }
 
     # draw a textured quad with custom UVs tinted by color.
-    const draw_textured_uv(&mut self, x0: f32, y0: f32, x1: f32, y1: f32,
+    const draw_textured_uv(&mut self, x: f32, y: f32, w: f32, h: f32,
                            uv_x0: f32, uv_y0: f32, uv_x1: f32, uv_y1: f32,
-                           tex: types::Texture2d, color: math::vec4) -> void {
+                           tex: types::Texture2d, color: math::vec4,
+                           origin: Origin = Origin::TopLeft) -> void {
+        const tl := origin_to_tl(x, y, w, h, origin);
         const fa := gfx::frame_alloc(self.dev, @size_of(QuadData), 256u64);
         const ptr := @as(fa.ptr, &mut QuadData);
-        *ptr = make_quad_data(x0, y0, x1, y1, uv_x0, uv_y0, uv_x1, uv_y1,
+        *ptr = make_quad_data(tl.x, tl.y, tl.x + w, tl.y + h,
+                              uv_x0, uv_y0, uv_x1, uv_y1,
                               color, self.sw, self.sh);
         self.ds.push_sprite(tex, self.samp, fa.offset, 1u32, 0u32);
     }

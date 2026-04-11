@@ -868,6 +868,12 @@ private:
       u32 idx = static_cast<u32>(body_ir.float_lits.size());
       Span fs = {t.start[i - 1], t.end[i - 1]};
       auto sf = static_cast<u32>(t.num_suffix[i - 1]);
+      auto sfe = static_cast<LitSuffix>(sf);
+      if (sfe != LitSuffix::None && sfe != LitSuffix::F32 &&
+          sfe != LitSuffix::F64) {
+        set_error(fs, "integer type suffix on float literal");
+        return 0;
+      }
       double val = 0.0;
       if (!src.empty()) {
         std::string raw(src.data() + fs.start, fs.end - fs.start);

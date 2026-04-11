@@ -3,6 +3,8 @@
 # CHECK: hx=65280
 # CHECK: bn=240
 # CHECK: g=2147483647
+# CHECK: intf=1600
+# CHECK: intd=42
 
 import sys.io.fmt;
 
@@ -25,10 +27,16 @@ const main := fn() -> i32 {
     const x: f32 = 3.14f32;
     const y: f64 = 2.718_281_828f64;
 
+    # float suffix on integer literal (no decimal point required)
+    const intf: f32 = 1600f32;
+    const intd: f64 = 42f64;
+
     fmt::println("d={}", [1]fmt::Arg{ fmt::arg_u64(d) });
     fmt::println("hx={}", [1]fmt::Arg{ fmt::arg_u32(hx) });
     fmt::println("bn={}", [1]fmt::Arg{ fmt::arg_u8(bn) });
     fmt::println("g={}", [1]fmt::Arg{ fmt::arg_i32(g) });
+    fmt::println("intf={}", [1]fmt::Arg{ fmt::arg_f32(intf) });
+    fmt::println("intd={}", [1]fmt::Arg{ fmt::arg_f64(intd) });
 
     return 0;
 };

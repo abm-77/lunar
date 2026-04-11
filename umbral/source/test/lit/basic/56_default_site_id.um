@@ -1,0 +1,21 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# @site_id() in a default parameter must evaluate at the call site,
+# not at the callee's definition. the site table entry should reference
+# this file and the line of the call, not the line of get_site.
+
+const get_site := fn(site: u32 = @site_id()) -> u32 {
+  return site;
+}
+
+const main := fn() -> void {
+  const a := get_site();
+  const b := get_site();
+}
+
+# the two calls are on lines 12 and 13; both should appear in __um_sites
+# referencing this test file — NOT the callee definition at line 7.
+# CHECK: @.site_file = private constant {{.*}} c"56_default_site_id\00"
+# CHECK: @__um_sites = constant [2 x { ptr, i32, i32 }]
+# CHECK-SAME: i32 12
+# CHECK-SAME: i32 13

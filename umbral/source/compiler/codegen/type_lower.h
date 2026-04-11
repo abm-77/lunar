@@ -28,6 +28,7 @@ struct CTypeLowerer {
   // void)
   std::unordered_map<CTypeId, llvm::FunctionType *> fn_type_cache;
 
+
   CTypeLowerer(llvm::LLVMContext &c, TypeTable &t, const SymbolTable &s,
                const std::vector<LoadedModule> &m, const Interner &i)
       : ctx(c), types(t), syms(s), modules(m), interner(i) {}

@@ -1,0 +1,7 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+
+const x := 42;
+
+const main := fn() -> i32 { return 0; }
+
+# CHECK: error: global variable must have an explicit type annotation

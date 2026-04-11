@@ -2,9 +2,12 @@
 # CHECK: scale=2 4 6 8
 # CHECK: matvec=1 2 3 1
 # CHECK: field=3.14
+# CHECK: vecmat=1 2 3
 
 import math.types => math;
 import sys.io.fmt;
+
+const mat3x4 := mat<f32, 3, 4>;
 
 const main := fn() -> i32 {
   # vec4 * scalar
@@ -27,6 +30,18 @@ const main := fn() -> i32 {
   # field access
   const pv := math::vec4(3.14, 2.71, 1.41, 0.0);
   fmt::println("field={}", [1]fmt::Arg{ fmt::arg_f32(pv.x) });
+
+  # vec * mat: [1,2,3,0] * identity → [1,2,3]
+  # use a 3-column submatrix of identity to test non-square: vec4 * mat<f32,3,4>
+  const m34 := mat3x4(
+    math::vec4(1.0, 0.0, 0.0, 0.0),
+    math::vec4(0.0, 1.0, 0.0, 0.0),
+    math::vec4(0.0, 0.0, 1.0, 0.0)
+  );
+  const vm := math::vec4(1.0, 2.0, 3.0, 0.0) * m34;
+  fmt::println("vecmat={} {} {}", [3]fmt::Arg{
+    fmt::arg_f32(vm.x), fmt::arg_f32(vm.y), fmt::arg_f32(vm.z),
+  });
 
   return 0;
 };

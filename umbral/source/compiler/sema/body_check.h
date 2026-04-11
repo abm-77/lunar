@@ -22,11 +22,11 @@
 // maps a non-None LitSuffix to a concrete CTypeId
 static CTypeId suffix_ctid(LitSuffix s, const TypeTable &types) {
   switch (s) {
-  case LitSuffix::U8:  return types.builtin(CTypeKind::U8);
+  case LitSuffix::U8: return types.builtin(CTypeKind::U8);
   case LitSuffix::U16: return types.builtin(CTypeKind::U16);
   case LitSuffix::U32: return types.builtin(CTypeKind::U32);
   case LitSuffix::U64: return types.builtin(CTypeKind::U64);
-  case LitSuffix::I8:  return types.builtin(CTypeKind::I8);
+  case LitSuffix::I8: return types.builtin(CTypeKind::I8);
   case LitSuffix::I16: return types.builtin(CTypeKind::I16);
   case LitSuffix::I32: return types.builtin(CTypeKind::I32);
   case LitSuffix::I64: return types.builtin(CTypeKind::I64);
@@ -310,10 +310,14 @@ struct BodyChecker {
   static i32 vec_mat_field_index(std::string_view s) {
     if (s.size() == 1) {
       switch (s[0]) {
-      case 'x': case 'r': return 0;
-      case 'y': case 'g': return 1;
-      case 'z': case 'b': return 2;
-      case 'w': case 'a': return 3;
+      case 'x':
+      case 'r': return 0;
+      case 'y':
+      case 'g': return 1;
+      case 'z':
+      case 'b': return 2;
+      case 'w':
+      case 'a': return 3;
       default: return -1;
       }
     }
@@ -365,7 +369,8 @@ struct BodyChecker {
             const CType &ctype = types.types[*ct];
             u32 expected = ctype.count;
             if (args_count != expected)
-              emit(node_span(n), "wrong number of arguments for vec/mat construction");
+              emit(node_span(n),
+                   "wrong number of arguments for vec/mat construction");
             // unify each arg with the element/column type
             for (u32 k = 0; k < args_count && k < expected; ++k)
               unifier.unify(arg_types[k], IType::from(ctype.inner), types);
@@ -396,8 +401,7 @@ struct BodyChecker {
               types.types[callee_resolved.concrete].kind == CTypeKind::Struct &&
               types.types[callee_resolved.concrete].list_count > 0)
             result = itype(callee_resolved.concrete);
-          else
-            result = itype(types.make_struct(struct_sid));
+          else result = itype(types.make_struct(struct_sid));
           sema.node_type[n] = result;
           return result;
         }
@@ -453,11 +457,10 @@ struct BodyChecker {
           std::vector<SymId> segs;
           for (u32 si = 0; si < pcnt; ++si)
             segs.push_back(static_cast<SymId>(ir.nodes.list[pls + si]));
-          auto rp = resolve_path(segs.data(), pcnt, module_idx,
-                                 import_map ? *import_map
-                                     : std::unordered_map<SymId, u32>{},
-                                 syms, methods, types, module_contexts,
-                                 interner);
+          auto rp = resolve_path(
+              segs.data(), pcnt, module_idx,
+              import_map ? *import_map : std::unordered_map<SymId, u32>{}, syms,
+              methods, types, module_contexts, interner);
           type_args = std::move(rp.type_args);
         }
 
@@ -546,8 +549,7 @@ struct BodyChecker {
       if (fname == "pipeline_handle" || fname == "vertex_buffer_handle" ||
           fname == "index_buffer_handle")
         result = itype(CTypeKind::U64);
-      else
-        result = itype(CTypeKind::U32);
+      else result = itype(CTypeKind::U32);
       sema.node_type[n] = result;
       return result;
     }
@@ -684,7 +686,14 @@ struct BodyChecker {
         } else {
           auto field_ct =
               resolve_struct_field_type(sct.symbol, field_nm, sct_id);
-          if (field_ct) result = itype(*field_ct);
+          if (field_ct)
+            result = itype(*field_ct);
+          else
+            emit(node_span(n),
+                 "no field or method '" +
+                     std::string(interner.view(field_nm)) + "' on type '" +
+                     std::string(interner.view(syms.get(sct.symbol).name)) +
+                     "'");
         }
       }
     }
@@ -763,10 +772,9 @@ struct BodyChecker {
               emit(node_span(n), "symbol is not exported from module");
             else
               emit(node_span(n),
-                   "unknown symbol '" +
-                       std::string(interner.view(second_seg)) +
-                       "' in module '" +
-                       std::string(interner.view(first_seg)) + "'");
+                   "unknown symbol '" + std::string(interner.view(second_seg)) +
+                       "' in module '" + std::string(interner.view(first_seg)) +
+                       "'");
           }
           if (dep_sid != kInvalidSymbol) {
             sema.node_symbol[n] = dep_sid;
@@ -826,7 +834,8 @@ struct BodyChecker {
   }
 
   Result<BodySema> check(const Symbol &fn_sym) {
-    assert(module_contexts && "module_contexts must be set before body checking");
+    assert(module_contexts &&
+           "module_contexts must be set before body checking");
     BodySema sema;
     u32 node_count = static_cast<u32>(ir.nodes.kind.size());
     sema.node_type.assign(node_count, itype(CTypeKind::Void));
@@ -965,16 +974,16 @@ struct BodyChecker {
     // parameter) are already bound and skipped.  Vars that resolved to a
     // non-numeric type (e.g., bool — integer used as if-condition) are errors.
     {
-      auto is_numeric = [&](CTypeKind k) {
-        return k >= CTypeKind::I8 && k <= CTypeKind::F64;
+      auto is_int_numeric = [&](CTypeKind k) {
+        return k >= CTypeKind::I8 && k <= CTypeKind::U64;
       };
       IType i32_t = itype(CTypeKind::I32);
       for (auto &[tv, node] : int_default_vars) {
         IType resolved = unifier.resolve(IType::fresh(tv));
         if (resolved.is_var) {
           unifier.bindings[tv] = i32_t;
-        } else if (!is_numeric(types.types[resolved.concrete].kind)) {
-          emit(node_span(node), "integer literal used in non-numeric context");
+        } else if (!is_int_numeric(types.types[resolved.concrete].kind)) {
+          emit(node_span(node), "integer literal used in non-integer context");
         }
       }
       // default float literals to f64 if not bound to a more specific type.
@@ -1274,20 +1283,44 @@ struct BodyChecker {
           auto &rct = types.types[rres.concrete];
           // vec op scalar / scalar op vec (element type must match scalar)
           if (lct.kind == CTypeKind::Vec && rres.concrete == lct.inner) {
-            result = lt; handled = true;
+            result = lt;
+            handled = true;
           } else if (rct.kind == CTypeKind::Vec && lres.concrete == rct.inner) {
-            result = rt; handled = true;
+            result = rt;
+            handled = true;
           }
-          // mat * vec → vec (column type must match)
+          // mat<T,N,M> * vec<T,N> → vec<T,M>
+          // vec must have N (cols) elements; result has M (rows) elements.
           if (!handled && op == TokenKind::Star &&
-              lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Vec &&
-              lct.inner == rres.concrete) {
-            result = rt; handled = true;
+              lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Vec) {
+            CTypeId col_elem = types.types[lct.inner].inner;
+            u32 cols = lct.count;
+            if (rct.inner == col_elem && rct.count == cols) {
+              result = IType::from(lct.inner);
+              handled = true;
+            }
           }
-          // mat * mat (same type)
+          // vec<T,M> * mat<T,N,M> → vec<T,N>
+          // vec must have M (rows) elements; result has N (cols) elements.
           if (!handled && op == TokenKind::Star &&
-              lct.kind == CTypeKind::Mat && lres.concrete == rres.concrete) {
-            result = lt; handled = true;
+              lct.kind == CTypeKind::Vec && rct.kind == CTypeKind::Mat) {
+            if (lres.concrete == rct.inner) {
+              CTypeId elem = types.types[rct.inner].inner;
+              result = IType::from(types.make_vec(elem, rct.count));
+              handled = true;
+            }
+          }
+          // mat<T,N,M> * mat<T,P,N> → mat<T,P,M>
+          // inner dimension: left cols (N) must equal right rows (column vec length).
+          if (!handled && op == TokenKind::Star &&
+              lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Mat) {
+            const CType &lcol = types.types[lct.inner];
+            const CType &rcol = types.types[rct.inner];
+            if (lcol.inner == rcol.inner && lct.count == rcol.count) {
+              CTypeId res_col = lct.inner; // vec<T,M>
+              result = IType::from(types.make_mat(res_col, rct.count));
+              handled = true;
+            }
           }
         }
         if (!handled)

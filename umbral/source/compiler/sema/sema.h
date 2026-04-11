@@ -282,6 +282,50 @@ inline Result<SemaResult> run_sema(std::vector<LoadedModule> &modules,
   resolve_all_paths(body_semas, syms, methods, types, modules,
                     module_contexts, interner);
 
+  // phase 6: validate that all struct field types resolve.
+  // catches unresolved types (e.g. bare `vec2` without module prefix) before
+  // codegen hits an assertion.
+  for (u32 si = 1; si < static_cast<u32>(syms.symbols.size()); ++si) {
+    const Symbol &sym = syms.symbols[si];
+    if (sym.kind != SymbolKind::Type || sym.type_node == 0) continue;
+    if (sym.generics_count > 0) continue;
+    u32 mod_i = sym.module_idx;
+    if (mod_i >= modules.size()) continue;
+    const BodyIR &sym_ir = modules[mod_i].ir;
+    NodeKind nk = sym_ir.nodes.kind[sym.type_node];
+    if (nk != NodeKind::StructType && nk != NodeKind::MetaBlock) continue;
+
+    auto &lm = modules[mod_i];
+    TypeLowerer tl(lm.type_ast, syms, interner, types);
+    tl.module_idx = mod_i;
+    tl.module_contexts = &module_contexts;
+    tl.import_map = &lm.import_map;
+
+    NodeId stype_nid = sym.type_node;
+    if (nk == NodeKind::MetaBlock) {
+      NodeId evaled = tl.eval_meta_block(stype_nid, sym_ir, nullptr);
+      if (evaled == 0) continue;
+      stype_nid = evaled;
+    }
+    if (sym_ir.nodes.kind[stype_nid] != NodeKind::StructType) continue;
+
+    u32 ls = sym_ir.nodes.b[stype_nid], fc = sym_ir.nodes.c[stype_nid];
+    for (u32 k = 0; k < fc; ++k) {
+      SymId fname = static_cast<SymId>(sym_ir.nodes.list[ls + k * 2]);
+      TypeId ftid = static_cast<TypeId>(sym_ir.nodes.list[ls + k * 2 + 1]);
+      auto r = tl.lower(ftid);
+      if (!r) {
+        Span sp{sym_ir.nodes.span_s[sym.type_node],
+                sym_ir.nodes.span_e[sym.type_node]};
+        return std::unexpected(Error{sp,
+            "could not resolve type of field '" +
+                std::string(interner.view(fname)) + "' in struct '" +
+                std::string(interner.view(sym.name)) + "'",
+            mod_i});
+      }
+    }
+  }
+
   return SemaResult{std::move(syms), std::move(types), std::move(methods),
                     std::move(body_semas)};
 }

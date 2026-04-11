@@ -65,6 +65,9 @@ collect_module_symbols(const Module &mod, const BodyIR &ir,
       } break;
 
       default: {
+        if (d.type == 0)
+          return Error{d.span,
+                       "global variable must have an explicit type annotation"};
         s.kind = SymbolKind::GlobalVar;
         s.annotate_type = d.type;
         s.init_expr = d.init;

@@ -1,0 +1,17 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: 42
+
+import sys.io.fmt;
+
+const Foo := struct { x: i32, }
+
+impl Foo {
+  const make := fn(v: i32) -> Foo { return Foo { x = v }; }
+  const get := fn(&self) -> i32 { return self.x; }
+}
+
+const main := fn() -> i32 {
+  const v := Foo::make(42).get();
+  fmt::println("{}", [1]fmt::Arg{ fmt::arg_i32(v) });
+  return 0;
+}

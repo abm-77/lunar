@@ -1,0 +1,8 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+
+const foo := fn() -> i32 { return 42; }
+const x : i32 = foo();
+
+const main := fn() -> i32 { return x; }
+
+# CHECK: error: global initializer must be a compile-time constant

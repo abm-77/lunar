@@ -1,0 +1,17 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+
+const Foo := struct {
+  x: i32,
+}
+
+impl Foo {
+  const bad := fn (&mut self) -> void {
+    self.y;
+  }
+}
+
+const main := fn () -> i32 {
+  return 0;
+}
+
+# CHECK: error: no field or method 'y' on type 'Foo'

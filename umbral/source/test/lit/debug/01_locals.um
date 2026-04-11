@@ -1,0 +1,18 @@
+# RUN: %uc %s -g --dump-ir | %FileCheck %s
+
+# local variables and parameters must get dbg.declare intrinsics and
+# DILocalVariable nodes with correct names and basic types.
+
+const main := fn() -> void {
+  var x: i32 = 42;
+  var y: f32 = 3.14f32;
+  var z: bool = true;
+}
+
+# CHECK: #dbg_declare
+# CHECK: !DILocalVariable(name: "x", {{.*}}type: [[I32:![0-9]+]])
+# CHECK: [[I32]] = !DIBasicType(name: "i32", size: 32, encoding: DW_ATE_signed)
+# CHECK: !DILocalVariable(name: "y", {{.*}}type: [[F32:![0-9]+]])
+# CHECK: [[F32]] = !DIBasicType(name: "f32", size: 32, encoding: DW_ATE_float)
+# CHECK: !DILocalVariable(name: "z", {{.*}}type: [[BOOL:![0-9]+]])
+# CHECK: [[BOOL]] = !DIBasicType(name: "bool", size: 1, encoding: DW_ATE_boolean)

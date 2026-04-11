@@ -1,0 +1,15 @@
+# RUN: %uc %s --dump-ir | %FileCheck %s
+
+# global vec/struct/scalar initializers must be constant-folded.
+
+const v : vec<f32, 4> = vec<f32, 4>(1.0, 2.0, 3.0, 4.0);
+const neg : i32 = -42;
+
+const Pair := struct { a: i32, b: i32, }
+const p : Pair = Pair { a = 10, b = 20 };
+
+const main := fn() -> void {}
+
+# CHECK: constant <4 x float> <float 1.000000e+00, float 2.000000e+00, float 3.000000e+00, float 4.000000e+00>
+# CHECK: constant i32 -42
+# CHECK: constant %Pair{{.*}} { i32 10, i32 20 }

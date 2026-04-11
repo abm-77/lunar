@@ -6,6 +6,8 @@
 #include <vector>
 
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
@@ -45,6 +47,8 @@ struct FuncEmitter {
   };
   std::vector<LoopCtx> loop_stack;
 
+  llvm::DISubprogram *di_sp = nullptr;
+
   FuncEmitter(CodegenCtx &cg, llvm::Function &fn, const Symbol &sym,
               const BodyIR &ir, const Module &mod, const BodySema &bsema)
       : cg(cg), fn(fn), sym(sym), ir(ir), mod(mod), bsema(bsema),
@@ -54,6 +58,10 @@ struct FuncEmitter {
     auto *entry = llvm::BasicBlock::Create(fn.getContext(), "entry", &fn);
     builder.SetInsertPoint(entry);
 
+    // clear the debug location so prologue allocas don't carry one
+    di_sp = fn.getSubprogram();
+    if (di_sp) builder.SetCurrentDebugLocation(llvm::DebugLoc());
+
     // alloca and store each param so mem2reg can promote them.
     TypeLowerer tl = cg.make_type_lowerer(sym.module_idx);
     inject_self_subst(sym, tl, cg);
@@ -61,24 +69,47 @@ struct FuncEmitter {
     for (u32 i = 0; i < sym.sig.params_count; ++i) {
       const FuncParam &fp = mod.params[sym.sig.params_start + i];
       llvm::Type *ty = nullptr;
+      CTypeId param_ctid = 0;
+
       if (sym.is_mono()) {
         if (i == 0 && sym.mono->self_ctype != 0) {
           ty = cg.type_lower.lower(sym.mono->self_ctype);
+          param_ctid = sym.mono->self_ctype;
         } else {
           u32 pi = i - (sym.mono->self_ctype != 0 ? 1u : 0u);
-          if (pi < sym.mono->concrete_params.size())
+          if (pi < sym.mono->concrete_params.size()) {
             ty = cg.type_lower.lower(sym.mono->concrete_params[pi]);
+            param_ctid = sym.mono->concrete_params[pi];
+          }
         }
       }
       if (!ty) {
         auto pt_r = tl.lower(fp.type);
         assert(pt_r && "could not lower param type");
+        param_ctid = *pt_r;
         ty = cg.type_lower.lower(*pt_r);
       }
       auto name = cg.interner.view(fp.name);
       auto *slot = create_entry_alloca(ty, name);
       define_local(fp.name, slot);
       builder.CreateStore(fn.getArg(i), slot);
+
+      if (cg.debug_info && di_sp) {
+        auto di_type = cg.make_di_type(param_ctid);
+        if (!di_type)
+          di_type = cg.dibuilder->createPointerType(
+              nullptr, fn.getParent()->getDataLayout().getPointerSizeInBits());
+        auto [line, col] =
+            cg.get_line_col(sym.module_idx, ir.nodes.span_s[sym.body]);
+        auto di_param = cg.dibuilder->createParameterVariable(
+            di_sp, cg.interner.view(fp.name), i + 1,
+            cg.get_di_file(sym.module_idx), line, di_type);
+
+        cg.dibuilder->insertDeclare(
+            slot, di_param, cg.dibuilder->createExpression(),
+            llvm::DILocation::get(fn.getContext(), line, col, di_sp),
+            builder.GetInsertBlock());
+      }
     }
 
     emit_block(sym.body);
@@ -129,6 +160,13 @@ struct FuncEmitter {
     return bb && bb->getTerminator() != nullptr;
   }
 
+  void set_debug_loc(NodeId n) {
+    if (!cg.debug_info || !di_sp) return;
+    auto [line, col] = cg.get_line_col(sym.module_idx, ir.nodes.span_s[n]);
+    builder.SetCurrentDebugLocation(
+        llvm::DILocation::get(fn.getContext(), line, col, di_sp));
+  }
+
   void emit_block(NodeId n) {
     assert(ir.nodes.kind[n] == NodeKind::Block &&
            "calling emit_block on non-block node");
@@ -139,6 +177,7 @@ struct FuncEmitter {
   }
 
   void emit_stmt(NodeId n) {
+    set_debug_loc(n);
     switch (ir.nodes.kind[n]) {
     case NodeKind::ConstStmt:
     case NodeKind::VarStmt: emit_const(n); break;
@@ -181,6 +220,25 @@ struct FuncEmitter {
     auto *slot = create_entry_alloca(ty, cg.interner.view(var_name));
     if (init_nid != 0) builder.CreateStore(emit_expr(init_nid), slot);
     define_local(var_name, slot);
+
+    if (cg.debug_info && di_sp) {
+      auto di_type = cg.make_di_type(ctid);
+      if (!di_type)
+        di_type = cg.dibuilder->createPointerType(
+            nullptr, fn.getParent()->getDataLayout().getPointerSizeInBits());
+
+      auto [line, col] = cg.get_line_col(sym.module_idx, ir.nodes.span_s[n]);
+
+      auto di_var = cg.dibuilder->createAutoVariable(
+          di_sp, cg.interner.view(var_name), cg.get_di_file(sym.module_idx),
+          line, di_type,
+          /*AlwaysPreserve=*/true);
+
+      cg.dibuilder->insertDeclare(
+          slot, di_var, cg.dibuilder->createExpression(),
+          llvm::DILocation::get(fn.getContext(), line, col, di_sp),
+          builder.GetInsertBlock());
+    }
   }
 
   void emit_assign(NodeId n) {
@@ -457,12 +515,9 @@ struct FuncEmitter {
       return fp     ? builder.CreateFRem(lv, rv)
              : sign ? builder.CreateSRem(lv, rv)
                     : builder.CreateURem(lv, rv);
-    case TokenKind::Ampersand:
-      return builder.CreateAnd(lv, rv);
-    case TokenKind::Pipe:
-      return builder.CreateOr(lv, rv);
-    case TokenKind::Caret:
-      return builder.CreateXor(lv, rv);
+    case TokenKind::Ampersand: return builder.CreateAnd(lv, rv);
+    case TokenKind::Pipe: return builder.CreateOr(lv, rv);
+    case TokenKind::Caret: return builder.CreateXor(lv, rv);
     case TokenKind::EqualEqual:
       return fp ? builder.CreateFCmpOEQ(lv, rv) : builder.CreateICmpEQ(lv, rv);
     case TokenKind::BangEqual:
@@ -491,10 +546,14 @@ struct FuncEmitter {
   static i32 vec_mat_field_index(std::string_view s) {
     if (s.size() == 1) {
       switch (s[0]) {
-      case 'x': case 'r': return 0;
-      case 'y': case 'g': return 1;
-      case 'z': case 'b': return 2;
-      case 'w': case 'a': return 3;
+      case 'x':
+      case 'r': return 0;
+      case 'y':
+      case 'g': return 1;
+      case 'z':
+      case 'b': return 2;
+      case 'w':
+      case 'a': return 3;
       default: return -1;
       }
     }
@@ -505,8 +564,7 @@ struct FuncEmitter {
 
   // vec * scalar: splat scalar to vector width, then element-wise op.
   llvm::Value *emit_vec_scalar_op(TokenKind op, llvm::Value *vec,
-                                  llvm::Value *scalar, u32 n,
-                                  bool vec_is_lhs) {
+                                  llvm::Value *scalar, u32 n, bool vec_is_lhs) {
     auto *vty = llvm::cast<llvm::FixedVectorType>(vec->getType());
     if (scalar->getType() != vty->getElementType())
       scalar = builder.CreateFPTrunc(scalar, vty->getElementType());
@@ -516,16 +574,42 @@ struct FuncEmitter {
     return emit_arith_op(op, a, bv, true, false);
   }
 
-  // mat * vec: column-major matrix-vector multiply.
-  // mat is [N x <N x T>], vec is <N x T>. result is <N x T>.
-  llvm::Value *emit_mat_mul_vec(llvm::Value *mat, llvm::Value *vec, u32 n) {
+  // mat<T,N,M> * vec<T,N>: column-major matrix-vector multiply.
+  // mat is [N x <M x T>], vec is <N x T>. result is <M x T>.
+  // result = sum over i in 0..cols of (col[i] * vec[i]).
+  llvm::Value *emit_mat_mul_vec(llvm::Value *mat, llvm::Value *vec, u32 cols) {
+    auto *col0 = builder.CreateExtractValue(mat, 0u);
+    u32 rows = llvm::cast<llvm::FixedVectorType>(col0->getType())->getNumElements();
     llvm::Value *result = nullptr;
-    for (u32 i = 0; i < n; ++i) {
+    for (u32 i = 0; i < cols; ++i) {
       auto *col = builder.CreateExtractValue(mat, i);
       auto *vi = builder.CreateExtractElement(vec, i);
-      auto *splat = builder.CreateVectorSplat(n, vi);
+      auto *splat = builder.CreateVectorSplat(rows, vi);
       auto *term = builder.CreateFMul(col, splat);
       result = result ? builder.CreateFAdd(result, term) : term;
+    }
+    return result;
+  }
+
+  // vec * mat: row-major vector-matrix multiply.
+  // mat is [N x <N x T>], vec is <N x T>. result is <N x T> (row vector).
+  llvm::Value *emit_vec_mul_mat(llvm::Value *vec, llvm::Value *mat, u32 cols) {
+    u32 rows =
+        llvm::cast<llvm::FixedVectorType>(
+            llvm::cast<llvm::ArrayType>(mat->getType())->getElementType())
+            ->getNumElements();
+    auto *col0 = builder.CreateExtractValue(mat, 0u);
+    auto *elem_ty =
+        llvm::cast<llvm::FixedVectorType>(col0->getType())->getElementType();
+    auto *result_ty = llvm::FixedVectorType::get(elem_ty, cols);
+    llvm::Value *result = llvm::UndefValue::get(result_ty);
+    for (u32 c = 0; c < cols; ++c) {
+      auto *col = builder.CreateExtractValue(mat, c);
+      auto *prod = builder.CreateFMul(vec, col);
+      auto *dot = builder.CreateExtractElement(prod, 0ul);
+      for (u32 r = 1; r < rows; ++r)
+        dot = builder.CreateFAdd(dot, builder.CreateExtractElement(prod, r));
+      result = builder.CreateInsertElement(result, dot, c);
     }
     return result;
   }
@@ -556,8 +640,10 @@ struct FuncEmitter {
     llvm::Value *lv = emit_expr(ir.nodes.b[n]);
     llvm::Value *rv = emit_expr(ir.nodes.c[n]);
 
-    const CType &lct = cg.sema.types.types[bsema.node_type[ir.nodes.b[n]].concrete];
-    const CType &rct = cg.sema.types.types[bsema.node_type[ir.nodes.c[n]].concrete];
+    const CType &lct =
+        cg.sema.types.types[bsema.node_type[ir.nodes.b[n]].concrete];
+    const CType &rct =
+        cg.sema.types.types[bsema.node_type[ir.nodes.c[n]].concrete];
 
     // vec op scalar / scalar op vec (neither side is mat)
     if (lct.kind == CTypeKind::Vec && rct.kind != CTypeKind::Vec &&
@@ -567,16 +653,23 @@ struct FuncEmitter {
         lct.kind != CTypeKind::Mat)
       return emit_vec_scalar_op(op, rv, lv, rct.count, false);
 
+    // vec * mat
+    if (lct.kind == CTypeKind::Vec && rct.kind == CTypeKind::Mat &&
+        op == TokenKind::Star)
+      return emit_vec_mul_mat(lv, rv, rct.count);
+
     // mat * vec
     if (lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Vec &&
         op == TokenKind::Star)
       return emit_mat_mul_vec(lv, rv, lct.count);
 
-    // mat * mat
+    // mat<T,N,M> * mat<T,P,N> → mat<T,P,M>
     if (lct.kind == CTypeKind::Mat && rct.kind == CTypeKind::Mat &&
         op == TokenKind::Star) {
-      llvm::Value *result = llvm::UndefValue::get(lv->getType());
-      for (u32 i = 0; i < lct.count; ++i) {
+      CTypeId result_ctid = bsema.node_type[n].concrete;
+      llvm::Type *result_ty = cg.type_lower.lower(result_ctid);
+      llvm::Value *result = llvm::UndefValue::get(result_ty);
+      for (u32 i = 0; i < rct.count; ++i) {
         auto *col = builder.CreateExtractValue(rv, i);
         result = builder.CreateInsertValue(
             result, emit_mat_mul_vec(lv, col, lct.count), i);
@@ -584,7 +677,8 @@ struct FuncEmitter {
       return result;
     }
 
-    // vec op vec: LLVM vector arith (fadd/fmul/etc work natively on <N x float>)
+    // vec op vec: LLVM vector arith (fadd/fmul/etc work natively on <N x
+    // float>)
     bool fp = is_float(lct.kind) || lct.kind == CTypeKind::Vec;
     return emit_arith_op(op, lv, rv, fp, is_signed(lct.kind));
   }
@@ -751,8 +845,7 @@ struct FuncEmitter {
       // if base is already a reference (&T / &mut T) its value is the pointer;
       // otherwise take the address of the place.
       CTypeId base_ctid = bsema.node_type[base_nid].concrete;
-      bool base_is_ref =
-          cg.sema.types.types[base_ctid].kind == CTypeKind::Ref;
+      bool base_is_ref = cg.sema.types.types[base_ctid].kind == CTypeKind::Ref;
       args.push_back(base_is_ref ? emit_expr(base_nid) : emit_place(base_nid));
     }
 
@@ -778,7 +871,7 @@ struct FuncEmitter {
         const FuncParam &fp = callee_mod_data.params[ps + ai];
         assert(fp.default_init != 0 && "missing argument with no default");
         args.push_back(emit_default(fp.default_init, callee_ir, callee_sym,
-                                    ft->getParamType(ai)));
+                                    n, ft->getParamType(ai)));
       }
     }
 
@@ -881,9 +974,11 @@ struct FuncEmitter {
         i32 idx = vec_mat_field_index(cg.interner.view(fname));
         llvm::Value *val = emit_expr(val_nid);
         if (ck == CTypeKind::Vec)
-          result = builder.CreateInsertElement(result, val, static_cast<u32>(idx));
+          result =
+              builder.CreateInsertElement(result, val, static_cast<u32>(idx));
         else
-          result = builder.CreateInsertValue(result, val, static_cast<u32>(idx));
+          result =
+              builder.CreateInsertValue(result, val, static_cast<u32>(idx));
       }
       return result;
     }
@@ -1334,13 +1429,17 @@ struct FuncEmitter {
   }
 
   // emit a default-parameter constant expression from the callee's BodyIR.
+  // call_nid: the Call node in the caller's IR (used for @site_id defaults).
   // expected_ty: the LLVM type of the corresponding parameter (for IntLit).
   llvm::Value *emit_default(NodeId n, const BodyIR &src_ir, const Symbol &csym,
+                            NodeId call_nid,
                             llvm::Type *expected_ty = nullptr) {
     switch (src_ir.nodes.kind[n]) {
     case NodeKind::SiteId: {
-      const LoadedModule &lm = cg.modules[csym.module_idx];
-      u32 site_idx = cg.alloc_site(lm.src, src_ir.nodes.span_s[n], lm.rel_path);
+      // evaluate at the call site, not the callee's definition site.
+      const LoadedModule &lm = cg.modules[sym.module_idx];
+      u32 site_idx = cg.alloc_site(lm.src, ir.nodes.span_s[call_nid],
+                                   lm.rel_path);
       return llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()),
                                     site_idx);
     }
@@ -1376,6 +1475,23 @@ struct FuncEmitter {
     case NodeKind::BoolLit: {
       return llvm::ConstantInt::getBool(fn.getContext(),
                                         src_ir.nodes.a[n] != 0);
+    }
+    case NodeKind::Path: {
+      // enum variant default: e.g. Origin::TopLeft
+      u32 ls = src_ir.nodes.b[n], cnt = src_ir.nodes.c[n];
+      if (cnt >= 2) {
+        SymId type_seg = static_cast<SymId>(src_ir.nodes.list[ls]);
+        SymId variant_seg = static_cast<SymId>(src_ir.nodes.list[ls + cnt - 1]);
+        SymbolId sid = cg.sema.syms.lookup(csym.module_idx, type_seg);
+        if (sid != kInvalidSymbol) {
+          const Symbol &s = cg.sema.syms.get(sid);
+          if (s.aliased_sym != 0)
+            return emit_enum_variant(cg.sema.syms.get(s.aliased_sym), variant_seg);
+          return emit_enum_variant(s, variant_seg);
+        }
+      }
+      assert(false && "unsupported Path default expression");
+      return nullptr;
     }
     default:
       assert(false && "unsupported default expression kind");
@@ -1446,7 +1562,15 @@ struct FuncEmitter {
     case NodeKind::Deref:
       // dereferencing: the pointer value is the place address.
       return emit_expr(ir.nodes.a[n]);
-    default: assert(false && "not a valid place expression"); return nullptr;
+    default: {
+      // non-lvalue expression (e.g. function call result): spill to a
+      // temporary alloca so we can take its address for method calls on
+      // temporaries like Foo::make().bar().
+      llvm::Value *val = emit_expr(n);
+      auto *slot = create_entry_alloca(val->getType(), "tmp.place");
+      builder.CreateStore(val, slot);
+      return slot;
+    }
     }
   }
 
@@ -1474,9 +1598,23 @@ struct FuncEmitter {
       auto fname = cg.interner.view(field_name);
       i32 idx = vec_mat_field_index(fname);
       llvm::Type *ty = cg.type_lower.lower(struct_ctid);
-      auto *zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()), 0);
-      auto *idx_v = llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()), idx);
+      auto *zero =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()), 0);
+      auto *idx_v =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()), idx);
       return builder.CreateGEP(ty, base_ptr, {zero, idx_v});
+    }
+
+    // builtin vec field: pointer to the i-th element in the vector's memory.
+    // vectors are stored contiguously so element i is at base + i * elem_size.
+    if (sk == CTypeKind::Vec) {
+      auto fname = cg.interner.view(field_name);
+      i32 idx = vec_mat_field_index(fname);
+      auto *vty = llvm::cast<llvm::FixedVectorType>(cg.type_lower.lower(struct_ctid));
+      llvm::Type *elem_ty = vty->getElementType();
+      auto *idx_v =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(fn.getContext()), idx);
+      return builder.CreateGEP(elem_ty, base_ptr, {idx_v});
     }
 
     if (cg.sema.types.types[struct_ctid].kind == CTypeKind::Slice) {
@@ -1577,17 +1715,19 @@ struct FuncEmitter {
   // widen or truncate val to expected if both are integer types; no-op
   // otherwise.
   // build a { ptr, i64 } slice from a pointer to an array. arr_ptr is an alloca
-  // (or any pointer); arr_ty is the LLVM array type [N x T]. the len field is N.
-  llvm::Value *array_ptr_to_slice(llvm::Value *arr_ptr, llvm::ArrayType *arr_ty) {
+  // (or any pointer); arr_ty is the LLVM array type [N x T]. the len field is
+  // N.
+  llvm::Value *array_ptr_to_slice(llvm::Value *arr_ptr,
+                                  llvm::ArrayType *arr_ty) {
     auto &ctx = fn.getContext();
     llvm::Type *slice_ty = llvm::StructType::get(
-        ctx, {llvm::PointerType::getUnqual(ctx),
-              llvm::Type::getInt64Ty(ctx)});
+        ctx, {llvm::PointerType::getUnqual(ctx), llvm::Type::getInt64Ty(ctx)});
     llvm::Value *s = llvm::UndefValue::get(slice_ty);
     s = builder.CreateInsertValue(s, arr_ptr, 0);
     s = builder.CreateInsertValue(
-        s, llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx),
-                                  arr_ty->getNumElements()),
+        s,
+        llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx),
+                               arr_ty->getNumElements()),
         1);
     return s;
   }

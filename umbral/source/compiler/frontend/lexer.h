@@ -256,7 +256,7 @@ private:
 
   // try to parse a type suffix starting at current pos; returns None if no
   // valid suffix is found (pos is not advanced in that case).
-  LitSuffix lex_lit_suffix(bool is_float) {
+  LitSuffix lex_lit_suffix() {
     // valid suffixes: u8 u16 u32 u64 i8 i16 i32 i64 f32 f64
     char c = peek();
     if (c != 'u' && c != 'i' && c != 'f') return LitSuffix::None;
@@ -267,20 +267,16 @@ private:
     while (!eof() && is_digit(peek())) advance();
     std::string_view sv = src.substr(start_pos, pos - start_pos);
 
-    // only 'f' suffixes are valid on floats; only 'u'/'i' on ints
-    if (is_float && c == 'f') {
-      if (sv == "f32") return LitSuffix::F32;
-      if (sv == "f64") return LitSuffix::F64;
-    } else if (!is_float && c != 'f') {
-      if (sv == "u8")  return LitSuffix::U8;
-      if (sv == "u16") return LitSuffix::U16;
-      if (sv == "u32") return LitSuffix::U32;
-      if (sv == "u64") return LitSuffix::U64;
-      if (sv == "i8")  return LitSuffix::I8;
-      if (sv == "i16") return LitSuffix::I16;
-      if (sv == "i32") return LitSuffix::I32;
-      if (sv == "i64") return LitSuffix::I64;
-    }
+    if (sv == "f32") return LitSuffix::F32;
+    if (sv == "f64") return LitSuffix::F64;
+    if (sv == "u8")  return LitSuffix::U8;
+    if (sv == "u16") return LitSuffix::U16;
+    if (sv == "u32") return LitSuffix::U32;
+    if (sv == "u64") return LitSuffix::U64;
+    if (sv == "i8")  return LitSuffix::I8;
+    if (sv == "i16") return LitSuffix::I16;
+    if (sv == "i32") return LitSuffix::I32;
+    if (sv == "i64") return LitSuffix::I64;
 
     // unrecognized — backtrack
     pos = start_pos;
@@ -308,7 +304,7 @@ private:
         value = value * 16 + d;
         advance();
       }
-      LitSuffix sf = lex_lit_suffix(false);
+      LitSuffix sf = lex_lit_suffix();
       return {TokenKind::Int, {start, static_cast<u32>(pos)}, value, sf};
     }
 
@@ -326,7 +322,7 @@ private:
         value = value * 2 + static_cast<u32>(peek() - '0');
         advance();
       }
-      LitSuffix sf = lex_lit_suffix(false);
+      LitSuffix sf = lex_lit_suffix();
       return {TokenKind::Int, {start, static_cast<u32>(pos)}, value, sf};
     }
 
@@ -356,11 +352,13 @@ private:
                   "expected digit in float exponent"};
         while (!eof() && (is_digit(peek()) || peek() == '_')) advance();
       }
-      LitSuffix sf = lex_lit_suffix(/*is_float=*/true);
+      LitSuffix sf = lex_lit_suffix();
       return {TokenKind::Float, {start, static_cast<u32>(pos)}, 0, sf};
     }
 
-    LitSuffix sf = lex_lit_suffix(false);
+    LitSuffix sf = lex_lit_suffix();
+    if (sf == LitSuffix::F32 || sf == LitSuffix::F64)
+      return {TokenKind::Float, {start, static_cast<u32>(pos)}, 0, sf};
     return {TokenKind::Int, {start, static_cast<u32>(pos)}, value, sf};
   }
 

@@ -1,39 +1,45 @@
-#include <cstdio>
-#include <string>
-
 #include <compiler/driver/driver.h>
+#include <llvm/Support/CommandLine.h>
+
+namespace cl = llvm::cl;
+
+static cl::opt<std::string> InputFile(cl::Positional, cl::desc("<file>.um"),
+                                      cl::Required);
+static cl::opt<std::string> OutputPath("o", cl::desc("output path"),
+                                       cl::value_desc("file"),
+                                       cl::init("a.out"));
+static cl::opt<std::string> RootDir("root", cl::desc("module root directory"),
+                                    cl::value_desc("dir"));
+static cl::opt<std::string> ShaderOut("shader-out",
+                                      cl::desc("emit .umsh shaders to <dir>"),
+                                      cl::value_desc("dir"));
+static cl::opt<std::string> AssetDir("asset-dir",
+                                     cl::desc("include assets from <dir>"),
+                                     cl::value_desc("dir"));
+static cl::opt<bool> DumpIR("dump-ir", cl::desc("print LLVM IR and stop"));
+static cl::opt<bool> DumpShaderMLIR("dump-shader-mlir",
+                                    cl::desc("print um.shader MLIR and stop"));
+static cl::opt<bool> DebugInfo("g", cl::desc("emit DWARF debug info"));
+
+static cl::opt<unsigned> OptimizationLevel(
+    "O", cl::desc("optimization level (0-3)"), cl::Prefix, cl::init(0));
 
 int main(int argc, char **argv) {
-  if (argc < 2) {
-    std::fprintf(stderr,
-                 "usage: uc <file>.um [-o <output>] [--root <dir>] "
-                 "[--asset-dir <dir>] [--dump-ir] "
-                 "[--dump-shader-mlir] [--shader-out <dir>]\n");
-    return 1;
-  }
+  cl::ParseCommandLineOptions(argc, argv, "umbral compiler\n");
 
-  std::string src = argv[1];
   DriverOptions opts;
-  for (int i = 2; i < argc; ++i) {
-    std::string flag = argv[i];
-    if (flag == "-o" && i + 1 < argc) {
-      opts.out_path = argv[++i];
-      opts.has_out = true;
-    } else if (flag == "--root" && i + 1 < argc) {
-      opts.root_override = argv[++i];
-    } else if (flag == "--dump-ir") {
-      opts.dump_ir = true;
-    } else if (flag == "--dump-shader-mlir") {
-      opts.dump_shader_mlir = true;
-    } else if (flag == "--shader-out" && i + 1 < argc) {
-      opts.shader_out = argv[++i];
-    } else if (flag == "--asset-dir" && i + 1 < argc) {
-      opts.asset_dir = argv[++i];
-    }
-  }
+  opts.out_path = OutputPath;
+  opts.has_out = OutputPath.getNumOccurrences() > 0;
+  opts.root_override = RootDir;
+  opts.shader_out = ShaderOut;
+  opts.asset_dir = AssetDir;
+  opts.dump_ir = DumpIR;
+  opts.dump_shader_mlir = DumpShaderMLIR;
+  opts.debug_info = DebugInfo;
+  opts.opt_level = std::min(OptimizationLevel.getValue(), 3u);
 
   Driver driver;
-  auto result = driver.run(src, opts);
+  auto result = driver.run(InputFile, opts);
   if (!result.ok) {
     std::fprintf(stderr, "uc: %s\n", result.error.c_str());
     return 1;

@@ -1,0 +1,16 @@
+# RUN: %uc %s -g --dump-ir | %FileCheck %s
+
+# -g must produce a DICompileUnit and DISubprograms attached to each function.
+
+const add := fn(a: i32, b: i32) -> i32 {
+  return a + b;
+}
+
+const main := fn() -> void {
+  const x := add(1, 2);
+}
+
+# CHECK: !DICompileUnit(language: DW_LANG_C
+# CHECK: !DIFile(filename: "00_compile_unit.um"
+# CHECK: !DISubprogram
+# CHECK: !DISubprogram(name: "main"

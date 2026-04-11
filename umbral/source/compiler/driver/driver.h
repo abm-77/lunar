@@ -42,6 +42,8 @@ struct DriverOptions {
   bool has_out = false;          // true when -o was explicitly given
   bool dump_ir = false;          // print LLVM IR to stdout and stop
   bool dump_shader_mlir = false; // print um.shader MLIR to stdout and stop
+  bool debug_info = false;       // emit DWARF debug info (-g)
+  u32 opt_level = 0;            // 0 = -O0, 1 = -O1, 2 = -O2, 3 = -O3
 };
 
 class Driver {
@@ -144,7 +146,9 @@ inline DriverResult Driver::run(const std::string &src_path,
   }
 
   // LLVM codegen
-  auto llvm_ir = run_codegen(*sema_r, modules, interner, entry.stem().string());
+  auto llvm_ir = run_codegen(*sema_r, modules, interner,
+                             entry.stem().string(), opts.debug_info,
+                             opts.opt_level);
   if (!llvm_ir) {
     const std::string &entry_src = modules.back().src;
     return {false, format_error(llvm_ir.error(), entry_src, src_path)};
@@ -159,8 +163,8 @@ inline DriverResult Driver::run(const std::string &src_path,
   // emit native object file
   auto obj_path = std::filesystem::temp_directory_path() /
                   ("umbral_" + std::to_string(::getpid()) + ".o");
-  auto obj_r =
-      emit_object(*llvm_ir->context, *llvm_ir->module, obj_path.string());
+  auto obj_r = emit_object(*llvm_ir->context, *llvm_ir->module,
+                           obj_path.string(), opts.opt_level);
   if (!obj_r) return {false, "codegen: " + obj_r.error().msg};
 
   // write embedded libraries to temp files

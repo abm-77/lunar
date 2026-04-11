@@ -55,7 +55,7 @@ enum class NodeKind : u16 {
   Deref,      // a = expr
   TupleLit,   // b = elems_start, c = elems_count
   ArrayLit,   // a = index into BodyIR::array_lits
-  StructInit, // a = type SymId, b = fields_start, c = fields_count (fields are
+  StructInit, // a = TypeId, b = fields_start, c = fields_count (fields are
               //   pairs [SymId, NodeId] in list pool)
   StructExpr, // b = fields_start, c = fields_count (fields are
               //   pairs [SymId, NodeId] in list pool)

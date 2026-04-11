@@ -1,6 +1,4 @@
 // asset linker: bundles processed assets into a .umpack archive.
-//   --pack <out.umpack> -- bundle all input files into a .umpack
-//   --compress          -- LZ4-compress each entry when smaller (default for decoded assets)
 // image files (.png/.jpg/.jpeg/.bmp) are decoded to RGBA8 at pack time.
 // audio files (.wav/.ogg) are decoded to float32 stereo PCM at pack time.
 // all other files are stored as raw bytes.
@@ -11,6 +9,18 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+#include <llvm/Support/CommandLine.h>
+
+namespace cl = llvm::cl;
+
+static cl::opt<std::string> PackOut("pack", cl::desc("output .umpack path"),
+                                    cl::value_desc("file"), cl::Required);
+static cl::opt<bool> Compress("compress",
+                              cl::desc("LZ4-compress each entry"));
+static cl::list<std::string> InputFiles(cl::Positional,
+                                        cl::desc("<file>..."),
+                                        cl::OneOrMore);
 
 static bool ends_with(const char *s, const char *suffix) {
     size_t sl = strlen(s), xl = strlen(suffix);
@@ -44,26 +54,7 @@ static std::vector<uint8_t> read_file(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    const char *pack_out = nullptr;
-    int compress = 0;
-    std::vector<const char *> inputs;
-
-    for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--pack") && i + 1 < argc)
-            pack_out = argv[++i];
-        else if (!strcmp(argv[i], "--compress"))
-            compress = 1;
-        else
-            inputs.push_back(argv[i]);
-    }
-
-    if (inputs.empty() || !pack_out) {
-        fprintf(stderr,
-                "usage: ul --pack <out.umpack> [--compress] <file>...\n");
-        return 1;
-    }
-
-    // compression is opt-in via --compress for now
+    cl::ParseCommandLineOptions(argc, argv, "umbral asset linker\n");
 
     // build pack_input_t entries, decoding images and audio along the way.
     // decoded data is kept alive in these vectors until pack_build finishes.
@@ -72,9 +63,10 @@ int main(int argc, char **argv) {
         pack_input_t input;
     };
     std::vector<DecodedEntry> decoded_entries;
-    decoded_entries.reserve(inputs.size());
+    decoded_entries.reserve(InputFiles.size());
 
-    for (const char *in : inputs) {
+    for (const auto &in_str : InputFiles) {
+        const char *in = in_str.c_str();
         DecodedEntry de;
         de.input.path = in;
         de.input.decoded_data = nullptr;
@@ -158,6 +150,7 @@ int main(int argc, char **argv) {
     pi.reserve(decoded_entries.size());
     for (auto &de : decoded_entries) pi.push_back(de.input);
 
-    return pack_build(pi.data(), (uint32_t)pi.size(), pack_out, compress) == 0
+    return pack_build(pi.data(), (uint32_t)pi.size(), PackOut.c_str(),
+                      Compress ? 1 : 0) == 0
                ? 0 : 1;
 }

@@ -1,0 +1,8 @@
+# RUN: not %uc %s 2>&1 | %FileCheck %s
+
+const main := fn() -> i32 {
+  const x := 3.0i32;
+  return 0;
+}
+
+# CHECK: error: integer type suffix on float literal

@@ -29,7 +29,7 @@ const main := fn() -> i32 {
         if (cmd.handle != 0) {
             # background quad behind the text
             qr.begin(cmd);
-            qr.draw(20.0, 130.0, 620.0, 230.0, dk_blue);
+            qr.draw(20.0, 130.0, 600.0, 100.0, dk_blue);
             qr.submit();
 
             # text on top
