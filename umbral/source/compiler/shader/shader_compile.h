@@ -42,6 +42,7 @@ struct UmshReflData {
 
 struct ShaderCompileOptions {
   std::string out_dir;
+  u32 opt_level = 0;
 };
 
 // full pipeline: BodyIR → um.shader MLIR → SPIR-V → .umsh files.
@@ -57,10 +58,8 @@ lower_to_mlir(mlir::MLIRContext &ctx, std::span<const LoadedModule> modules,
 
 bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
                      std::span<const LoadedModule> modules,
-                     const SemaResult &sema, Interner &interner);
-
-bool serialize_spirv_module(mlir::spirv::ModuleOp spirv_mod,
-                            llvm::SmallVectorImpl<uint32_t> &binary);
+                     const SemaResult &sema, Interner &interner,
+                     u32 opt_level = 0);
 
 std::unordered_map<std::string, std::vector<UmshStageData>>
 collect_spirv_stages(mlir::ModuleOp mlir_mod);

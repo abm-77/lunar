@@ -112,20 +112,6 @@ def DrawPacketOp : UmShader_Op<"draw_packet", [Pure]> {
   let assemblyFormat = "$draw_id attr-dict";
 }
 
-// TODO: replace with spirv.SampledImage once llvm/llvm-project#189891 lands.
-def CombineSampledImageOp : UmShader_Op<"combine_sampled_image", [Pure]> {
-  let summary = "combine image + sampler into a sampled image (SPIR-V OpSampledImage)";
-  let description = [{
-    Mirrors SPIR-V OpSampledImage (opcode 86). Takes an image loaded from
-    the textures_2d descriptor and a sampler loaded from the samplers
-    descriptor and produces a !spirv.sampled_image value suitable for
-    spirv.ImageSampleImplicitLod.
-  }];
-  let arguments = (ins AnyType:$image, AnyType:$sampler);
-  let results = (outs AnyType:$result);
-  let assemblyFormat = "$image `,` $sampler attr-dict `:` type($image) `,` type($sampler) `->` type($result)";
-}
-
 def DrawPacketFieldOp : UmShader_Op<"draw_packet_field", [Pure]> {
   let summary = "read a field from a draw packet by name";
   let arguments = (ins UmShader_DrawPacketType:$packet, StrAttr:$field_name);

@@ -157,7 +157,7 @@ struct FuncEmitter {
   // true if the current insert block ends with a terminator.
   bool has_terminator() const {
     auto *bb = builder.GetInsertBlock();
-    return bb && bb->getTerminator() != nullptr;
+    return bb && !bb->empty() && bb->back().isTerminator();
   }
 
   void set_debug_loc(NodeId n) {

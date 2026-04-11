@@ -32,6 +32,7 @@
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>
+#include <mlir/Transforms/Passes.h>
 
 #include <common/interner.h>
 #include <compiler/frontend/module.h>
@@ -336,7 +337,7 @@ struct SamplePattern : public mlir::OpConversionPattern<SampleOp> {
     // the texture operand is now a spirv.image type (after type conversion)
     auto img_ty = adaptor.getTexture().getType();
     auto sampled_img_ty = mlir::spirv::SampledImageType::get(img_ty);
-    auto combined = CombineSampledImageOp::create(rw, 
+    auto combined = mlir::spirv::SampledImageOp::create(rw,
         loc, sampled_img_ty, adaptor.getTexture(), adaptor.getSampler());
     auto sampled = mlir::spirv::ImageSampleImplicitLodOp::create(rw, 
         loc, vec4_ty, combined.getResult(), adaptor.getUv(),
@@ -737,9 +738,7 @@ build_lower_ctx(mlir::OpBuilder &b, mlir::Location loc,
     lctx.textures_2d_var = "textures_2d";
   }
   if (need_samp) {
-    // MLIR's SPIR-V dialect lacks OpTypeSampler; use i32 as a placeholder.
-    // the custom serialization pass emits the correct SPIR-V sampler type.
-    auto samp_elem_ty = mlir::IntegerType::get(&ctx, 32);
+    auto samp_elem_ty = mlir::spirv::SamplerType::get(&ctx);
     declare_descriptor_var(b, loc, spirv_mod, "samplers", samp_elem_ty,
                            mlir::spirv::StorageClass::UniformConstant, 1);
     lctx.samplers_var = "samplers";
@@ -774,7 +773,8 @@ build_lower_ctx(mlir::OpBuilder &b, mlir::Location loc,
 
 bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
                      std::span<const LoadedModule> modules,
-                     const SemaResult &sema, Interner &interner) {
+                     const SemaResult &sema, Interner &interner,
+                     u32 opt_level) {
   ctx.loadDialect<mlir::spirv::SPIRVDialect, mlir::cf::ControlFlowDialect>();
 
   // NOTE: SCF ops (scf.if, scf.while) are lowered directly to SPIR-V
@@ -844,13 +844,11 @@ bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
     // pass
     {
       auto target = mlir::SPIRVConversionTarget::get(target_env);
-      target->addLegalOp<CombineSampledImageOp>();
       target->addIllegalDialect<
           mlir::func::FuncDialect, mlir::arith::ArithDialect,
           mlir::cf::ControlFlowDialect, mlir::scf::SCFDialect,
           mlir::vector::VectorDialect, mlir::memref::MemRefDialect>();
       target->addIllegalDialect<UmShaderDialect>();
-      target->addLegalOp<CombineSampledImageOp>(); // survives to serialization
       mlir::SPIRVTypeConverter type_conv(target_env);
       // map our opaque types to their SPIR-V equivalents
       type_conv.addConversion([](TextureType t) -> mlir::Type {
@@ -862,10 +860,10 @@ bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
             mlir::spirv::ImageSamplerUseInfo::NeedSampler,
             mlir::spirv::ImageFormat::Unknown);
       });
-      type_conv.addConversion([](SamplerType t) -> mlir::Type {
-        // MLIR SPIR-V has no OpTypeSampler; use i32 as placeholder
-        return mlir::IntegerType::get(t.getContext(), 32);
-      });
+      type_conv.addConversion(
+          [](um::shader::SamplerType t) -> mlir::Type {
+            return mlir::spirv::SamplerType::get(t.getContext());
+          });
       type_conv.addConversion([](DrawPacketType t) -> mlir::Type {
         // draw packet pointer becomes an i32 (SSBO index placeholder)
         return mlir::IntegerType::get(t.getContext(), 32);
@@ -940,14 +938,41 @@ bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
                                         mlir::ArrayAttr::get(&ctx, iface_refs));
 
     if (stage == "fragment") {
-      mlir::spirv::ExecutionModeOp::create(b, 
+      mlir::spirv::ExecutionModeOp::create(b,
           loc, llvm::StringRef("main"),
           mlir::spirv::ExecutionMode::OriginUpperLeft,
           mlir::ArrayAttr::get(&ctx, {}));
     }
+
+    // add Flat decoration on integer IO variables.
+    // Vulkan requires Flat on integer varyings in both vertex output and
+    // fragment input. NonWritable on SSBOs is set at struct creation time.
+    spirv_mod.walk([&](mlir::spirv::GlobalVariableOp gv) {
+      if (gv->hasAttr("built_in")) return;
+      auto ptr_ty = mlir::cast<mlir::spirv::PointerType>(gv.getType());
+      auto sc = ptr_ty.getStorageClass();
+      auto pointee = ptr_ty.getPointeeType();
+      bool want_flat =
+          (stage == "fragment" && sc == mlir::spirv::StorageClass::Input) ||
+          (stage == "vertex" && sc == mlir::spirv::StorageClass::Output);
+      if (want_flat && mlir::isa<mlir::IntegerType>(pointee))
+        gv->setAttr("flat", b.getUnitAttr());
+    });
   }
 
   for (auto &hfn : helper_fns) hfn.erase();
+
+  // run optimization passes on each spirv.module when opt_level > 0.
+  // only CSE is safe here; the generic canonicalizer can introduce non-spirv
+  // ops inside spirv.module which violates the dialect verifier.
+  if (opt_level > 0) {
+    mlir::PassManager pm(&ctx);
+    pm.addNestedPass<mlir::spirv::ModuleOp>(mlir::createCSEPass());
+    if (mlir::failed(pm.run(mlir_mod))) {
+      fprintf(stderr, "shader_spirv_lower: optimization passes failed\n");
+      return false;
+    }
+  }
 
   return true;
 }

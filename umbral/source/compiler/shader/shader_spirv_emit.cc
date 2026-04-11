@@ -3,6 +3,7 @@
 #include "shader_compile.h"
 
 #include <mlir/Dialect/SPIRV/IR/SPIRVOps.h>
+#include <mlir/Target/SPIRV/Serialization.h>
 
 #include <cstdio>
 
@@ -28,7 +29,7 @@ collect_spirv_stages(mlir::ModuleOp mlir_mod) {
     std::string stage_str = stage_attr.getValue().str();
 
     llvm::SmallVector<uint32_t, 4096> words;
-    if (!serialize_spirv_module(spirv_mod, words)) {
+    if (mlir::spirv::serialize(spirv_mod, words).failed()) {
       fprintf(stderr, "collect_spirv_stages: serialization failed for %s.%s\n",
               shader_name.c_str(), stage_str.c_str());
       ok = false;

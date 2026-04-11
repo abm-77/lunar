@@ -126,7 +126,7 @@ inline DriverResult Driver::run(const std::string &src_path,
       }
     if (has_any) {
       if (!um::shader::shader_compile(modules, *sema_r, interner,
-                                      {opts.shader_out}))
+                                      {opts.shader_out, opts.opt_level}))
         return {false, "shader compilation failed"};
     }
     // pack .umsh files into an .umpack asset bundle

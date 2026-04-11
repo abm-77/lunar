@@ -181,7 +181,6 @@ set(UM_SHADER_DSL_SOURCES
   ${UM_SHADER_DIR}/um_shader_dialect.cc
   ${UM_SHADER_DIR}/shader_mlir.cc
   ${UM_SHADER_DIR}/shader_spirv_lower.cc
-  ${UM_SHADER_DIR}/shader_spirv_serialize.cc
   ${UM_SHADER_DIR}/shader_spirv_emit.cc
   ${UM_SHADER_DIR}/umrf_emit.cc
   ${UM_SHADER_DIR}/umsh_emit.cc

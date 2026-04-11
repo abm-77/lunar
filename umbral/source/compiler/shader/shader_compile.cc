@@ -24,7 +24,8 @@ bool shader_compile(std::span<const LoadedModule> modules,
   }
 
   // phase 2: um.shader → MLIR SPIR-V
-  if (!run_spirv_lower(ctx, mlir_mod.get(), modules, sema, interner)) {
+  if (!run_spirv_lower(ctx, mlir_mod.get(), modules, sema, interner,
+                       opts.opt_level)) {
     fprintf(stderr, "shader_compile: run_spirv_lower failed\n");
     return false;
   }
