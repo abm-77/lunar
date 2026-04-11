@@ -440,6 +440,7 @@ foreach(EXAMPLE_DIR ${EXAMPLE_DIRS})
       COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
       COMMAND $<TARGET_FILE:uc>
         ${EXAMPLE_DIR}/main.um
+        -O2
         --root ${CMAKE_SOURCE_DIR}/source/std
         --shader-out ${CMAKE_BINARY_DIR}/examples/${EXAMPLE_NAME}
         ${ASSET_DIR_ARG}

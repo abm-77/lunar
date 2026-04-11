@@ -63,7 +63,7 @@ import sys.gfx.assets;
 impl GfxConfig {
   const default := fn() -> GfxConfig {
     return GfxConfig {
-      frames_in_flight  = 2,
+      frames_in_flight  = 3,
       max_textures      = 4096,
       max_samplers      = 256,
       frame_arena_bytes = 67108864,

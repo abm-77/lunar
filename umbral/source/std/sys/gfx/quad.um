@@ -5,11 +5,6 @@ import sys.gfx.assets;
 import sys.asset;
 import math.types => math;
 
-@pub const Origin := enum {
-    TopLeft,
-    Center,
-}
-
 const QuadVertex := struct {
     pos: math::vec2,
     uv:  math::vec2,
@@ -86,8 +81,8 @@ const make_quad_data := fn(
 };
 
 # compute top-left corner from position, size, and origin.
-const origin_to_tl := fn(x: f32, y: f32, w: f32, h: f32, o: Origin) -> math::vec2 {
-    if (o == Origin::Center) {
+const origin_to_tl := fn(x: f32, y: f32, w: f32, h: f32, o: types::Origin) -> math::vec2 {
+    if (o == types::Origin::Center) {
         return math::vec2(x - w * 0.5, y - h * 0.5);
     }
     return math::vec2(x, y);
@@ -145,7 +140,7 @@ impl QuadRenderer {
 
     # draw a solid-color quad at (x,y) with size (w,h). origin defaults to top-left.
     const draw(&mut self, x: f32, y: f32, w: f32, h: f32,
-               color: math::vec4, origin: Origin = Origin::TopLeft) -> void {
+               color: math::vec4, origin: types::Origin = types::Origin::TopLeft) -> void {
         const tl := origin_to_tl(x, y, w, h, origin);
         const fa := gfx::frame_alloc(self.dev, @size_of(QuadData), 256u64);
         const ptr := @as(fa.ptr, &mut QuadData);
@@ -157,7 +152,7 @@ impl QuadRenderer {
     # draw a textured quad tinted by color. use white for no tint.
     const draw_textured(&mut self, x: f32, y: f32, w: f32, h: f32,
                         tex: types::Texture2d, color: math::vec4,
-                        origin: Origin = Origin::TopLeft) -> void {
+                        origin: types::Origin = types::Origin::TopLeft) -> void {
         const tl := origin_to_tl(x, y, w, h, origin);
         const fa := gfx::frame_alloc(self.dev, @size_of(QuadData), 256u64);
         const ptr := @as(fa.ptr, &mut QuadData);
@@ -170,7 +165,7 @@ impl QuadRenderer {
     const draw_textured_uv(&mut self, x: f32, y: f32, w: f32, h: f32,
                            uv_x0: f32, uv_y0: f32, uv_x1: f32, uv_y1: f32,
                            tex: types::Texture2d, color: math::vec4,
-                           origin: Origin = Origin::TopLeft) -> void {
+                           origin: types::Origin = types::Origin::TopLeft) -> void {
         const tl := origin_to_tl(x, y, w, h, origin);
         const fa := gfx::frame_alloc(self.dev, @size_of(QuadData), 256u64);
         const ptr := @as(fa.ptr, &mut QuadData);

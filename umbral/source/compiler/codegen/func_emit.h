@@ -1477,19 +1477,22 @@ struct FuncEmitter {
                                         src_ir.nodes.a[n] != 0);
     }
     case NodeKind::Path: {
-      // enum variant default: e.g. Origin::TopLeft
       u32 ls = src_ir.nodes.b[n], cnt = src_ir.nodes.c[n];
-      if (cnt >= 2) {
-        SymId type_seg = static_cast<SymId>(src_ir.nodes.list[ls]);
-        SymId variant_seg = static_cast<SymId>(src_ir.nodes.list[ls + cnt - 1]);
-        SymbolId sid = cg.sema.syms.lookup(csym.module_idx, type_seg);
-        if (sid != kInvalidSymbol) {
-          const Symbol &s = cg.sema.syms.get(sid);
-          if (s.aliased_sym != 0)
-            return emit_enum_variant(cg.sema.syms.get(s.aliased_sym), variant_seg);
-          return emit_enum_variant(s, variant_seg);
-        }
-      }
+      llvm::SmallVector<SymId, 4> segs;
+      for (u32 k = 0; k < cnt; ++k)
+        segs.push_back(static_cast<SymId>(src_ir.nodes.list[ls + k]));
+      auto rp = resolve_path(segs.data(), cnt, csym.module_idx,
+                              cg.modules[csym.module_idx].import_map,
+                              cg.sema.syms, cg.sema.methods, cg.sema.types,
+                              &cg.module_contexts, cg.interner);
+      if (rp.kind == ResolvedPath::EnumVariant)
+        return emit_enum_variant(cg.sema.syms.get(rp.symbol), rp.variant_name);
+      if (rp.kind == ResolvedPath::Func && cg.fn_map.count(rp.symbol))
+        return cg.fn_map[rp.symbol];
+      if (rp.kind == ResolvedPath::GlobalVar && cg.global_map.count(rp.symbol))
+        return builder.CreateLoad(
+            cg.global_map[rp.symbol]->getValueType(),
+            cg.global_map[rp.symbol]);
       assert(false && "unsupported Path default expression");
       return nullptr;
     }

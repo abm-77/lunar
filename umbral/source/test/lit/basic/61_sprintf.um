@@ -1,0 +1,13 @@
+# RUN: %uc %s --root %S/../../../std -o %t && %t | %FileCheck %s
+# CHECK: hello 42 world
+# CHECK: len=14
+
+import sys.io.fmt;
+
+const main := fn() -> i32 {
+  var buf: [64]u8;
+  const text := fmt::sprintf(buf, "hello {} world", [1]fmt::Arg{ fmt::arg_i32(42) });
+  fmt::println("{}", [1]fmt::Arg{ fmt::arg_bytes(text) });
+  fmt::println("len={}", [1]fmt::Arg{ fmt::arg_u64(text.len) });
+  return 0;
+}

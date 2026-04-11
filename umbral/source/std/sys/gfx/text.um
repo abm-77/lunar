@@ -157,12 +157,29 @@ impl TextRenderer {
         self.ds.reset(cmd, self.pipeline);
     }
 
-    # draw_text — render a string at pixel position (x, baseline_y) with the given color.
-    # x is the left edge; baseline_y is the typographic baseline.
-    # call between begin() and submit().
+    # measure the pixel width of a string without drawing it.
+    const measure_text(&mut self, text: []u8) -> f32 {
+        var w: f32 = 0.0;
+        for (const byte := @iter(text)) {
+            var gm: font::GlyphMetrics;
+            if (!self.atlas.glyph_metrics(@as(byte, u32), &mut gm)) {
+                w = w + 8.0;
+            }
+            w = w + gm.advance;
+        }
+        return w;
+    }
+
+    # draw_text — render a string at (x, baseline_y) with the given color.
+    # origin defaults to TopLeft; Center horizontally centers the text on x.
     const draw_text(&mut self, text: []u8, x: f32, baseline_y: f32,
-                         color: math::vec4) -> void {
-        var cursor_x: f32 = x;
+                    color: math::vec4,
+                    origin: types::Origin = types::Origin::TopLeft) -> void {
+        var start_x: f32 = x;
+        if (origin == types::Origin::Center) {
+            start_x = x - self.measure_text(text) * 0.5;
+        }
+        var cursor_x: f32 = start_x;
         for (const byte := @iter(text)) {
             const cp: u32 = @as(byte, u32);
             var gm: font::GlyphMetrics;

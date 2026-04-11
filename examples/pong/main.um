@@ -1,11 +1,13 @@
 import core.random;
 import sys.asset;
 import sys.gfx;
+import sys.gfx.types;
 import sys.gfx.quad;
 import sys.gfx.text;
 import sys.input;
 import sys.time;
 import sys.window;
+import sys.io.fmt;
 import math.types => math;
 
 # screen
@@ -56,6 +58,9 @@ const App := struct {
   ball_pos: math::vec2,
   ball_vel: math::vec2,
 
+  player_score: i32,
+  opp_score: i32,
+
   rng: random::Random,
 }
 
@@ -105,10 +110,18 @@ impl App {
     if (cmd.handle == 0) { return; }
 
     self.qr.begin(cmd);
-    self.qr.draw(PADDLE_MARGIN, self.player_y, PADDLE_W, PADDLE_H, WHITE, quad::Origin::Center);
-    self.qr.draw(SCREEN_W - PADDLE_MARGIN, self.opp_y, PADDLE_W, PADDLE_H, WHITE, quad::Origin::Center);
-    self.qr.draw(self.ball_pos.x, self.ball_pos.y, BALL_SIZE, BALL_SIZE, WHITE, quad::Origin::Center);
+    self.qr.draw(PADDLE_MARGIN, self.player_y, PADDLE_W, PADDLE_H, WHITE, types::Origin::Center);
+    self.qr.draw(SCREEN_W - PADDLE_MARGIN, self.opp_y, PADDLE_W, PADDLE_H, WHITE, types::Origin::Center);
+    self.qr.draw(self.ball_pos.x, self.ball_pos.y, BALL_SIZE, BALL_SIZE, WHITE, types::Origin::Center);
     self.qr.submit();
+
+    var score_buf: [32]u8;
+    const score_text := fmt::sprintf(score_buf, "{} / {}", [2]fmt::Arg{
+      fmt::arg_i32(self.player_score), fmt::arg_i32(self.opp_score)
+    });
+    self.tr.begin(cmd);
+    self.tr.draw_text(score_text, SCREEN_W * 0.5, 60.0, WHITE, types::Origin::Center);
+    self.tr.submit();
 
     gfx::end_frame(self.device, cmd);
   }
@@ -173,7 +186,14 @@ impl App {
     }
 
     # score: ball went past a paddle — reset
-    if (self.ball_pos.x < 0f32 || self.ball_pos.x > SCREEN_W) {
+    if (self.ball_pos.x < 0f32) {
+      self.opp_score = self.opp_score + 1;
+      self.ball_pos = math::vec2(SCREEN_W * 0.5, SCREEN_H * 0.5);
+      self.ball_vel = random_ball_dir(&mut self.rng);
+      self.opp_cur_max = OPP_MAX_VEL;
+    }
+    if (self.ball_pos.x > SCREEN_W) {
+      self.player_score = self.player_score + 1;
       self.ball_pos = math::vec2(SCREEN_W * 0.5, SCREEN_H * 0.5);
       self.ball_vel = random_ball_dir(&mut self.rng);
       self.opp_cur_max = OPP_MAX_VEL;
@@ -186,7 +206,8 @@ impl App {
       input::begin_frame(&self.window);
 
       const now := time::Instant::now();
-      const dt := now.elapsed_since(self.last_time).as_secs_f32();
+      const raw_dt := now.elapsed_since(self.last_time).as_secs_f32();
+      const dt := math::minf(raw_dt, 0.05);
       self.last_time = now;
 
       self.tick_player(dt);

@@ -1,4 +1,5 @@
 @extern const rt_fmt_print_line : fn([]u8, []Arg) -> void;
+@extern const rt_fmt_sprintf : fn(buf: []u8, fmt: []u8, args: []Arg) -> []u8;
 
 @pub const ArgTag := enum {
   # store in a
@@ -65,4 +66,9 @@
 
 @pub const arg_bytes := fn(x: []u8) -> Arg {
   return Arg { tag = ArgTag::Bytes, a = @as(x.data, u64), b = @as(x.len, u64) };
+}
+
+# format into a caller-provided buffer. returns a slice of the written portion.
+@pub const sprintf := fn(buf: []u8, fmt_str: []u8, args: []Arg) -> []u8 {
+  return rt_fmt_sprintf(buf, fmt_str, args);
 }

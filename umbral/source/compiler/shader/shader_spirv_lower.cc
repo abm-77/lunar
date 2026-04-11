@@ -962,11 +962,9 @@ bool run_spirv_lower(mlir::MLIRContext &ctx, mlir::ModuleOp mlir_mod,
 
   for (auto &hfn : helper_fns) hfn.erase();
 
-  // run optimization passes on each spirv.module when opt_level > 0.
-  // only CSE is safe here; the generic canonicalizer can introduce non-spirv
-  // ops inside spirv.module which violates the dialect verifier.
   if (opt_level > 0) {
     mlir::PassManager pm(&ctx);
+    pm.addNestedPass<mlir::spirv::ModuleOp>(mlir::createCanonicalizerPass());
     pm.addNestedPass<mlir::spirv::ModuleOp>(mlir::createCSEPass());
     if (mlir::failed(pm.run(mlir_mod))) {
       fprintf(stderr, "shader_spirv_lower: optimization passes failed\n");
