@@ -364,7 +364,6 @@ add_executable(ul
   ./source/tools/ul/main.cc
   ./source/tools/ul/pack.cc
   ./source/tools/ul/decode.cc
-  ./source/tools/ul/decode_font.cc
 )
 target_include_directories(ul PRIVATE
   ${LLVM_INCLUDE_DIRS}
@@ -391,7 +390,7 @@ target_link_libraries(shader_mlir_tests PRIVATE GTest::gtest_main ${LLVM_LIBS} $
 gtest_discover_tests(shader_mlir_tests)
 
 add_executable(shader_pack_tests
-  ./source/tools/ul/shader_pack.cc
+  ./source/tools/ul/pack.cc
   ${UNIT_TEST_DIR}/shader_pack_test.cc
 )
 target_include_directories(shader_pack_tests PRIVATE
@@ -399,7 +398,7 @@ target_include_directories(shader_pack_tests PRIVATE
   ./source/tools/ul
   ./source          # runtime/gfx/umshader.h
 )
-target_link_libraries(shader_pack_tests PRIVATE GTest::gtest_main)
+target_link_libraries(shader_pack_tests PRIVATE GTest::gtest_main lz4_static)
 gtest_discover_tests(shader_pack_tests)
 
 # lit functional tests

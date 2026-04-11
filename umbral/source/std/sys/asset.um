@@ -1,9 +1,14 @@
 @extern const rt_assets_init : fn(&u8, u64) -> u64;
+@extern const rt_assets_init_embedded : fn(&u8, u64) -> u64;
 @extern const rt_assets_cleanup : fn(u64) -> void;
 @extern const rt_asset_load : fn(u64, u64) -> []u8;
 @extern const rt_asset_id_from_name : fn(&u8, u64) -> u64;
 @extern const rt_asset_image_meta : fn(u64, u64, &mut u32, &mut u32) -> void;
 @extern const rt_asset_audio_meta : fn(u64, u64, &mut u64, &mut u32, &mut u32) -> void;
+
+# well-known symbols emitted by the compiler for embedded asset packs
+@extern const __umpack_embedded_data : &u8;
+@extern const __umpack_embedded_size : u64;
 
 @pub const AssetId := u64;
 @pub const ASSET_NULL: AssetId = 0;
@@ -18,6 +23,15 @@ impl Pack {
     # init — load a .umpack file and return a pack handle.
     const init := fn(path: []u8) -> Pack {
         return Pack { handle = rt_assets_init(path.ptr, path.len) };
+    };
+
+    # embedded — init from the .umpack data embedded in the executable.
+    # returns a null pack if no assets were embedded at compile time.
+    const embedded := fn() -> Pack {
+        if (__umpack_embedded_size == 0) {
+            return Pack { handle = 0 };
+        }
+        return Pack { handle = rt_assets_init_embedded(__umpack_embedded_data, __umpack_embedded_size) };
     };
 
     # cleanup — free all decompressed buffers and close the pack.

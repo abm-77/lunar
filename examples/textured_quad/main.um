@@ -56,7 +56,7 @@ impl QuadShader {
 }
 
 const main := fn() -> i32 {
-  var pack := asset::Pack::init("assets.umpack");
+  var pack := asset::Pack::embedded();
 
   var win := window::Window::create("textured quad", 800, 600);
 

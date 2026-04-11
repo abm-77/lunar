@@ -9,7 +9,7 @@ import sys.io.fmt;
 const SAMPLE_RATE: u32 = 48000;
 
 const main := fn() -> i32 {
-  var pack := asset::Pack::init("assets.umpack");
+  var pack := asset::Pack::embedded();
 
   # load decoded float32 PCM directly from the pack
   const pcm := pack.load("sound.wav");

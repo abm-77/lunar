@@ -20,6 +20,11 @@ typedef uint64_t asset_pack_handle_t;
 // rt_assets_init — load a .umpack file and return a pack handle.
 asset_pack_handle_t rt_assets_init(const uint8_t *path_ptr, uint64_t path_len);
 
+// rt_assets_init_embedded — initialize from data already in memory.
+// the data pointer must remain valid for the lifetime of the pack
+// (embedded .rodata satisfies this). no copy is made for the base buffer.
+asset_pack_handle_t rt_assets_init_embedded(const uint8_t *data, uint64_t len);
+
 // rt_assets_cleanup — free all decompressed buffers, the pack data, and the
 // pack struct. safe to call on ASSET_NULL_HANDLE (no-op).
 void rt_assets_cleanup(asset_pack_handle_t pack);

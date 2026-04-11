@@ -34,6 +34,156 @@ ninja -C build/_b_umbral
 
 The compiler binary lands at `build/_b_umbral/uc`.
 
+## Compilation Pipeline
+
+This is the full path from `.um` source to a running executable.
+
+### Overview
+
+```
+.um source files
+    │
+    ▼
+ ┌──────────────────────────────────────────────────┐
+ │  uc (compiler)                                   │
+ │                                                  │
+ │  1. load modules    DFS import traversal, lex,   │
+ │                     parse each module             │
+ │  2. sema            collect → lower types →      │
+ │                     method table → body check →   │
+ │                     monomorphize                  │
+ │  3. shader compile  BodyIR → um.shader MLIR →    │
+ │     (if shaders)    SPIR-V MLIR → .umsh files    │
+ │  4. asset pack      invoke ul to bundle .umsh +   │
+ │     (if assets)     images/audio/fonts → .umpack  │
+ │  5. codegen         LLVM IR (+ embedded .umpack    │
+ │                     blob) → native .o              │
+ │  6. link            cc obj.o runtime.a glfw.a     │
+ │                     lz4.a -lvulkan → executable   │
+ └──────────────────────────────────────────────────┘
+    │
+    ▼
+ standalone executable (requires only libvulkan on the target)
+ assets are embedded in the binary by default
+```
+
+### Step by step
+
+**1. Module loading** (`loader.h`)
+
+Starting from the entry `.um` file, `load_modules` performs a depth-first traversal
+of `import` statements. Each module is lexed, parsed, and recorded in post-order
+(dependencies before dependents, entry module last). Circular imports are rejected.
+The root directory for module path resolution defaults to the entry file's parent
+and can be overridden with `--root <dir>`.
+
+**2. Semantic analysis** (`sema/sema.h`)
+
+Runs in five sub-phases across all loaded modules:
+
+1. **Collect** — gather all declarations into a global `SymbolTable` with per-module namespaces.
+2. **Lower types** — convert type AST nodes to canonical `CTypeId`s in a shared `TypeTable`.
+3. **Method table** — build a unified `MethodTable` from all `impl` blocks.
+4. **Body check** — type-check every non-generic function body; record results in `BodySema` maps. Cross-module type aliases and paths are resolved here.
+5. **Monomorphize** — demand-driven: each concrete use of a generic function or type queues a specialization. The queue drains iteratively until no new instantiations remain.
+
+**3. Shader compilation** (optional, `compiler/shader/`)
+
+Triggered when the program contains `@shader` types with `@stage` methods and
+`--shader-out <dir>` is passed. Runs entirely inside `uc`:
+
+1. `lower_to_mlir()` — BodyIR for each `@stage` method → `um.shader` MLIR dialect.
+2. `run_spirv_lower()` — `um.shader` ops → MLIR `spirv` dialect via conversion patterns.
+3. `collect_spirv_stages()` — serialize each `spirv.module` to in-memory SPIR-V words.
+4. `collect_refl()` — extract vertex input layout from `@vs_in` pod fields → reflection data.
+5. `emit_umsh()` — write stages + reflection → `<ShaderName>.umsh` in the output directory.
+
+Stage methods are **not** compiled to native code — only to `.umsh` sidecar files.
+
+**4. Asset packing** (optional)
+
+After shader compilation (or when `--asset-dir <dir>` is given), `uc` invokes the
+`ul` asset linker as a subprocess to produce `assets.umpack`:
+
+```
+ul --pack <out_dir>/assets.umpack --compress \
+    <shader_out>/*.umsh \
+    <asset_dir>/*.png <asset_dir>/*.wav ...
+```
+
+`ul` decodes assets at pack time so the runtime pays zero decode cost:
+
+| Extension | Decode | Stored as |
+|-----------|--------|-----------|
+| `.png` `.jpg` `.bmp` | stb_image | raw RGBA8 pixels |
+| `.wav` `.ogg` | miniaudio | float32 stereo PCM |
+| `.ttf` `.otf` | FreeType + msdfgen | MTSDF atlas (RGBA8) + glyph metrics |
+| `.umsh` | — | raw bytes |
+
+The resulting `.umpack` is an LZ4-compressed archive keyed by filename. At runtime,
+`@shader_ref(TypeName)` computes `fnv1a64("TypeName.umsh")` at compile time; the
+runtime asset loader uses the same hash to look up entries.
+
+By default, the `.umpack` is embedded into the binary during codegen (see step 5)
+so the final executable is fully self-contained. Pass `--no-embed-assets` to keep it
+as a sidecar file instead.
+
+**5. LLVM codegen** (`codegen/codegen.h`)
+
+1. Declare globals and functions as LLVM IR values (generic templates are skipped; only monomorphized instances are emitted).
+2. Emit function bodies via `FuncEmitter`.
+3. Emit a site table (`__um_sites`) for runtime allocation tracking.
+4. Embed the `.umpack` as a constant byte array (`__umpack_embedded_data` / `__umpack_embedded_size`) in the LLVM module. When no assets exist, these are null/0.
+5. Run LLVM optimization passes (`-O0` through `-O3`).
+6. Lower to a native object file (`.o`) via the host target machine.
+
+**6. Linking**
+
+`uc` finds `cc` on `PATH` and invokes it to produce the final executable:
+
+```
+cc umbral_<pid>.o umbral_runtime.a umbral_glfw.a umbral_lz4.a \
+    -lvulkan -ldl -lpthread -lX11 -lm -lz -o <output>
+```
+
+The runtime library, GLFW, and LZ4 are embedded as byte blobs inside `uc` at build
+time and written to temp files before linking. The resulting executable is
+self-contained — only `libvulkan` (and X11/Cocoa on the respective platform) must be
+present on the target system.
+
+### Compiler flags
+
+| Flag | Effect |
+|------|--------|
+| `<file>.um` | entry source file |
+| `-o <path>` | output executable path (default: `a.out`) |
+| `--root <dir>` | module root for import resolution (default: entry file's parent) |
+| `--shader-out <dir>` | emit `.umsh` files and `assets.umpack` to this directory |
+| `--asset-dir <dir>` | include images, audio, and fonts from this directory in the asset pack |
+| `--no-embed-assets` | keep `.umpack` as a sidecar file instead of embedding in the binary |
+| `--dump-ir` | print LLVM IR to stdout and stop (no object/link) |
+| `--dump-shader-mlir` | print um.shader MLIR to stdout and stop |
+| `-g` | emit DWARF debug info |
+| `-O0` `-O1` `-O2` `-O3` | optimization level |
+
+### Typical invocations
+
+```sh
+# compile and run a simple program (no shaders, no assets)
+uc main.um --root umbral/source/std -o main && ./main
+
+# compile with shaders and an asset directory
+uc main.um --root umbral/source/std \
+    --shader-out build/shaders --asset-dir assets/ \
+    -o build/game
+
+# inspect the generated LLVM IR
+uc main.um --root umbral/source/std --dump-ir
+
+# inspect the shader MLIR before SPIR-V lowering
+uc main.um --root umbral/source/std --dump-shader-mlir
+```
+
 ## Running Compiler Tests
 
 Unit tests live in `umbral/source/compiler/test/unit/` and are built with the inner `umbral` build.
@@ -784,10 +934,16 @@ Additional utilities: `U64_MAX`, `saturating_add_u64(a, b)`, `saturating_sub_u64
 
 Assets are stored in `.umpack` v2 bundles. Images (PNG/JPEG/BMP) and audio (WAV/OGG) are decoded at pack time by `ul` and stored as raw pixels/PCM. `pack.load(name)` returns decompressed bytes directly — zero runtime decode cost.
 
+By default, `uc` embeds the `.umpack` directly into the executable. Use `Pack::embedded()` to load it with no file I/O:
+
 ```
 import sys.asset;
 
-var pack := asset::Pack::init("assets.umpack");
+# load from the embedded asset pack (recommended)
+var pack := asset::Pack::embedded();
+
+# or load from a file (for mods, hot-reloading, --no-embed-assets)
+# var pack := asset::Pack::init("assets.umpack");
 
 # load decoded RGBA8 pixels directly
 const pixels := pack.load("texture.png");
@@ -800,8 +956,10 @@ const ameta := pack.audio_meta("sound.wav");  # AudioMeta { frame_count, channel
 # load a shader by @shader_ref
 const pipeline := assets::pipeline_create<MyShader>(dev, pack);
 
-pack.cleanup();  # frees all decompressed buffers and the pack data
+pack.cleanup();  # frees decompressed buffers (embedded data itself is never freed)
 ```
+
+`Pack::embedded()` returns a null pack (handle = 0) if no assets were embedded at compile time.
 
 ---
 
@@ -957,13 +1115,14 @@ Example programs live in `examples/` and are built via `ninja build_examples`. C
 `ul` bundles assets into `.umpack` v2 archives. Image files (`.png`/`.jpg`/`.jpeg`/`.bmp`) are decoded to RGBA8 at pack time via stb_image. Audio files (`.wav`/`.ogg`) are decoded to float32 stereo PCM via miniaudio. All other files (`.umsh`, etc.) are stored as raw bytes. LZ4 compression is applied with `--compress`.
 
 ```sh
-# pack shaders + assets together
+# pack shaders + assets together (manual invocation)
 ul --pack build/assets.umpack --compress \
     build/MyShader.umsh assets/texture.png assets/sound.wav
 
 # the uc driver invokes ul automatically when --shader-out is given:
 uc main.um --root std --shader-out build/ --asset-dir assets/ -o build/game
-# this compiles shaders to .umsh, packs .umsh + asset files into assets.umpack
+# this compiles shaders to .umsh, packs them + asset files into assets.umpack,
+# then embeds the pack into the binary. use --no-embed-assets to keep it external.
 ```
 
 **Output formats:**

@@ -85,7 +85,7 @@ impl App {
   const create := fn() -> App {
     var win := window::Window::create("pong", 1600, 1200);
     const cfg := gfx::GfxConfig::default();
-    var pack := asset::Pack::init("assets.umpack");
+    var pack := asset::Pack::embedded();
     var dev := gfx::init(win.handle, cfg);
     var rng := random::Random::from_seed(time::Instant::now().ns);
 

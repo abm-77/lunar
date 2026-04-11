@@ -43,6 +43,7 @@ struct DriverOptions {
   bool dump_ir = false;          // print LLVM IR to stdout and stop
   bool dump_shader_mlir = false; // print um.shader MLIR to stdout and stop
   bool debug_info = false;       // emit DWARF debug info (-g)
+  bool no_embed_assets = false;  // keep assets as sidecar instead of embedding
   u32 opt_level = 0;            // 0 = -O0, 1 = -O1, 2 = -O2, 3 = -O3
 };
 
@@ -65,6 +66,9 @@ private:
                     const std::string &out_path);
   DriverResult pack_assets(const std::filesystem::path &shader_dir,
                            const std::string &asset_dir);
+  // read an entire file into memory; returns empty vector if the file
+  // doesn't exist (which is fine — just means no assets to embed).
+  static std::vector<uint8_t> read_pack(const std::filesystem::path &path);
 };
 
 inline DriverResult Driver::run(const std::string &src_path,
@@ -117,6 +121,7 @@ inline DriverResult Driver::run(const std::string &src_path,
   }
 
   // MLIR-based shader compilation: BodyIR → um.shader → SPIR-V → .umsh
+  std::vector<uint8_t> umpack_data;
   if (!opts.shader_out.empty()) {
     bool has_any = false;
     for (const auto &lm : modules)
@@ -133,6 +138,10 @@ inline DriverResult Driver::run(const std::string &src_path,
     auto pack_r = pack_assets(opts.shader_out, opts.asset_dir);
     if (!pack_r.ok) return pack_r;
 
+    if (!opts.no_embed_assets)
+      umpack_data = read_pack(
+          std::filesystem::path(opts.shader_out) / "assets.umpack");
+
     // shader-only mode: stop here unless -o was explicitly given
     if (!opts.has_out) return {true};
   }
@@ -143,12 +152,15 @@ inline DriverResult Driver::run(const std::string &src_path,
     if (out_dir.empty()) out_dir = ".";
     auto pack_r = pack_assets(out_dir.string(), opts.asset_dir);
     if (!pack_r.ok) return pack_r;
+
+    if (!opts.no_embed_assets)
+      umpack_data = read_pack(out_dir / "assets.umpack");
   }
 
   // LLVM codegen
   auto llvm_ir = run_codegen(*sema_r, modules, interner,
                              entry.stem().string(), opts.debug_info,
-                             opts.opt_level);
+                             opts.opt_level, umpack_data);
   if (!llvm_ir) {
     const std::string &entry_src = modules.back().src;
     return {false, format_error(llvm_ir.error(), entry_src, src_path)};
@@ -305,4 +317,16 @@ inline DriverResult Driver::pack_assets(const std::filesystem::path &shader_dir,
   if (rc != 0)
     return {false, "asset pack failed" + (err.empty() ? "" : ": " + err)};
   return {true, {}};
+}
+
+inline std::vector<uint8_t>
+Driver::read_pack(const std::filesystem::path &path) {
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  if (!f) return {};
+  auto sz = f.tellg();
+  if (sz <= 0) return {};
+  std::vector<uint8_t> buf(static_cast<size_t>(sz));
+  f.seekg(0);
+  f.read(reinterpret_cast<char *>(buf.data()), sz);
+  return buf;
 }

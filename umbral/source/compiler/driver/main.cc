@@ -21,6 +21,10 @@ static cl::opt<bool> DumpShaderMLIR("dump-shader-mlir",
                                     cl::desc("print um.shader MLIR and stop"));
 static cl::opt<bool> DebugInfo("g", cl::desc("emit DWARF debug info"));
 
+static cl::opt<bool> NoEmbedAssets("no-embed-assets",
+                                   cl::desc("keep assets as a sidecar file "
+                                            "instead of embedding in the binary"));
+
 static cl::opt<unsigned> OptimizationLevel(
     "O", cl::desc("optimization level (0-3)"), cl::Prefix, cl::init(0));
 
@@ -36,6 +40,7 @@ int main(int argc, char **argv) {
   opts.dump_ir = DumpIR;
   opts.dump_shader_mlir = DumpShaderMLIR;
   opts.debug_info = DebugInfo;
+  opts.no_embed_assets = NoEmbedAssets;
   opts.opt_level = std::min(OptimizationLevel.getValue(), 3u);
 
   Driver driver;

@@ -62,7 +62,7 @@ const cv := fn(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32) -> CubeVertex {
 };
 
 const main := fn() -> i32 {
-  var pack := asset::Pack::init("assets.umpack");
+  var pack := asset::Pack::embedded();
 
   var win := window::Window::create("cube", 800, 600);
 

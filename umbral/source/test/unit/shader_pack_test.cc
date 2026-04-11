@@ -1,6 +1,6 @@
 // unit tests for shader_pack: .vert.spv + .frag.spv + .umrf → .umshader
 
-#include "shader_pack.h"
+#include "pack.h"
 #include <gtest/gtest.h>
 #include <runtime/gfx/umshader.h>
 

@@ -53,6 +53,7 @@ typedef struct {
     um_alloc_handle_t pack_data_handle;
     uint8_t          *pack_data;
     uint64_t          pack_len;
+    uint32_t          embedded;    // non-zero if pack_data is embedded .rodata (don't free)
 
     asset_entry_t     entries[RT_MAX_ASSETS];
     uint32_t          entry_count;
@@ -69,6 +70,96 @@ static asset_pack_t *pack_ptr(asset_pack_handle_t h) {
 static void track_decompressed(asset_pack_t *p, um_alloc_handle_t h) {
     if (p->decompressed_count < RT_MAX_DECOMPRESSED)
         p->decompressed[p->decompressed_count++] = h;
+}
+
+// parse the umpack header and build the entry table.
+// p->pack_data and p->pack_len must already be set.
+// returns 0 on success, -1 on malformed data.
+static int parse_pack(asset_pack_t *p) {
+    if (p->pack_len < 16) return -1;
+
+    uint32_t magic;
+    uint16_t version, endian;
+    uint32_t entry_count;
+    memcpy(&magic, p->pack_data + 0, 4);
+    memcpy(&version, p->pack_data + 4, 2);
+    memcpy(&endian, p->pack_data + 6, 2);
+    memcpy(&entry_count, p->pack_data + 12, 4);
+
+    if (magic != UMPACK_MAGIC || endian != UMPACK_ENDIAN_LE) return -1;
+
+    int has_meta = (version >= 2);
+    RT_LOG_DEBUG("asset", "init: version=%u entries=%u has_meta=%d pack_len=%lu",
+                 version, entry_count, has_meta, (unsigned long)p->pack_len);
+
+    uint64_t cur = 16;
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        if (cur + 4 > p->pack_len) return -1;
+        uint32_t name_len;
+        memcpy(&name_len, p->pack_data + cur, 4);
+        cur += 4;
+
+        uint32_t entry_tail = has_meta ? 36u : 16u;
+        if (cur + name_len + entry_tail > p->pack_len) return -1;
+
+        const char *name = (const char *)(p->pack_data + cur);
+        cur += name_len;
+
+        uint64_t data_offset;
+        uint32_t compressed_len, original_len;
+        memcpy(&data_offset, p->pack_data + cur, 8);   cur += 8;
+        memcpy(&compressed_len, p->pack_data + cur, 4); cur += 4;
+        memcpy(&original_len, p->pack_data + cur, 4);   cur += 4;
+
+        uint32_t meta_type = 0;
+        uint32_t meta[4] = {0};
+        if (has_meta) {
+            memcpy(&meta_type, p->pack_data + cur, 4); cur += 4;
+            memcpy(meta, p->pack_data + cur, 16);       cur += 16;
+        }
+
+        if (p->entry_count >= RT_MAX_ASSETS) break;
+        if (data_offset + compressed_len > p->pack_len) return -1;
+
+        asset_entry_t *e = &p->entries[p->entry_count++];
+        e->id        = asset_fnv1a64(name, name_len);
+        e->meta_type = meta_type;
+        RT_LOG_TRACE("asset", "  [%u] '%.*s' id=0x%lx off=%lu comp=%u orig=%u meta=%u",
+                     p->entry_count - 1, (int)name_len, name,
+                     (unsigned long)e->id, (unsigned long)data_offset,
+                     compressed_len, original_len, meta_type);
+        memcpy(e->meta, meta, sizeof(e->meta));
+
+        if (compressed_len == original_len) {
+            e->ptr = p->pack_data + data_offset;
+            e->len = original_len;
+        } else {
+            um_alloc_handle_t dh = rt_alloc(original_len, 8, ASSET_ALLOC_TAG, 0);
+            if (!dh) {
+                RT_LOG_ERROR("asset", "decompress alloc failed");
+                continue;
+            }
+            um_slice_u8_t dslice = rt_slice_from_alloc(dh, 1, 1, original_len, 0, 1);
+            uint8_t *dst = (uint8_t *)(uintptr_t)dslice.ptr;
+
+            int dec_sz = LZ4_decompress_safe(
+                (const char *)(p->pack_data + data_offset),
+                (char *)dst,
+                (int)compressed_len,
+                (int)original_len);
+            if (dec_sz < 0 || (uint32_t)dec_sz != original_len) {
+                RT_LOG_ERROR("asset", "LZ4 decompress failed for '%.*s'",
+                             (int)name_len, name);
+                rt_free(dh, 0);
+                p->entry_count--;
+                continue;
+            }
+            e->ptr = dst;
+            e->len = original_len;
+            track_decompressed(p, dh);
+        }
+    }
+    return 0;
 }
 
 asset_pack_handle_t rt_assets_init(const uint8_t *path_ptr, uint64_t path_len) {
@@ -88,7 +179,6 @@ asset_pack_handle_t rt_assets_init(const uint8_t *path_ptr, uint64_t path_len) {
         ssize_t n = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
         if (n > 0) {
             exe_path[n] = '\0';
-            // find last slash and replace filename
             char *slash = strrchr(exe_path, '/');
             if (slash && (size_t)(slash - exe_path + 1 + path_len) < sizeof(exe_path)) {
                 memcpy(slash + 1, path_ptr, path_len);
@@ -129,95 +219,38 @@ asset_pack_handle_t rt_assets_init(const uint8_t *path_ptr, uint64_t path_len) {
     fread(p->pack_data, 1, (size_t)file_sz, f);
     fclose(f);
 
-    if (p->pack_len < 16) goto bad;
-    uint32_t magic;
-    uint16_t version, endian;
-    uint32_t entry_count;
-    memcpy(&magic, p->pack_data + 0, 4);
-    memcpy(&version, p->pack_data + 4, 2);
-    memcpy(&endian, p->pack_data + 6, 2);
-    memcpy(&entry_count, p->pack_data + 12, 4);
-
-    if (magic != UMPACK_MAGIC || endian != UMPACK_ENDIAN_LE) goto bad;
-
-    int has_meta = (version >= 2);
-    RT_LOG_DEBUG("asset", "init: version=%u entries=%u has_meta=%d pack_len=%lu",
-                 version, entry_count, has_meta, (unsigned long)p->pack_len);
-
-    uint64_t cur = 16;
-    for (uint32_t i = 0; i < entry_count; ++i) {
-        if (cur + 4 > p->pack_len) goto bad;
-        uint32_t name_len;
-        memcpy(&name_len, p->pack_data + cur, 4);
-        cur += 4;
-
-        uint32_t entry_tail = has_meta ? 36u : 16u;
-        if (cur + name_len + entry_tail > p->pack_len) goto bad;
-
-        const char *name = (const char *)(p->pack_data + cur);
-        cur += name_len;
-
-        uint64_t data_offset;
-        uint32_t compressed_len, original_len;
-        memcpy(&data_offset, p->pack_data + cur, 8);   cur += 8;
-        memcpy(&compressed_len, p->pack_data + cur, 4); cur += 4;
-        memcpy(&original_len, p->pack_data + cur, 4);   cur += 4;
-
-        uint32_t meta_type = 0;
-        uint32_t meta[4] = {0};
-        if (has_meta) {
-            memcpy(&meta_type, p->pack_data + cur, 4); cur += 4;
-            memcpy(meta, p->pack_data + cur, 16);       cur += 16;
-        }
-
-        if (p->entry_count >= RT_MAX_ASSETS) break;
-        if (data_offset + compressed_len > p->pack_len) goto bad;
-
-        asset_entry_t *e = &p->entries[p->entry_count++];
-        e->id        = asset_fnv1a64(name, name_len);
-        e->meta_type = meta_type;
-        RT_LOG_TRACE("asset", "  [%u] '%.*s' id=0x%lx off=%lu comp=%u orig=%u meta=%u",
-                     p->entry_count - 1, (int)name_len, name,
-                     (unsigned long)e->id, (unsigned long)data_offset,
-                     compressed_len, original_len, meta_type);
-        memcpy(e->meta, meta, sizeof(e->meta));
-
-        if (compressed_len == original_len) {
-            e->ptr = p->pack_data + data_offset;
-            e->len = original_len;
-        } else {
-            um_alloc_handle_t dh = rt_alloc(original_len, 8, ASSET_ALLOC_TAG, 0);
-            if (!dh) {
-                RT_LOG_ERROR("asset", "decompress alloc failed");
-                continue;
-            }
-            um_slice_u8_t dslice = rt_slice_from_alloc(dh, 1, 1, original_len, 0, 1);
-            uint8_t *dst = (uint8_t *)(uintptr_t)dslice.ptr;
-
-            int dec_sz = LZ4_decompress_safe(
-                (const char *)(p->pack_data + data_offset),
-                (char *)dst,
-                (int)compressed_len,
-                (int)original_len);
-            if (dec_sz < 0 || (uint32_t)dec_sz != original_len) {
-                RT_LOG_ERROR("asset", "LZ4 decompress failed for '%.*s'",
-                             (int)name_len, name);
-                rt_free(dh, 0);
-                p->entry_count--;
-                continue;
-            }
-            e->ptr = dst;
-            e->len = original_len;
-            track_decompressed(p, dh);
-        }
+    if (parse_pack(p) != 0) {
+        RT_LOG_ERROR("asset", "malformed pack file '%s'", path_buf);
+        rt_free(p->pack_data_handle, 0);
+        rt_free(ph, 0);
+        return ASSET_NULL_HANDLE;
     }
     return (asset_pack_handle_t)ph;
+}
 
-bad:
-    RT_LOG_ERROR("asset", "malformed pack file '%s'", path_buf);
-    rt_free(p->pack_data_handle, 0);
-    rt_free(ph, 0);
-    return ASSET_NULL_HANDLE;
+asset_pack_handle_t rt_assets_init_embedded(const uint8_t *data, uint64_t len) {
+    if (!data || len < 16) return ASSET_NULL_HANDLE;
+
+    um_alloc_handle_t ph = rt_alloc(sizeof(asset_pack_t),
+                                     _Alignof(asset_pack_t),
+                                     ASSET_ALLOC_TAG, 0);
+    if (!ph) return ASSET_NULL_HANDLE;
+
+    asset_pack_t *p = pack_ptr(ph);
+    memset(p, 0, sizeof(*p));
+
+    // point directly into embedded .rodata — no copy, no alloc
+    p->pack_data_handle = 0;
+    p->pack_data = (uint8_t *)(uintptr_t)data;
+    p->pack_len  = len;
+    p->embedded  = 1;
+
+    if (parse_pack(p) != 0) {
+        RT_LOG_ERROR("asset", "malformed embedded pack data");
+        rt_free(ph, 0);
+        return ASSET_NULL_HANDLE;
+    }
+    return (asset_pack_handle_t)ph;
 }
 
 void rt_assets_cleanup(asset_pack_handle_t pack) {
@@ -226,7 +259,7 @@ void rt_assets_cleanup(asset_pack_handle_t pack) {
     if (!p) return;
     for (uint32_t i = 0; i < p->decompressed_count; ++i)
         if (p->decompressed[i]) rt_free(p->decompressed[i], 0);
-    if (p->pack_data_handle) rt_free(p->pack_data_handle, 0);
+    if (p->pack_data_handle && !p->embedded) rt_free(p->pack_data_handle, 0);
     rt_free(pack, 0);
 }
 

@@ -44,7 +44,7 @@ impl TriShader {
 }
 
 const main := fn() -> i32 {
-  var pack := asset::Pack::init("assets.umpack");
+  var pack := asset::Pack::embedded();
 
   var win := window::Window::create("triangle", 800, 600);
 

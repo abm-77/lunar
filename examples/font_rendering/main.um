@@ -6,7 +6,7 @@ import sys.gfx.quad;
 import math.types => math;
 
 const main := fn() -> i32 {
-    var pack := asset::Pack::init("assets.umpack");
+    var pack := asset::Pack::embedded();
 
     var win := window::Window::create("font rendering", 800, 600);
     const sw: f32 = 800.0;

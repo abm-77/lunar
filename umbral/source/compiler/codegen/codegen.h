@@ -627,10 +627,64 @@ inline void emit_site_table(CodegenCtx &cg) {
       "__um_sites_count");
 }
 
+// emit the embedded .umpack data as LLVM globals so the runtime can find it.
+// __umpack_embedded_data holds a pointer to the blob (or null if no assets).
+// __umpack_embedded_size holds the byte count (or 0).
+// these may already exist as extern declarations from @extern in asset.um;
+// if so, we turn the declarations into definitions by setting initializers.
+inline void emit_embedded_pack(CodegenCtx &cg,
+                               const std::vector<uint8_t> &pack_data) {
+  auto &ctx = cg.ctx;
+  auto *ptr_ty = llvm::PointerType::getUnqual(ctx);
+  auto *i64_ty = llvm::Type::getInt64Ty(ctx);
+
+  llvm::Constant *data_ptr;
+  uint64_t data_size;
+
+  if (pack_data.empty()) {
+    data_ptr = llvm::ConstantPointerNull::get(ptr_ty);
+    data_size = 0;
+  } else {
+    // emit the blob as a private constant array
+    llvm::StringRef data_ref(reinterpret_cast<const char *>(pack_data.data()),
+                             pack_data.size());
+    auto *arr = llvm::ConstantDataArray::getRaw(data_ref, pack_data.size(),
+                                                llvm::Type::getInt8Ty(ctx));
+    auto *blob = new llvm::GlobalVariable(
+        *cg.module, arr->getType(), true, llvm::GlobalValue::PrivateLinkage,
+        arr, "__umpack_blob");
+    blob->setAlignment(llvm::Align(8));
+    data_ptr = blob; // address of the array, type is ptr
+    data_size = pack_data.size();
+  }
+
+  // __umpack_embedded_data: a global ptr that points to the blob
+  if (auto *gv = cg.module->getGlobalVariable("__umpack_embedded_data")) {
+    gv->setInitializer(data_ptr);
+    gv->setConstant(true);
+  } else {
+    new llvm::GlobalVariable(*cg.module, ptr_ty, true,
+                             llvm::GlobalValue::ExternalLinkage, data_ptr,
+                             "__umpack_embedded_data");
+  }
+
+  // __umpack_embedded_size: a global i64 holding the byte count
+  auto *size_val = llvm::ConstantInt::get(i64_ty, data_size);
+  if (auto *gv = cg.module->getGlobalVariable("__umpack_embedded_size")) {
+    gv->setInitializer(size_val);
+    gv->setConstant(true);
+  } else {
+    new llvm::GlobalVariable(*cg.module, i64_ty, true,
+                             llvm::GlobalValue::ExternalLinkage, size_val,
+                             "__umpack_embedded_size");
+  }
+}
+
 inline Result<CodegenResult>
 run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
             const Interner &interner, std::string_view module_name = "umbral",
-            bool debug_info = false, u32 opt_level = 0) {
+            bool debug_info = false, u32 opt_level = 0,
+            const std::vector<uint8_t> &embedded_pack = {}) {
   CodegenCtx cg(sema, modules, interner, module_name, debug_info);
   auto globals_r = declare_globals(cg);
   if (!globals_r) return std::unexpected(globals_r.error());
@@ -652,6 +706,7 @@ run_codegen(SemaResult &sema, const std::vector<LoadedModule> &modules,
 
   emit_function_bodies(cg);
   emit_site_table(cg);
+  emit_embedded_pack(cg, embedded_pack);
 
   if (cg.debug_info && cg.dibuilder) cg.dibuilder->finalize();
 
